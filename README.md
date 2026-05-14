@@ -38,7 +38,9 @@ Activity Monitor and iStat Menus are great at showing you *everything*, all the 
 
 ## Installation
 
-Grab the latest DMG from the [Releases](#) page (or build it yourself, see below). Drag `Mojo Pulse.app` into `/Applications`.
+**[Download the latest release →](https://github.com/NativeMojo/mojo-pulse/releases/latest)**
+
+Open the DMG and drag `Mojo Pulse.app` into `/Applications`. (Or build it yourself, see below.)
 
 Because the app is **ad-hoc signed** (not notarized by Apple), macOS Gatekeeper will block the first launch with "Mojo Pulse cannot be opened because Apple cannot check it for malicious software." Two ways past it:
 
