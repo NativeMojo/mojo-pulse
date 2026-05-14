@@ -1,0 +1,15 @@
+.build/
+.swiftpm/
+Package.resolved
+*.app
+.DS_Store
+xcuserdata/
+
+# Distribution artifacts (DMGs, build staging)
+dist/
+
+# Auto-incrementing build counter (local to each developer / machine)
+.build-number
+
+# macOS resource files
+*.swp

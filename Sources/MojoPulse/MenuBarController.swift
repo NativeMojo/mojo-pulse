@@ -1,0 +1,419 @@
+import AppKit
+import SwiftUI
+
+/// The menu bar face of the app. Renders a single colored dot in the status
+/// bar, plus — when an incident is active — a short label to the right of
+/// the dot ("Hot", "Net", etc.) so it "catches the eye for things that need
+/// attention" (user's words).
+///
+/// The dot has four states that directly mirror IncidentSeverity:
+///
+///   quiet (gray)   — no active incidents. This is the default.
+///   info (blue)    — something meaningful is happening but isn't a problem
+///                    (reserved for v1.1 "local LLM running" etc.)
+///   watch (yellow) — worth knowing but not urgent
+///   issue (red)    — needs attention
+///
+/// Rendered via NSAttributedString rather than a template image so the dot
+/// color is actual color, not tinted-by-macOS monochrome — critical for the
+/// whole "calm when quiet, obvious when loud" UX.
+@MainActor
+final class MenuBarController: NSObject {
+    private let statusItem: NSStatusItem
+    private let popover: NSPopover
+    private let engine: DetectorEngine
+    private let networkInfo: NetworkInfo
+    private let history: HistoryStore
+    private let metricHistory: MetricHistoryStore
+    private let loginItem: LoginItem
+    private let wifi: WiFiCollector
+    private let system: SystemCollector
+    private let aggregator: SignalAggregator
+
+    /// Retained reference to the history window so we reuse the same
+    /// window across "Show all" clicks instead of spawning a new one
+    /// every time. Nilled on close via the delegate.
+    private var historyWindow: NSWindow?
+
+    /// Retained reference to the metrics detail window — same lifecycle
+    /// pattern as `historyWindow`. The window also bumps the aggregator
+    /// into fast-sampling mode while it's visible.
+    private var detailWindow: NSWindow?
+
+    /// Whether we've registered the popover as a fast-tick consumer. We
+    /// add on show, remove on close, and use this flag as the source of
+    /// truth so we never double-add or double-remove (would unbalance the
+    /// reference count on the aggregator).
+    private var popoverConsumingFastTick = false
+
+    /// Same role as `popoverConsumingFastTick` but for the detail window.
+    /// Tracked separately because they have independent lifecycles.
+    private var detailWindowConsumingFastTick = false
+
+    /// Observer token for the popover window's resize notification. The
+    /// popover content grows when the user expands a vital cell to show a
+    /// sparkline; on macOS 26 the popover keeps origin.y fixed and lets the
+    /// window grow upward, which would push the top above the menu bar
+    /// without re-anchoring. We re-snap on every resize to keep the arrow
+    /// flush. Cleared on popover close so we don't leak.
+    private var popoverResizeObserver: NSObjectProtocol?
+
+    /// Guard against re-entering `closeMenuBarGapIfNeeded` from inside the
+    /// resize-notification handler — setting the window frame triggers
+    /// another didResize, which would otherwise loop forever.
+    private var isAdjustingPopoverFrame = false
+
+    init(
+        engine: DetectorEngine,
+        networkInfo: NetworkInfo,
+        history: HistoryStore,
+        metricHistory: MetricHistoryStore,
+        loginItem: LoginItem,
+        wifi: WiFiCollector,
+        system: SystemCollector,
+        aggregator: SignalAggregator
+    ) {
+        self.engine = engine
+        self.networkInfo = networkInfo
+        self.history = history
+        self.metricHistory = metricHistory
+        self.loginItem = loginItem
+        self.wifi = wifi
+        self.system = system
+        self.aggregator = aggregator
+        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.popover = NSPopover()
+        super.init()
+
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 340, height: 480)
+        popover.delegate = self
+        popover.contentViewController = NSHostingController(
+            rootView: PopoverView(
+                engine: engine,
+                networkInfo: networkInfo,
+                history: history,
+                metricHistory: metricHistory,
+                loginItem: loginItem,
+                wifi: wifi,
+                system: system,
+                onShowFullHistory: { [weak self] in self?.showHistoryWindow() },
+                onShowDetail: { [weak self] kind in self?.showDetailWindow(initial: kind) }
+            )
+        )
+
+        if let button = statusItem.button {
+            button.action = #selector(togglePopover(_:))
+            button.target = self
+        }
+
+        render()
+
+        engine.onChange = { [weak self] in self?.render() }
+
+        // Wi-Fi/VPN state changes don't generate incidents (VPN status flapping
+        // shouldn't churn the event log) so the engine never tells us about
+        // them — we listen to the collector directly to recolor the dot.
+        wifi.onChange = { [weak self] in self?.render() }
+
+        // Refresh the history cache whenever the engine marks the log dirty,
+        // so the popover and the (possibly open) history window update
+        // without the user having to reopen anything.
+        engine.onHistoryChange = { [weak self] in self?.history.refresh() }
+    }
+
+    /// Rebuild the status item title from the engine's current state.
+    /// Called whenever the active incident list changes OR Wi-Fi/VPN state
+    /// transitions (debounced inside WiFiCollector).
+    ///
+    /// Color rule (severity always wins; green is the reward state):
+    ///
+    ///   any issue (red)        → red, regardless of VPN
+    ///   any watch (yellow)     → yellow, regardless of VPN
+    ///   nothing + VPN on       → green
+    ///   nothing + VPN off      → quiet gray
+    ///
+    /// The "VPN on" check uses the debounced `stableVPNActive` so brief
+    /// reconnect handshakes don't flicker the dot.
+    private func render() {
+        guard let button = statusItem.button else { return }
+
+        let topIncident = engine.activeIncidents.first
+        let severity = topIncident?.severity
+        let label = topIncident?.category.shortLabel
+
+        let dotColor: NSColor
+        if let severity {
+            dotColor = Self.nsColor(for: severity)
+        } else if wifi.stableVPNActive {
+            dotColor = Self.greenColor
+        } else {
+            dotColor = Self.quietColor
+        }
+
+        // Dot is U+25CF BLACK CIRCLE. We color it via NSForegroundColorAttributeName
+        // rather than using an SF Symbol image, because multicolor SF Symbols
+        // on menu-bar buttons get coerced to monochrome by macOS's template
+        // rendering. The circle glyph bypasses that entirely.
+        let attributed = NSMutableAttributedString()
+        attributed.append(NSAttributedString(
+            string: "●",
+            attributes: [
+                .foregroundColor: dotColor,
+                .font: NSFont.systemFont(ofSize: 11, weight: .bold)
+            ]
+        ))
+        if let label {
+            attributed.append(NSAttributedString(
+                string: " \(label)",
+                attributes: [
+                    .foregroundColor: NSColor.labelColor,
+                    .font: NSFont.systemFont(ofSize: 11, weight: .medium)
+                ]
+            ))
+        }
+        button.attributedTitle = attributed
+
+        button.toolTip = makeTooltip(topIncident: topIncident)
+    }
+
+    /// Multi-line tooltip combining incident state + connection security.
+    /// This is the "lookup" view of the menu bar dot — the dot color tells
+    /// you "is anything wrong"; the tooltip tells you "what specifically".
+    private func makeTooltip(topIncident: Incident?) -> String {
+        var lines: [String] = []
+        if let topIncident {
+            lines.append("\(topIncident.category.shortLabel): \(IncidentTemplates.render(topIncident).title)")
+        } else if wifi.stableVPNActive {
+            lines.append("All quiet · VPN active")
+        } else {
+            lines.append("All quiet")
+        }
+
+        let snap = wifi.current
+        if snap.vpnActive, let iface = snap.vpnInterface {
+            lines.append("VPN: \(iface)")
+        } else if snap.vpnActive {
+            lines.append("VPN: active")
+        }
+        if snap.hasWiFiLink {
+            var wline = "Wi-Fi: \(snap.displaySSID()) (\(snap.security.label)"
+            if let rssi = snap.rssi {
+                wline += ", \(rssi) dBm"
+            }
+            wline += ")"
+            lines.append(wline)
+        }
+        return "Mojo Pulse — " + lines.joined(separator: "\n")
+    }
+
+    private static let quietColor = NSColor(red: 0.55, green: 0.60, blue: 0.65, alpha: 1.0)
+    private static let greenColor = NSColor(red: 0.30, green: 0.72, blue: 0.40, alpha: 1.0)
+
+    private static func nsColor(for severity: IncidentSeverity?) -> NSColor {
+        guard let severity else { return quietColor }
+        switch severity {
+        case .info:
+            return NSColor(red: 0.30, green: 0.58, blue: 0.95, alpha: 1.0)
+        case .watch:
+            return NSColor(red: 0.95, green: 0.65, blue: 0.10, alpha: 1.0)
+        case .issue:
+            return NSColor(red: 0.90, green: 0.30, blue: 0.25, alpha: 1.0)
+        }
+    }
+
+    @objc private func togglePopover(_ sender: Any?) {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(sender)
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+            closeMenuBarGapIfNeeded(button: button)
+            installPopoverResizeObserver(button: button)
+            beginPopoverFastTick()
+        }
+    }
+
+    /// Observe the popover window's resize notifications so the gap fix
+    /// re-applies whenever SwiftUI grows or shrinks the content (e.g.
+    /// expanding a vital cell to show its sparkline). Without this the
+    /// initial show is correct but any later size change re-introduces
+    /// the gap or pushes the top above the menu bar.
+    private func installPopoverResizeObserver(button: NSStatusBarButton) {
+        guard popoverResizeObserver == nil,
+              let popoverWindow = popover.contentViewController?.view.window else { return }
+        popoverResizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification,
+            object: popoverWindow,
+            queue: .main
+        ) { [weak self, weak button] _ in
+            guard let self, let button else { return }
+            MainActor.assumeIsolated {
+                self.closeMenuBarGapIfNeeded(button: button)
+            }
+        }
+    }
+
+    private func removePopoverResizeObserver() {
+        if let token = popoverResizeObserver {
+            NotificationCenter.default.removeObserver(token)
+            popoverResizeObserver = nil
+        }
+    }
+
+    private func beginPopoverFastTick() {
+        guard !popoverConsumingFastTick else { return }
+        popoverConsumingFastTick = true
+        aggregator.addFastConsumer()
+    }
+
+    private func endPopoverFastTick() {
+        guard popoverConsumingFastTick else { return }
+        popoverConsumingFastTick = false
+        aggregator.removeFastConsumer()
+    }
+
+    /// macOS 26 (Tahoe) anchors the popover with extra space below the menu
+    /// bar instead of flush against it, AND when content size changes
+    /// (expanding/collapsing a vital cell) it grows the window upward
+    /// without re-anchoring — which can push the top *above* the menu bar.
+    /// We snap the popover's top to the menu bar's bottom edge in either
+    /// direction. On older macOS where the natural anchor is already flush,
+    /// the measured gap is ~0 and this is a no-op.
+    ///
+    /// Called once on show *and* on every popover-window resize via the
+    /// notification observer installed alongside the popover.
+    private func closeMenuBarGapIfNeeded(button: NSStatusBarButton) {
+        guard !isAdjustingPopoverFrame else { return }
+        guard let popoverWindow = popover.contentViewController?.view.window,
+              let buttonWindow = button.window else { return }
+        let menuBarBottom = buttonWindow.frame.minY
+        let popoverTop = popoverWindow.frame.maxY
+        let delta = menuBarBottom - popoverTop
+        // Tolerance: avoid micro-shifts from float rounding on systems where
+        // the popover is already correctly anchored.
+        guard abs(delta) > 1 else { return }
+        var frame = popoverWindow.frame
+        frame.origin.y += delta
+        isAdjustingPopoverFrame = true
+        popoverWindow.setFrame(frame, display: true, animate: false)
+        isAdjustingPopoverFrame = false
+    }
+
+    /// Open (or raise, if already open) the full history window. We dismiss
+    /// the popover first because SwiftUI window presentation while a
+    /// transient popover is anchored can look jittery.
+    ///
+    /// Because the app is LSUIElement (no dock icon), a plain NSWindow
+    /// won't automatically come to the front when shown. We explicitly
+    /// activate the app, then order-front the window, then makeKey —
+    /// this is the minimum dance that reliably gives the window focus
+    /// for keyboard/scroll input.
+    private func showHistoryWindow() {
+        popover.performClose(nil)
+
+        if let existing = historyWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: HistoryPanelView(history: history))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Mojo Pulse — Event History"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 680, height: 440))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        historyWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Detail window
+
+    /// Open (or raise, if already open) the metrics detail window. The
+    /// initial tab is the metric the user clicked in the popover. While
+    /// visible the window bumps the aggregator into fast-sampling mode so
+    /// the charts update smoothly.
+    private func showDetailWindow(initial kind: MetricKind) {
+        popover.performClose(nil)
+
+        if let existing = detailWindow {
+            // If the user already has the window open, just bring it forward
+            // rather than yanking their selected tab back to whatever they
+            // clicked on this time. Tab switching is one click away inside
+            // the window anyway.
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let view = MetricsDetailView(
+            metricHistory: metricHistory,
+            initialKind: kind,
+            totalMemoryBytes: system.current.memoryTotalBytes
+        )
+        let hosting = NSHostingController(rootView: view)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Mojo Pulse — Live Metrics"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 560, height: 420))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        detailWindow = window
+
+        beginDetailFastTick()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func beginDetailFastTick() {
+        guard !detailWindowConsumingFastTick else { return }
+        detailWindowConsumingFastTick = true
+        aggregator.addFastConsumer()
+    }
+
+    private func endDetailFastTick() {
+        guard detailWindowConsumingFastTick else { return }
+        detailWindowConsumingFastTick = false
+        aggregator.removeFastConsumer()
+    }
+}
+
+// MARK: - Popover delegate
+
+extension MenuBarController: NSPopoverDelegate {
+    /// Drop the popover's fast-tick consumer and resize observer as soon as
+    /// it dismisses, whether by user click-outside (transient) or
+    /// programmatically. We don't restart the aggregator loop — the next
+    /// slow sleep just resumes at the slower interval.
+    func popoverDidClose(_ notification: Notification) {
+        endPopoverFastTick()
+        removePopoverResizeObserver()
+    }
+}
+
+// MARK: - Window delegate
+
+extension MenuBarController: NSWindowDelegate {
+    /// Drop the retained reference when a window closes so we recreate
+    /// a fresh instance on the next open rather than trying to reuse a
+    /// torn-down window. Also unwinds the detail window's fast-tick
+    /// consumer when that's the one closing.
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow else { return }
+        if closing === historyWindow {
+            historyWindow = nil
+        } else if closing === detailWindow {
+            endDetailFastTick()
+            detailWindow = nil
+        }
+    }
+}
