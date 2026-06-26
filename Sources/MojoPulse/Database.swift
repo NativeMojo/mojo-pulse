@@ -88,9 +88,16 @@ final class Database: @unchecked Sendable {
                 detector_id TEXT NOT NULL,
                 template_key TEXT NOT NULL,
                 started_at INTEGER NOT NULL,
-                ended_at INTEGER
+                ended_at INTEGER,
+                context TEXT
             );
         """)
+        // Existing databases predate the context column — add it if missing so
+        // historical events can carry their attribution detail (which process,
+        // which SSID, etc.). Rows from before this migration simply have NULL.
+        if !columnExists(table: "incidents", column: "context") {
+            try exec("ALTER TABLE incidents ADD COLUMN context TEXT;")
+        }
         try exec("""
             CREATE INDEX IF NOT EXISTS idx_incidents_signature ON incidents(signature);
         """)
@@ -149,8 +156,8 @@ final class Database: @unchecked Sendable {
     func insertIncidentStart(_ incident: Incident) throws {
         let sql = """
             INSERT OR IGNORE INTO incidents
-                (id, signature, category, severity, detector_id, template_key, started_at, ended_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL);
+                (id, signature, category, severity, detector_id, template_key, started_at, ended_at, context)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?);
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -164,6 +171,13 @@ final class Database: @unchecked Sendable {
         sqlite3_bind_text(stmt, 5, incident.detectorID, -1, Database.SQLITE_TRANSIENT)
         sqlite3_bind_text(stmt, 6, incident.templateKey, -1, Database.SQLITE_TRANSIENT)
         sqlite3_bind_int64(stmt, 7, Int64(incident.startedAt.timeIntervalSince1970))
+        if !incident.context.isEmpty,
+           let data = try? JSONSerialization.data(withJSONObject: incident.context),
+           let json = String(data: data, encoding: .utf8) {
+            sqlite3_bind_text(stmt, 8, json, -1, Database.SQLITE_TRANSIENT)
+        } else {
+            sqlite3_bind_null(stmt, 8)
+        }
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw DBError.execFailed
         }
@@ -198,6 +212,32 @@ final class Database: @unchecked Sendable {
         return Int(sqlite3_changes(db))
     }
 
+    /// Update the mutable fields (severity + context) of an incident that's
+    /// still open, leaving its id and started_at untouched. Used when a live
+    /// condition's details change — a crash count rising, a severity escalating
+    /// — so the persisted row (and a later resume) reflect the current state
+    /// rather than the snapshot captured when the incident first opened.
+    func updateIncidentState(_ incident: Incident) throws {
+        let sql = "UPDATE incidents SET severity = ?, context = ? WHERE id = ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DBError.prepareFailed
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int(stmt, 1, Int32(incident.severity.rawValue))
+        if !incident.context.isEmpty,
+           let data = try? JSONSerialization.data(withJSONObject: incident.context),
+           let json = String(data: data, encoding: .utf8) {
+            sqlite3_bind_text(stmt, 2, json, -1, Database.SQLITE_TRANSIENT)
+        } else {
+            sqlite3_bind_null(stmt, 2)
+        }
+        sqlite3_bind_text(stmt, 3, incident.id.uuidString, -1, Database.SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw DBError.execFailed
+        }
+    }
+
     /// Mark an incident as ended. Safe to call multiple times — the UPDATE
     /// simply overwrites ended_at, so if a flapping condition re-opens an
     /// incident of the same signature under a new id, the old row stays
@@ -216,6 +256,59 @@ final class Database: @unchecked Sendable {
         }
     }
 
+    /// Incidents that were still open (ended_at NULL) when the app last quit,
+    /// reconstructed as full `Incident`s (with context) so the engine can
+    /// resume them on launch instead of closing + re-logging duplicates.
+    func fetchOpenIncidents() throws -> [Incident] {
+        let sql = """
+            SELECT id, signature, category, severity, detector_id, template_key,
+                   started_at, context
+            FROM incidents
+            WHERE ended_at IS NULL
+            ORDER BY started_at ASC;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DBError.prepareFailed
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var results: [Incident] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard
+                let idCStr = sqlite3_column_text(stmt, 0),
+                let sigCStr = sqlite3_column_text(stmt, 1),
+                let catCStr = sqlite3_column_text(stmt, 2),
+                let detCStr = sqlite3_column_text(stmt, 4),
+                let tplCStr = sqlite3_column_text(stmt, 5),
+                let uuid = UUID(uuidString: String(cString: idCStr)),
+                let category = IncidentCategory(rawValue: String(cString: catCStr)),
+                let severity = IncidentSeverity(rawValue: Int(sqlite3_column_int(stmt, 3)))
+            else { continue }
+
+            let startedAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 6)))
+            var context: [String: String] = [:]
+            if let ctxCStr = sqlite3_column_text(stmt, 7),
+               let data = String(cString: ctxCStr).data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+                context = parsed
+            }
+
+            results.append(Incident(
+                id: uuid,
+                category: category,
+                severity: severity,
+                detectorID: String(cString: detCStr),
+                templateKey: String(cString: tplCStr),
+                context: context,
+                signature: String(cString: sigCStr),
+                startedAt: startedAt,
+                endedAt: nil
+            ))
+        }
+        return results
+    }
+
     /// Fetch the most recent incidents (active + closed) ordered by
     /// started_at descending. Returns lightweight `IncidentRecord`s rather
     /// than the full `Incident` struct because callers (history UI) need
@@ -224,7 +317,7 @@ final class Database: @unchecked Sendable {
     func fetchRecentIncidents(limit: Int) throws -> [IncidentRecord] {
         let sql = """
             SELECT id, signature, category, severity, detector_id, template_key,
-                   started_at, ended_at
+                   started_at, ended_at, context
             FROM incidents
             ORDER BY started_at DESC
             LIMIT ?;
@@ -263,6 +356,13 @@ final class Database: @unchecked Sendable {
                 endedAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 7)))
             }
 
+            var context: [String: String] = [:]
+            if let ctxCStr = sqlite3_column_text(stmt, 8),
+               let data = String(cString: ctxCStr).data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+                context = parsed
+            }
+
             results.append(IncidentRecord(
                 id: uuid,
                 signature: String(cString: sigCStr),
@@ -271,7 +371,8 @@ final class Database: @unchecked Sendable {
                 detectorID: String(cString: detCStr),
                 templateKey: String(cString: tplCStr),
                 startedAt: startedAt,
-                endedAt: endedAt
+                endedAt: endedAt,
+                context: context
             ))
         }
         return results
@@ -335,6 +436,18 @@ final class Database: @unchecked Sendable {
 
     // MARK: - Internals
 
+    private func columnExists(table: String, column: String) -> Bool {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table));", -1, &stmt, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let c = sqlite3_column_text(stmt, 1), String(cString: c) == column { return true }
+        }
+        return false
+    }
+
     private func exec(_ sql: String) throws {
         var err: UnsafeMutablePointer<CChar>?
         if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
@@ -371,6 +484,14 @@ extension Database: IncidentPersistence {
             try insertIncidentStart(incident)
         } catch {
             NSLog("MojoPulse: persist incident start failed: \(error)")
+        }
+    }
+
+    func incidentUpdated(_ incident: Incident) {
+        do {
+            try updateIncidentState(incident)
+        } catch {
+            NSLog("MojoPulse: persist incident update failed: \(error)")
         }
     }
 

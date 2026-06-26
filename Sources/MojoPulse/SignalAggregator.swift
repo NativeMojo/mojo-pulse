@@ -28,6 +28,9 @@ final class SignalAggregator {
     private let reachability: ReachabilityMonitor
     private let system: SystemCollector
     private let wifi: WiFiCollector
+    private let security: SecurityCollector
+    private let processes: ProcessCollector
+    private let events: SystemEventsCollector
     private let history: MetricHistoryStore
 
     private var task: Task<Void, Never>?
@@ -39,6 +42,9 @@ final class SignalAggregator {
         reachability: ReachabilityMonitor,
         system: SystemCollector,
         wifi: WiFiCollector,
+        security: SecurityCollector,
+        processes: ProcessCollector,
+        events: SystemEventsCollector,
         history: MetricHistoryStore,
         slowInterval: TimeInterval = 5.0,
         fastInterval: TimeInterval = 2.0
@@ -48,6 +54,9 @@ final class SignalAggregator {
         self.reachability = reachability
         self.system = system
         self.wifi = wifi
+        self.security = security
+        self.processes = processes
+        self.events = events
         self.history = history
         self.slowInterval = slowInterval
         self.fastInterval = fastInterval
@@ -59,6 +68,12 @@ final class SignalAggregator {
         // AppDelegate — AppDelegate installs a composite handler that calls
         // our forceTick() along with its own work. We don't touch it here.
         thermal.onChange = { [weak self] in self?.forceTick() }
+
+        // Security scans run on their own slow schedule off the tick loop; a
+        // scan that surfaces a new finding yanks the tick forward so the dot
+        // and any notification fire immediately.
+        security.onChange = { [weak self] in self?.forceTick() }
+        events.onChange = { [weak self] in self?.forceTick() }
 
         // Run one tick immediately so the UI has a starting state instead of
         // an empty snapshot during the first interval.
@@ -133,12 +148,23 @@ final class SignalAggregator {
 
         history.record(system.current, at: now)
 
+        // Per-process sampling is gated: only when the system is busy (so an
+        // incident may need to name a culprit) or a process-showing UI surface
+        // is open (popover/detail/processes window = a fast consumer).
+        let busy = system.current.cpuPercent > 50
+            || system.current.memoryPressure != .normal
+            || thermal.current.isConcerning
+        processes.refreshIfNeeded(systemBusy: busy, forced: fastConsumerCount > 0)
+
         let signals = Signals(
             timestamp: now,
             thermalState: thermal.current,
             reachability: reachability.state,
             system: system.current,
-            wifi: wifi.current
+            wifi: wifi.current,
+            security: security.current,
+            processes: processes.current,
+            events: events.current
         )
         engine.tick(signals: signals)
     }

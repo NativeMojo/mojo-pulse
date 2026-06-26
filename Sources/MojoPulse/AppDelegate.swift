@@ -23,12 +23,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var thermalCollector: ThermalCollector?
     private var systemCollector: SystemCollector?
     private var wifiCollector: WiFiCollector?
+    private var securityCollector: SecurityCollector?
+    private var processCollector: ProcessCollector?
+    private var systemEventsCollector: SystemEventsCollector?
     private var detectorEngine: DetectorEngine?
     private var signalAggregator: SignalAggregator?
     private var networkInfo: NetworkInfo?
     private var historyStore: HistoryStore?
     private var metricHistory: MetricHistoryStore?
     private var loginItem: LoginItem?
+    private var settings: Settings?
+    private var notifications: NotificationManager?
+    private var updater: Updater?
     private var menuBarController: MenuBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -44,20 +50,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.database = db
 
-        // Bury zombies. If the previous session quit hard (force-quit, OS
-        // restart, Xcode stop button), some incidents are still flagged
-        // active in the DB even though their conditions long since ended.
-        // Close them all at launch time — any condition that's genuinely
-        // still active will re-open as a fresh row on the first tick.
+        // Incidents that were still open when we last quit. We *resume* these
+        // into the engine (below, after it's created) rather than closing them
+        // and letting detection re-log duplicates — an ongoing condition stays
+        // the same incident across a restart. Anything no longer happening is
+        // closed on the first tick after its grace window.
+        let openIncidents: [Incident]
         if let db {
-            do {
-                let closed = try db.closeAllOpenIncidents(endedAt: Date())
-                if closed > 0 {
-                    NSLog("MojoPulse: buried \(closed) zombie incident(s) from prior session")
-                }
-            } catch {
-                NSLog("MojoPulse: zombie cleanup failed: \(error)")
-            }
+            openIncidents = (try? db.fetchOpenIncidents()) ?? []
+        } else {
+            openIncidents = []
         }
 
         // Feedback store picks the persistent backend when the DB is available,
@@ -69,19 +71,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             feedback = InMemoryFeedbackStore()
         }
 
+        // User preferences (security monitoring + notifications toggles).
+        let settings = Settings()
+        self.settings = settings
+
         // Collectors.
         let thermal = ThermalCollector()
         let reach = ReachabilityMonitor(database: db)
         let system = SystemCollector()
         let wifi = WiFiCollector()
+        let security = SecurityCollector(settings: settings)
+        let processes = ProcessCollector(settings: settings)
+        let events = SystemEventsCollector()
         self.thermalCollector = thermal
         self.reachabilityMonitor = reach
         self.systemCollector = system
         self.wifiCollector = wifi
+        self.securityCollector = security
+        self.processCollector = processes
+        self.systemEventsCollector = events
 
         // Detectors. Order here is irrelevant — DetectorEngine sorts by
         // severity for display — but we keep the same order as the UI would
-        // walk them so logs read naturally.
+        // walk them so logs read naturally. The security detectors are the
+        // posture trio + auto-login/guest checks, the persistence
+        // change-watcher, and the exposed-sharing-service detector.
         let detectors: [Detector] = [
             ThermalDetector(),
             NetworkDetector(),
@@ -90,7 +104,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SwapDetector(),
             BatteryDetector(),
             DiskDetector(),
-            InsecureNetworkDetector()
+            InsecureNetworkDetector(),
+            DiskHealthDetector(),
+            PanicDetector()
+        ]
+            + PostureDetector.defaults()
+
+        // Per-item security detectors: each can surface several independent
+        // cards at once (one per new startup item / exposed service / unsigned
+        // app / unexpected listener), so the user can "Always ignore this" a
+        // single item without muting the whole category.
+        let multiDetectors: [MultiDetector] = [
+            PersistenceChangeDetector(),
+            ExposedServiceDetector(),
+            UnsignedAppDetector(),
+            UnexpectedListenerDetector(),
+            XProtectDetectionDetector(),
+            RunawayProcessDetector(settings: settings),
+            CrashDetector()
         ]
 
         // Engine and aggregator. Persistence flows straight into SQLite when
@@ -98,11 +129,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // log and the history UI shows an empty state.
         let engine = DetectorEngine(
             detectors: detectors,
+            multiDetectors: multiDetectors,
             feedback: feedback,
             persistence: db
         )
+        // Resume still-open incidents from the prior session before the first
+        // tick, so ongoing conditions continue as the same incident.
+        engine.resume(openIncidents)
         let metricHistory = MetricHistoryStore()
         self.metricHistory = metricHistory
+
+        // Notifications: ask once at launch, then mirror new incidents (red
+        // ones + anything security-related) to Notification Center / Watch.
+        let notifications = NotificationManager(settings: settings)
+        notifications.requestAuthorization()
+        engine.onIncidentOpened = { [weak notifications] incident in
+            notifications?.handleIncidentOpened(incident)
+        }
+        self.notifications = notifications
 
         let aggregator = SignalAggregator(
             engine: engine,
@@ -110,6 +154,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reachability: reach,
             system: system,
             wifi: wifi,
+            security: security,
+            processes: processes,
+            events: events,
             history: metricHistory
         )
         self.detectorEngine = engine
@@ -129,6 +176,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         history.refresh()
         self.historyStore = history
 
+        // Auto-update (Sparkle). Holds the updater alive for the app's
+        // lifetime; the popover's "Check for Updates…" routes here.
+        let updater = Updater()
+        self.updater = updater
+
         // UI.
         let login = LoginItem()
         self.loginItem = login
@@ -140,7 +192,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             loginItem: login,
             wifi: wifi,
             system: system,
-            aggregator: aggregator
+            security: security,
+            processes: processes,
+            aggregator: aggregator,
+            settings: settings,
+            updater: updater
         )
 
         // Single composite reachability handler. ReachabilityMonitor has
@@ -170,6 +226,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reach.start()
         system.start()
         aggregator.start()
+        // Security scans on its own slow schedule; start it after the
+        // aggregator so its onChange (set in aggregator.start) is wired before
+        // the first scan completes.
+        security.start()
+        events.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -177,5 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         thermalCollector?.stop()
         reachabilityMonitor?.stop()
         systemCollector?.stop()
+        securityCollector?.stop()
+        systemEventsCollector?.stop()
     }
 }

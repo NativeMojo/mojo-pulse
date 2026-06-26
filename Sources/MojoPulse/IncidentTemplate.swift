@@ -35,6 +35,12 @@ enum IncidentTemplates {
     static let batterySettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.battery")
     static let storageSettingsURL = URL(string: "x-apple.systempreferences:com.apple.settings.Storage")
     static let wifiSettingsURL = URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")
+    static let privacySecurityURL = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity")
+    static let fileVaultURL = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.FileVault")
+    static let loginItemsURL = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
+    static let usersGroupsURL = URL(string: "x-apple.systempreferences:com.apple.Users-Groups-Settings.extension")
+    static let sharingURL = URL(string: "x-apple.systempreferences:com.apple.Sharing-Settings.extension")
+    static let softwareUpdateURL = URL(string: "x-apple.systempreferences:com.apple.Software-Update-Settings.extension")
 
     static func render(_ incident: Incident) -> IncidentCopy {
         let ctx = incident.context
@@ -95,6 +101,124 @@ enum IncidentTemplates {
                 actionURL: wifiSettingsURL
             )
 
+        case "security.filevaultOff":
+            return IncidentCopy(
+                title: "FileVault is off",
+                what: "Disk encryption is turned off, so the data on this Mac is readable by anyone who removes the drive or boots it externally.",
+                why: "Without FileVault, a lost or stolen Mac exposes your files even though you have a login password.",
+                action: "Turn on FileVault in Privacy & Security. The first encryption pass runs in the background.",
+                actionURL: fileVaultURL
+            )
+
+        case "security.sipOff":
+            return IncidentCopy(
+                title: "System Integrity Protection is off",
+                what: "SIP is disabled, so core system files and protections can be modified — by you, but also by malware.",
+                why: "SIP is on by default and rarely needs turning off; a disabled state is unusual and meaningfully lowers the Mac's defenses.",
+                action: "Unless you disabled it deliberately for development, re-enable it: boot to Recovery and run `csrutil enable`.",
+                actionURL: privacySecurityURL
+            )
+
+        case "security.gatekeeperOff":
+            return IncidentCopy(
+                title: "Gatekeeper is off",
+                what: "App notarization checks are disabled, so unsigned or unnotarized apps can launch without any warning.",
+                why: "Gatekeeper is a primary defense against drive-by malware; with it off, anything can run unchecked.",
+                action: "Re-enable it in Privacy & Security (or run `sudo spctl --master-enable` in Terminal).",
+                actionURL: privacySecurityURL
+            )
+
+        case "security.firewallOff":
+            return IncidentCopy(
+                title: "Firewall is off",
+                what: "The built-in application firewall isn't running, so incoming network connections to apps on this Mac aren't filtered.",
+                why: "macOS ships with it off, so this is common — but turning it on blocks unsolicited inbound connections, which is safer on shared or public networks.",
+                action: "Turn it on in Privacy & Security → Firewall. If you keep it off on purpose, choose “Always ignore this”.",
+                actionURL: privacySecurityURL
+            )
+
+        case "security.autoLoginOn":
+            return IncidentCopy(
+                title: "Automatic login is on",
+                what: "This Mac logs a user in at startup with no password, which undoes much of the protection a login (and FileVault) provides.",
+                why: "Anyone who restarts the Mac gets straight into your account.",
+                action: "Turn off automatic login in Users & Groups.",
+                actionURL: usersGroupsURL
+            )
+
+        case "security.guestOn":
+            return IncidentCopy(
+                title: "Guest account is enabled",
+                what: "The guest login is turned on, allowing unauthenticated local access to this Mac.",
+                why: "Guest access is off by default; an enabled guest account is an extra door into the machine.",
+                action: "Disable the guest user in Users & Groups unless you need it.",
+                actionURL: usersGroupsURL
+            )
+
+        case "security.persistenceNew":
+            let name = ctx["name"] ?? "A new item"
+            let location = ctx["location"] ?? "your startup items"
+            return IncidentCopy(
+                title: "New startup item",
+                what: "\(name) was added to \(location) and will now run automatically at login.",
+                why: "Software that runs at login is normal for apps you install — but it's also how unwanted software persists. Worth a glance if you didn't just install something.",
+                action: "Review it in Login Items & Extensions. If you recognize it, choose “Always ignore this”.",
+                actionURL: loginItemsURL
+            )
+
+        case "security.unsignedApp":
+            let name = ctx["name"] ?? "An app"
+            return IncidentCopy(
+                title: "Unsigned app running",
+                what: "\(name) is running but carries no code signature, so macOS can't verify who made it or that it hasn't been tampered with.",
+                why: "Most legitimate software is signed. Unsigned binaries are common for hand-built or older developer tools, but also how some malware ships.",
+                action: "If you trust this app, choose “Always ignore this”. Otherwise quit it and check where it came from.",
+                actionURL: activityMonitorURL
+            )
+
+        case "security.unexpectedListener":
+            let process = ctx["process"] ?? "A process"
+            let port = ctx["port"] ?? "?"
+            return IncidentCopy(
+                title: "Unexpected network listener",
+                what: "\(process) is listening on port \(port) and accepting connections from your network.",
+                why: "This is often a local dev server, but an unrecognized listener can also be remote-access software you didn't intend to expose.",
+                action: "If it's yours, choose “Always ignore this”. Otherwise quit the process or check what it is in Activity Monitor.",
+                actionURL: activityMonitorURL
+            )
+
+        case "security.xprotectDetection":
+            let plugin = ctx["plugin"] ?? "a scanner"
+            let when = ctx["when"] ?? "recently"
+            let status = ctx["status"] ?? "a threat"
+            return IncidentCopy(
+                title: "macOS flagged malware",
+                what: "Apple's built-in XProtect scanner (\(plugin)) reported “\(status)” on \(when).",
+                why: "macOS quietly scans for known malware in the background and usually removes it automatically — this is the record it doesn't normally show you.",
+                action: "It's typically already handled. Review details in Console if you're curious, or choose “Always ignore this”.",
+                actionURL: nil
+            )
+
+        case "security.exposedService":
+            let services = ctx["services"] ?? "A remote-access service"
+            return IncidentCopy(
+                title: "Remote access exposed",
+                what: "\(services) is listening for connections from other devices on your network.",
+                why: "Sharing services are convenient at home but an open door on untrusted networks.",
+                action: "If you don't need it, turn it off in General → Sharing.",
+                actionURL: sharingURL
+            )
+
+        case "security.exposedServiceRisky":
+            let services = ctx["services"] ?? "A remote-access service"
+            return IncidentCopy(
+                title: "Remote access open on untrusted Wi-Fi",
+                what: "\(services) is accepting connections while you're on an insecure Wi-Fi network with no VPN.",
+                why: "On an open network, anyone nearby can attempt to reach these services directly.",
+                action: "Turn the service off in General → Sharing, or connect a VPN, until you're on a trusted network.",
+                actionURL: sharingURL
+            )
+
         // MARK: CPU
 
         case "cpu.sustained.watch":
@@ -102,7 +226,8 @@ enum IncidentTemplates {
             return IncidentCopy(
                 title: "CPU under sustained load",
                 what: "System CPU has been at \(pct) for the last ~30 seconds.",
-                why: "Something is keeping the cores busy — could be a runaway tab, a build, or a background indexer.",
+                why: ctx["topProcess"].map { "\($0) is the heaviest right now." }
+                    ?? "Something is keeping the cores busy — could be a runaway tab, a build, or a background indexer.",
                 action: "Open Activity Monitor → CPU tab to see which process is the heaviest.",
                 actionURL: activityMonitorURL
             )
@@ -112,8 +237,20 @@ enum IncidentTemplates {
             return IncidentCopy(
                 title: "CPU pegged",
                 what: "System CPU has been at \(pct) for the last minute — the Mac is barely keeping up.",
-                why: "A process or runaway loop is monopolizing the cores, which is why everything feels sluggish.",
+                why: ctx["topProcess"].map { "\($0) is monopolizing the cores, which is why everything feels sluggish." }
+                    ?? "A process or runaway loop is monopolizing the cores, which is why everything feels sluggish.",
                 action: "Open Activity Monitor and quit the top CPU offender if you don't recognize it.",
+                actionURL: activityMonitorURL
+            )
+
+        case "cpu.runaway":
+            let name = ctx["name"] ?? "A process"
+            let pct = ctx["pct"] ?? "high"
+            return IncidentCopy(
+                title: "Process running away",
+                what: "\(name) has been using \(pct) CPU on its own for over a minute.",
+                why: "A process stuck at full CPU usually means a hang or a runaway loop — it drains the battery and heats the Mac even when the system still feels responsive.",
+                action: "If this is expected (a build, an export, a render), choose “Always ignore this”. Otherwise quit it in Activity Monitor.",
                 actionURL: activityMonitorURL
             )
 
@@ -125,7 +262,8 @@ enum IncidentTemplates {
             return IncidentCopy(
                 title: "Memory pressure rising",
                 what: "macOS is reporting memory pressure as warning. \(usage)Apps may start swapping to disk and feel sluggish.",
-                why: "Too many apps or large working sets are competing for RAM.",
+                why: ctx["topProcess"].map { "\($0) is using the most memory." }
+                    ?? "Too many apps or large working sets are competing for RAM.",
                 action: "Quit apps you're not actively using — browser tabs are usually the biggest hogs.",
                 actionURL: activityMonitorURL
             )
@@ -136,7 +274,8 @@ enum IncidentTemplates {
             return IncidentCopy(
                 title: "Memory critical",
                 what: "macOS is at critical memory pressure. \(usage)The system is aggressively compressing and swapping to keep going.",
-                why: "Working set has exceeded what fits in RAM and the compressor is overworked.",
+                why: ctx["topProcess"].map { "\($0) is using the most — working set has exceeded what fits in RAM." }
+                    ?? "Working set has exceeded what fits in RAM and the compressor is overworked.",
                 action: "Quit heavy apps now — Chrome, Xcode, video editors, or any LLM running locally.",
                 actionURL: activityMonitorURL
             )
@@ -220,6 +359,42 @@ enum IncidentTemplates {
                 actionURL: storageSettingsURL
             )
 
+        // MARK: System events
+
+        case "event.crash":
+            let app = ctx["app"] ?? "An app"
+            let count = Int(ctx["count"] ?? "1") ?? 1
+            let times = count == 1 ? "crashed" : "crashed \(count) times"
+            return IncidentCopy(
+                title: count > 1 ? "\(app) keeps crashing" : "\(app) crashed",
+                what: "\(app) \(times) in the last 24 hours.",
+                why: count > 1
+                    ? "Repeated crashes usually mean a bad update, a corrupt preference, or a failing extension — worth looking into."
+                    : "macOS logged a crash report for it. A one-off is usually harmless.",
+                action: "If it keeps happening, try updating or reinstalling the app. Choose “Always ignore this” to stop tracking it.",
+                actionURL: nil
+            )
+
+        case "event.diskFailing":
+            let disk = ctx["disk"] ?? "The internal disk"
+            return IncidentCopy(
+                title: "Disk may be failing",
+                what: "\(disk) is reporting a failing SMART status — the drive's own health check has flagged a problem.",
+                why: "This is the disk warning you it could fail. Data loss is a real risk.",
+                action: "Back up immediately (Time Machine or a clone), then have the drive checked or replaced.",
+                actionURL: storageSettingsURL
+            )
+
+        case "event.panic":
+            let when = ctx["when"] ?? "recently"
+            return IncidentCopy(
+                title: "Mac restarted unexpectedly",
+                what: "A kernel panic or unexpected restart was recorded on \(when).",
+                why: "These come from a driver, kernel extension, or hardware fault. One is worth noting; repeats point to a specific cause.",
+                action: "If it recurs, note what you were doing and check for macOS, driver, or peripheral-firmware updates.",
+                actionURL: nil
+            )
+
         // MARK: Fallback
 
         default:
@@ -242,6 +417,8 @@ enum IncidentTemplates {
         case .thermal: return "Running hot"
         case .swap: return "Swap activity"
         case .disk: return "Disk issue"
+        case .app: return "App problem"
+        case .system: return "System event"
         }
     }
 }

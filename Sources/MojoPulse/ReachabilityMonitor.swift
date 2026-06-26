@@ -30,7 +30,13 @@ final class ReachabilityMonitor: ObservableObject {
         }
     }
 
-    @Published private(set) var state: State = .offline
+    /// Start optimistic. We don't actually know connectivity until the first
+    /// NWPathMonitor callback + probe, and defaulting to `.offline` made the
+    /// NetworkDetector fire a spurious "No internet" on every launch (a
+    /// zero-duration incident that resolved a tick later). NWPathMonitor
+    /// reports the real status within moments of `start()`, so a genuine
+    /// offline still corrects almost immediately — without the false alarm.
+    @Published private(set) var state: State = .online
     @Published private(set) var lastRttMs: Int?
     @Published private(set) var lastTarget: String?
 

@@ -24,7 +24,7 @@ final class ThermalDetector: Detector {
                 severity: .watch,
                 detectorID: id,
                 templateKey: "thermal.serious",
-                context: [:],
+                context: context(signals),
                 signature: "thermal:serious",
                 startedAt: signals.timestamp
             )
@@ -35,10 +35,17 @@ final class ThermalDetector: Detector {
                 severity: .issue,
                 detectorID: id,
                 templateKey: "thermal.critical",
-                context: [:],
+                context: context(signals),
                 signature: "thermal:critical",
                 startedAt: signals.timestamp
             )
         }
+    }
+
+    /// Names the heaviest CPU process (when clearly dominant) so the thermal
+    /// card can point at a likely cause.
+    private func context(_ signals: Signals) -> [String: String] {
+        guard let p = signals.processes.topByCPU.first, p.cpuPercent >= 20 else { return [:] }
+        return ["topProcess": "\(p.name) (\(p.cpuDisplay))"]
     }
 }

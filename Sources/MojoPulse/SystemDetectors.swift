@@ -45,7 +45,7 @@ final class CPUDetector: Detector {
                 severity: .issue,
                 detectorID: id,
                 templateKey: "cpu.sustained.issue",
-                context: ["pct": String(format: "%.0f", issueAvg)],
+                context: context(pct: issueAvg, signals: signals),
                 signature: "cpu:sustained:issue",
                 startedAt: signals.timestamp
             )
@@ -56,12 +56,22 @@ final class CPUDetector: Detector {
                 severity: .watch,
                 detectorID: id,
                 templateKey: "cpu.sustained.watch",
-                context: ["pct": String(format: "%.0f", watchAvg)],
+                context: context(pct: watchAvg, signals: signals),
                 signature: "cpu:sustained:watch",
                 startedAt: signals.timestamp
             )
         }
         return nil
+    }
+
+    /// Attaches the heaviest process as `topProcess` when one is clearly
+    /// dominant (≥20% of a core), so the card can name the culprit.
+    private func context(pct: Double, signals: Signals) -> [String: String] {
+        var ctx = ["pct": String(format: "%.0f", pct)]
+        if let p = signals.processes.topByCPU.first, p.cpuPercent >= 20 {
+            ctx["topProcess"] = "\(p.name) (\(p.cpuDisplay))"
+        }
+        return ctx
     }
 
     private func avg(_ slice: ArraySlice<Double>) -> Double {
@@ -91,7 +101,7 @@ final class MemoryDetector: Detector {
                 severity: .watch,
                 detectorID: id,
                 templateKey: "memory.warn",
-                context: contextFor(signals.system),
+                context: contextFor(signals),
                 signature: "memory:warn",
                 startedAt: signals.timestamp
             )
@@ -101,20 +111,25 @@ final class MemoryDetector: Detector {
                 severity: .issue,
                 detectorID: id,
                 templateKey: "memory.critical",
-                context: contextFor(signals.system),
+                context: contextFor(signals),
                 signature: "memory:critical",
                 startedAt: signals.timestamp
             )
         }
     }
 
-    private func contextFor(_ s: SystemSnapshot) -> [String: String] {
+    private func contextFor(_ signals: Signals) -> [String: String] {
+        let s = signals.system
         let usedGB = Double(s.memoryUsedBytes) / 1_073_741_824
         let totalGB = Double(s.memoryTotalBytes) / 1_073_741_824
-        return [
+        var ctx = [
             "used": String(format: "%.1f", usedGB),
             "total": String(format: "%.0f", totalGB)
         ]
+        if let p = signals.processes.topByMemory.first {
+            ctx["topProcess"] = "\(p.name) (\(p.memoryDisplay))"
+        }
+        return ctx
     }
 }
 
@@ -303,6 +318,132 @@ final class DiskDetector: Detector {
                 "freePct": String(format: "%.0f", s.diskFreePercent)
             ],
             signature: "disk:\(sev.rawValue)",
+            startedAt: signals.timestamp
+        )
+    }
+}
+
+// MARK: - Runaway process
+
+/// Fires when a *single* non-Apple process pegs a core for a sustained stretch
+/// — the classic stuck/spinning-process case, which an aggregate-CPU check
+/// misses on a many-core Mac (one pegged core is a small % of the whole).
+/// Conservative on purpose (≥90% of a core for ≥60s) and per-process so the
+/// user can permanently ignore an app they knowingly run hot (a build, an
+/// export). Gated behind the runaway-alerts setting; Apple system processes
+/// (WindowServer, kernel_task) are excluded — those aren't user-actionable.
+@MainActor
+final class RunawayProcessDetector: MultiDetector {
+    let id = "cpu.runaway"
+
+    private let settings: Settings
+    private var highSince: [String: Date] = [:]
+    private let threshold = 90.0
+    private let sustainSeconds: TimeInterval = 60
+
+    init(settings: Settings) {
+        self.settings = settings
+    }
+
+    func evaluateAll(signals: Signals) -> [Incident] {
+        guard settings.runawayAlertsEnabled, signals.processes.sampled else {
+            highSince.removeAll()
+            return []
+        }
+
+        let now = signals.timestamp
+        let candidates = signals.processes.topByCPU.filter {
+            $0.cpuPercent >= threshold && !$0.isAppleSystem
+        }
+        let activeNames = Set(candidates.map(\.name))
+        for name in highSince.keys where !activeNames.contains(name) {
+            highSince.removeValue(forKey: name)
+        }
+
+        var incidents: [Incident] = []
+        for p in candidates {
+            let since = highSince[p.name, default: now]
+            highSince[p.name] = since
+            guard now.timeIntervalSince(since) >= sustainSeconds else { continue }
+            incidents.append(Incident(
+                category: .cpu,
+                severity: .watch,
+                detectorID: id,
+                templateKey: "cpu.runaway",
+                context: ["name": p.name, "pct": p.cpuDisplay],
+                signature: "cpu:runaway:\(p.name)",
+                startedAt: signals.timestamp
+            ))
+        }
+        return incidents
+    }
+}
+
+// MARK: - System events (crashes, disk health, panics)
+
+/// One card per app that has crashed recently (within the collector's 24h
+/// window), showing how many times. Watch severity — a crash isn't urgent, but
+/// a background app crashing repeatedly is exactly what users miss. Per-app
+/// signature so a known-flaky app can be permanently ignored.
+@MainActor
+final class CrashDetector: MultiDetector {
+    let id = "event.crash"
+
+    func evaluateAll(signals: Signals) -> [Incident] {
+        guard signals.events.scanned else { return [] }
+        return signals.events.crashes.map { group in
+            Incident(
+                category: .app,
+                severity: .watch,
+                detectorID: id,
+                templateKey: "event.crash",
+                context: ["app": group.app, "count": String(group.count)],
+                signature: "event:crash:\(group.app)",
+                startedAt: signals.timestamp
+            )
+        }
+    }
+}
+
+/// Fires when the boot disk reports a failing SMART status — a rare, serious,
+/// back-up-now signal.
+@MainActor
+final class DiskHealthDetector: Detector {
+    let id = "event.smart"
+
+    func evaluate(signals: Signals) -> Incident? {
+        guard signals.events.scanned, signals.events.smartFailing else { return nil }
+        return Incident(
+            category: .disk,
+            severity: .issue,
+            detectorID: id,
+            templateKey: "event.diskFailing",
+            context: ["disk": signals.events.smartDisk ?? "The internal disk"],
+            signature: "event:smart:failing",
+            startedAt: signals.timestamp
+        )
+    }
+}
+
+/// Fires when a kernel panic / unexpected restart was recorded in the last 7
+/// days — users almost always miss *why* their Mac rebooted.
+@MainActor
+final class PanicDetector: Detector {
+    let id = "event.panic"
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short; return f
+    }()
+
+    func evaluate(signals: Signals) -> Incident? {
+        guard signals.events.scanned, let date = signals.events.lastPanic else { return nil }
+        return Incident(
+            category: .system,
+            severity: .issue,
+            detectorID: id,
+            templateKey: "event.panic",
+            context: ["when": Self.dateFormatter.string(from: date)],
+            signature: "event:panic:\(Int(date.timeIntervalSince1970))",
             startedAt: signals.timestamp
         )
     }

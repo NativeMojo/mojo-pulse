@@ -28,7 +28,11 @@ final class MenuBarController: NSObject {
     private let loginItem: LoginItem
     private let wifi: WiFiCollector
     private let system: SystemCollector
+    private let security: SecurityCollector
+    private let processes: ProcessCollector
     private let aggregator: SignalAggregator
+    private let settings: Settings
+    private let updater: Updater
 
     /// Retained reference to the history window so we reuse the same
     /// window across "Show all" clicks instead of spawning a new one
@@ -39,6 +43,28 @@ final class MenuBarController: NSObject {
     /// pattern as `historyWindow`. The window also bumps the aggregator
     /// into fast-sampling mode while it's visible.
     private var detailWindow: NSWindow?
+
+    /// Retained reference to the About window, reused across opens and nilled
+    /// on close (same pattern as the other windows).
+    private var aboutWindow: NSWindow?
+
+    /// Retained reference to the malware-protection info window.
+    private var malwareWindow: NSWindow?
+
+    /// Retained reference to the security-posture detail window.
+    private var postureWindow: NSWindow?
+
+    /// Retained reference to the Settings window.
+    private var settingsWindow: NSWindow?
+
+    /// Retained reference to the Top Processes window, which bumps the
+    /// aggregator into fast-sampling mode (so the list refreshes live) while open.
+    private var processesWindow: NSWindow?
+    private var processesWindowConsumingFastTick = false
+
+    /// Retained reference to the single event-detail window (content replaced
+    /// per click rather than spawning one window per event).
+    private var eventWindow: NSWindow?
 
     /// Whether we've registered the popover as a fast-tick consumer. We
     /// add on show, remove on close, and use this flag as the source of
@@ -71,7 +97,11 @@ final class MenuBarController: NSObject {
         loginItem: LoginItem,
         wifi: WiFiCollector,
         system: SystemCollector,
-        aggregator: SignalAggregator
+        security: SecurityCollector,
+        processes: ProcessCollector,
+        aggregator: SignalAggregator,
+        settings: Settings,
+        updater: Updater
     ) {
         self.engine = engine
         self.networkInfo = networkInfo
@@ -80,7 +110,11 @@ final class MenuBarController: NSObject {
         self.loginItem = loginItem
         self.wifi = wifi
         self.system = system
+        self.security = security
+        self.processes = processes
         self.aggregator = aggregator
+        self.settings = settings
+        self.updater = updater
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
         super.init()
@@ -97,8 +131,16 @@ final class MenuBarController: NSObject {
                 loginItem: loginItem,
                 wifi: wifi,
                 system: system,
+                security: security,
+                settings: settings,
                 onShowFullHistory: { [weak self] in self?.showHistoryWindow() },
-                onShowDetail: { [weak self] kind in self?.showDetailWindow(initial: kind) }
+                onShowDetail: { [weak self] kind in self?.showDetailWindow(initial: kind) },
+                onShowAbout: { [weak self] in self?.showAboutWindow() },
+                onShowMalwareInfo: { [weak self] in self?.showMalwareWindow() },
+                onShowPosture: { [weak self] in self?.showPostureWindow() },
+                onShowSettings: { [weak self] in self?.showSettingsWindow() },
+                onShowProcesses: { [weak self] in self?.showProcessesWindow() },
+                onSelectEvent: { [weak self] record in self?.showEventWindow(record) }
             )
         )
 
@@ -385,6 +427,195 @@ final class MenuBarController: NSObject {
         detailWindowConsumingFastTick = false
         aggregator.removeFastConsumer()
     }
+
+    // MARK: - About window
+
+    /// Open (or raise) the compact About window. Same LSUIElement activation
+    /// dance as the other windows so it reliably comes to the front.
+    private func showAboutWindow() {
+        popover.performClose(nil)
+
+        if let existing = aboutWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: AboutView())
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "About Mojo Pulse"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        aboutWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Malware protection window
+
+    /// Open (or raise) the malware-protection info window — the confidence
+    /// panel that explains the malware-scan line reflects macOS's built-in
+    /// XProtect protection.
+    private func showMalwareWindow() {
+        popover.performClose(nil)
+
+        if let existing = malwareWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: MalwareProtectionView(security: security))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Malware Protection"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        malwareWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Security posture window
+
+    /// Open (or raise) the security-posture detail window.
+    private func showPostureWindow() {
+        popover.performClose(nil)
+
+        if let existing = postureWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: SecurityPostureView(security: security, settings: settings))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Security Posture"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        postureWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Settings window
+
+    /// Open (or raise) the Settings window.
+    private func showSettingsWindow() {
+        popover.performClose(nil)
+
+        if let existing = settingsWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let view = SettingsView(
+            settings: settings,
+            loginItem: loginItem,
+            security: security,
+            onCheckForUpdates: { [weak self] in self?.updater.checkForUpdates() }
+        )
+        let hosting = NSHostingController(rootView: view)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Settings"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        settingsWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Top processes window
+
+    /// Open (or raise) the Top Processes window. While visible it registers as
+    /// a fast-tick consumer so the per-process sample (and the list) refresh
+    /// every couple of seconds.
+    private func showProcessesWindow() {
+        popover.performClose(nil)
+
+        if let existing = processesWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: ProcessesView(processes: processes, system: system))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Top Processes"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        processesWindow = window
+
+        beginProcessesFastTick()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Event detail window
+
+    /// Open (or re-use) the event-detail window for a given history record.
+    /// One window, content swapped per click.
+    private func showEventWindow(_ record: IncidentRecord) {
+        popover.performClose(nil)
+
+        let hosting = NSHostingController(rootView: IncidentDetailView(record: record))
+        if let window = eventWindow {
+            window.contentViewController = hosting
+            window.setContentSize(hosting.view.fittingSize)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Event"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        eventWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func beginProcessesFastTick() {
+        guard !processesWindowConsumingFastTick else { return }
+        processesWindowConsumingFastTick = true
+        aggregator.addFastConsumer()
+    }
+
+    private func endProcessesFastTick() {
+        guard processesWindowConsumingFastTick else { return }
+        processesWindowConsumingFastTick = false
+        aggregator.removeFastConsumer()
+    }
 }
 
 // MARK: - Popover delegate
@@ -414,6 +645,19 @@ extension MenuBarController: NSWindowDelegate {
         } else if closing === detailWindow {
             endDetailFastTick()
             detailWindow = nil
+        } else if closing === aboutWindow {
+            aboutWindow = nil
+        } else if closing === malwareWindow {
+            malwareWindow = nil
+        } else if closing === postureWindow {
+            postureWindow = nil
+        } else if closing === settingsWindow {
+            settingsWindow = nil
+        } else if closing === processesWindow {
+            endProcessesFastTick()
+            processesWindow = nil
+        } else if closing === eventWindow {
+            eventWindow = nil
         }
     }
 }

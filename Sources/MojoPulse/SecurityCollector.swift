@@ -1,0 +1,738 @@
+import Foundation
+import Combine
+import AppKit
+import Security
+
+// MARK: - Snapshot types
+
+/// Tri-state result of a posture check. `unknown` means we couldn't read the
+/// value (command missing, unexpected output) — detectors treat it as "say
+/// nothing" so a failed probe never produces a false alarm.
+enum PostureState: String, Sendable {
+    case unknown
+    case ok
+    case problem
+}
+
+/// A remote-access service found listening on a non-loopback interface.
+struct ExposedService: Sendable, Equatable, Hashable {
+    let name: String
+    let port: Int
+}
+
+/// A non-loopback TCP listener that isn't one of the known sharing services
+/// and isn't on the system allowlist — i.e. "something is accepting network
+/// connections that we don't recognize". Inherently noisier on a dev Mac, so
+/// it's built for per-item muting.
+struct ListenerItem: Sendable, Equatable, Hashable {
+    let process: String
+    let port: Int
+}
+
+/// A currently-running GUI app with no code signature at all. We flag only the
+/// truly-unsigned case (cheap to determine, unambiguous) rather than doing the
+/// expensive deep validity hash on every signed app each scan.
+struct UnsignedApp: Sendable, Equatable, Hashable {
+    let name: String
+    let bundleID: String
+    let path: String
+}
+
+/// Lightweight, Sendable reference to a running app, captured on the main
+/// actor (NSWorkspace is main-bound) and handed to the off-main scanner so it
+/// can check signatures without touching AppKit off-thread.
+struct RunningAppRef: Sendable {
+    let name: String
+    let bundleID: String
+    let path: String
+}
+
+/// One auto-start / persistence artifact on disk (a LaunchAgent or
+/// LaunchDaemon). `key` is the stable identity used for baseline diffing.
+struct PersistenceItem: Sendable, Equatable, Hashable {
+    let key: String
+    let label: String
+    let path: String
+    let location: String
+}
+
+/// One record from Apple's background malware scanner (XProtect Remediator):
+/// a scanner plugin ran and either found nothing or flagged/remediated a
+/// threat. We surface the *found* case humanely — macOS hides this entirely.
+struct XProtectDetection: Sendable, Equatable, Hashable {
+    let plugin: String   // scanner name, e.g. "KeySteal"
+    let status: String   // status_message from the event
+    let date: Date
+
+    var key: String { "\(plugin)|\(status)|\(Int(date.timeIntervalSince1970))" }
+}
+
+/// Summary of what Apple's XProtect Remediator has been up to: when it last
+/// ran and anything it flagged. `available` is false when we couldn't read
+/// the unified log (e.g. a non-admin account).
+struct XProtectStatus: Sendable, Equatable {
+    var available: Bool
+    var lastScan: Date?
+    var detections: [XProtectDetection]
+    /// XProtect signature ("definitions") version + when they were last
+    /// updated — read via the `xprotect` CLI (or the bundle as a fallback).
+    /// Shown to reassure the user their built-in protection is current.
+    var definitionsVersion: String?
+    var definitionsDate: Date?
+    /// Whether macOS's automatic XProtect scans are enabled (from
+    /// `xprotect status`). nil if unknown.
+    var automaticScans: Bool?
+
+    static let unknown = XProtectStatus(
+        available: false, lastScan: nil, detections: [],
+        definitionsVersion: nil, definitionsDate: nil, automaticScans: nil
+    )
+}
+
+/// Everything the security subsystem knows at a point in time. Copied into
+/// `Signals` each tick; `scanned` gates all detectors so they stay silent
+/// until the first real scan has completed (or while monitoring is disabled).
+struct SecuritySnapshot: Sendable, Equatable {
+    var fileVault: PostureState
+    var sip: PostureState
+    var gatekeeper: PostureState
+    var firewall: PostureState      // problem == application firewall is off
+    var autoLogin: PostureState     // problem == auto-login is enabled
+    var guestAccount: PostureState  // problem == guest account is enabled
+    var exposedServices: [ExposedService]
+    var unexpectedListeners: [ListenerItem]
+    var unsignedApps: [UnsignedApp]
+    var newPersistenceItems: [PersistenceItem]
+    var xprotect: XProtectStatus
+    var scanned: Bool
+
+    static let empty = SecuritySnapshot(
+        fileVault: .unknown,
+        sip: .unknown,
+        gatekeeper: .unknown,
+        firewall: .unknown,
+        autoLogin: .unknown,
+        guestAccount: .unknown,
+        exposedServices: [],
+        unexpectedListeners: [],
+        unsignedApps: [],
+        newPersistenceItems: [],
+        xprotect: .unknown,
+        scanned: false
+    )
+}
+
+/// Raw output of a scan, with no baseline knowledge. Produced off the main
+/// actor by `SecurityScanner`; the collector folds it against the persistence
+/// baseline to compute `newPersistenceItems`.
+struct RawSecurityScan: Sendable {
+    var fileVault: PostureState
+    var sip: PostureState
+    var gatekeeper: PostureState
+    var firewall: PostureState
+    var autoLogin: PostureState
+    var guestAccount: PostureState
+    var exposedServices: [ExposedService]
+    var unexpectedListeners: [ListenerItem]
+    var unsignedApps: [UnsignedApp]
+    var persistenceItems: [PersistenceItem]
+    /// nil when this scan skipped the (expensive, throttled) XProtect log
+    /// query — the collector then keeps its cached XProtect status.
+    var xprotect: XProtectStatus?
+}
+
+// MARK: - SecurityCollector
+
+/// Event-style collector for the security/posture signals. Unlike the
+/// per-tick polled collectors, its work (subprocess shell-outs + filesystem
+/// walks) is too heavy for the 2–5 s tick loop, so it runs its own slow
+/// schedule (every `interval` seconds) on a background task and caches the
+/// result. `Signals` just reads the cached `current`; a fresh scan that
+/// changes anything calls `onChange` so the aggregator can `forceTick()` and
+/// surface a new finding immediately.
+///
+/// All reads are unprivileged and on-device: `fdesetup/csrutil/spctl/defaults`
+/// status reads, `lsof` listener enumeration, and reading the world/user
+/// readable LaunchAgents & LaunchDaemons directories. No entitlements, no root.
+@MainActor
+final class SecurityCollector: ObservableObject {
+    @Published private(set) var current: SecuritySnapshot = .empty
+
+    /// When the most recent scan completed — drives the "last checked" line in
+    /// Settings. Updated on every scan, whether or not the snapshot changed.
+    @Published private(set) var lastScanAt: Date?
+
+    /// Called when a scan changes the snapshot. Wired to
+    /// SignalAggregator.forceTick() so a newly-detected posture issue or
+    /// persistence change doesn't wait for the next periodic tick.
+    var onChange: (() -> Void)?
+
+    private let settings: Settings
+    private let baseline: SecurityBaselineStore
+    private let interval: TimeInterval
+
+    private var task: Task<Void, Never>?
+    private var cancellables: Set<AnyCancellable> = []
+
+    /// XProtect status is read from the unified log, which is comparatively
+    /// expensive, so it runs far less often than the 60s posture scan. We
+    /// cache the last result and only re-query every `xprotectInterval`.
+    private var cachedXProtect: XProtectStatus = .unknown
+    private var lastXProtectAt: Date?
+    private let xprotectInterval: TimeInterval = 6 * 3600  // 6 hours
+
+    init(settings: Settings, baseline: SecurityBaselineStore = SecurityBaselineStore(), interval: TimeInterval = 60) {
+        self.settings = settings
+        self.baseline = baseline
+        self.interval = interval
+    }
+
+    func start() {
+        // React immediately when the user flips the master switch rather than
+        // waiting out the scan interval.
+        settings.$securityMonitoringEnabled
+            .dropFirst()
+            .sink { [weak self] _ in self?.rescan() }
+            .store(in: &cancellables)
+
+        rescan()
+        scheduleLoop()
+    }
+
+    func stop() {
+        task?.cancel()
+        task = nil
+        cancellables.removeAll()
+    }
+
+    /// Force a full immediate re-scan, including the otherwise-throttled
+    /// XProtect read. Wired to the "Re-scan now" button in Settings.
+    func forceRescan() {
+        lastXProtectAt = nil
+        rescan()
+    }
+
+    private func scheduleLoop() {
+        task?.cancel()
+        task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(self.interval * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self.rescan()
+            }
+        }
+    }
+
+    /// Kick off a scan. Heavy I/O runs detached; the result is folded back on
+    /// the main actor. When monitoring is disabled we short-circuit to an
+    /// empty snapshot so every security detector goes quiet.
+    func rescan() {
+        guard settings.securityMonitoringEnabled else {
+            if current != .empty {
+                current = .empty
+                onChange?()
+            }
+            return
+        }
+
+        let known = baseline.knownKeys()
+        let seeded = baseline.isSeeded
+        // NSWorkspace is main-actor-bound, so snapshot the running GUI apps
+        // here and hand the scanner Sendable refs to check off-main.
+        let runningApps = Self.runningGUIApps()
+
+        // Decide here (not in the detached task) whether this scan also does
+        // the throttled XProtect log query, and stamp the time up front so a
+        // burst of 60s scans can't re-trigger it while one is in flight.
+        let now = Date()
+        let includeXProtect = lastXProtectAt.map { now.timeIntervalSince($0) >= xprotectInterval } ?? true
+        if includeXProtect { lastXProtectAt = now }
+
+        Task.detached(priority: .utility) {
+            let raw = SecurityScanner.scan(runningApps: runningApps, includeXProtect: includeXProtect)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.apply(raw, baselineKeys: known, baselineSeeded: seeded)
+            }
+        }
+    }
+
+    private static func runningGUIApps() -> [RunningAppRef] {
+        NSWorkspace.shared.runningApplications.compactMap { app in
+            guard app.activationPolicy == .regular, let url = app.bundleURL else { return nil }
+            return RunningAppRef(
+                name: app.localizedName ?? url.deletingPathExtension().lastPathComponent,
+                bundleID: app.bundleIdentifier ?? url.path,
+                path: url.path
+            )
+        }
+    }
+
+    private func apply(_ raw: RawSecurityScan, baselineKeys: Set<String>, baselineSeeded: Bool) {
+        lastScanAt = Date()
+
+        // Fold in a fresh XProtect result if this scan ran the query; otherwise
+        // carry the cached one forward (it changes at most every 6 hours).
+        if let xp = raw.xprotect { cachedXProtect = xp }
+
+        let allKeys = Set(raw.persistenceItems.map(\.key))
+
+        let newItems: [PersistenceItem]
+        if baselineSeeded {
+            newItems = raw.persistenceItems
+                .filter { !baselineKeys.contains($0.key) }
+                .sorted { $0.key < $1.key }
+        } else {
+            // First run ever: adopt whatever is already installed as the
+            // baseline silently, so we only ever alert on things that appear
+            // *after* the user installed Pulse.
+            baseline.seed(keys: allKeys)
+            newItems = []
+        }
+
+        let snapshot = SecuritySnapshot(
+            fileVault: raw.fileVault,
+            sip: raw.sip,
+            gatekeeper: raw.gatekeeper,
+            firewall: raw.firewall,
+            autoLogin: raw.autoLogin,
+            guestAccount: raw.guestAccount,
+            exposedServices: raw.exposedServices.sorted { $0.port < $1.port },
+            unexpectedListeners: raw.unexpectedListeners.sorted { $0.port < $1.port },
+            unsignedApps: raw.unsignedApps.sorted { $0.bundleID < $1.bundleID },
+            newPersistenceItems: newItems,
+            xprotect: cachedXProtect,
+            scanned: true
+        )
+
+        if snapshot != current {
+            current = snapshot
+            onChange?()
+        }
+    }
+}
+
+// MARK: - Baseline store
+
+/// Remembers which persistence items existed at install time (and any the
+/// user has since acknowledged) so the change-watcher only fires on genuinely
+/// new auto-start entries. Backed by UserDefaults — the set is small (dozens
+/// of strings) and there's no settings table to extend.
+@MainActor
+final class SecurityBaselineStore {
+    private let defaults: UserDefaults
+    private let keysKey = "security.persistenceBaseline"
+    private let seededKey = "security.baselineSeeded"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    var isSeeded: Bool { defaults.bool(forKey: seededKey) }
+
+    func knownKeys() -> Set<String> {
+        Set(defaults.stringArray(forKey: keysKey) ?? [])
+    }
+
+    func seed(keys: Set<String>) {
+        defaults.set(Array(keys), forKey: keysKey)
+        defaults.set(true, forKey: seededKey)
+    }
+}
+
+// MARK: - Scanner (off-main)
+
+/// Pure, nonisolated scanning logic. Everything here is blocking I/O, so it's
+/// only ever called from a detached task — never on the main actor.
+enum SecurityScanner {
+    static func scan(runningApps: [RunningAppRef], includeXProtect: Bool) -> RawSecurityScan {
+        let listeners = listeners()
+        return RawSecurityScan(
+            fileVault: fileVaultState(),
+            sip: sipState(),
+            gatekeeper: gatekeeperState(),
+            firewall: firewallState(),
+            autoLogin: autoLoginState(),
+            guestAccount: guestAccountState(),
+            exposedServices: listeners.exposed,
+            unexpectedListeners: listeners.unexpected,
+            unsignedApps: unsignedApps(runningApps),
+            persistenceItems: persistenceItems(),
+            xprotect: includeXProtect ? xprotectStatus() : nil
+        )
+    }
+
+    // MARK: Posture
+
+    private static func fileVaultState() -> PostureState {
+        guard let out = Shell.run("/usr/bin/fdesetup", ["isactive"]) else { return .unknown }
+        let t = out.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if t == "true" { return .ok }
+        if t == "false" { return .problem }
+        return .unknown
+    }
+
+    private static func sipState() -> PostureState {
+        guard let out = Shell.run("/usr/bin/csrutil", ["status"])?.lowercased() else { return .unknown }
+        if out.contains("disabled") { return .problem }
+        if out.contains("enabled") { return .ok }
+        return .unknown
+    }
+
+    private static func gatekeeperState() -> PostureState {
+        guard let out = Shell.run("/usr/sbin/spctl", ["--status"])?.lowercased() else { return .unknown }
+        if out.contains("assessments disabled") { return .problem }
+        if out.contains("assessments enabled") { return .ok }
+        return .unknown
+    }
+
+    private static func firewallState() -> PostureState {
+        // "...(State = 0)" off, "(State = 1)" on, "(State = 2)" block-all.
+        guard let out = Shell.run("/usr/libexec/ApplicationFirewall/socketfilterfw", ["--getglobalstate"]) else {
+            return .unknown
+        }
+        if out.contains("State = 0") { return .problem }
+        if out.contains("State = 1") || out.contains("State = 2") { return .ok }
+        return .unknown
+    }
+
+    private static func autoLoginState() -> PostureState {
+        // `defaults read … autoLoginUser` prints the username when set and
+        // exits non-zero (empty stdout) when the key is absent.
+        let out = Shell.run("/usr/bin/defaults",
+            ["read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"])
+        guard let out else { return .ok }
+        let t = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? .ok : .problem
+    }
+
+    private static func guestAccountState() -> PostureState {
+        let out = Shell.run("/usr/bin/defaults",
+            ["read", "/Library/Preferences/com.apple.loginwindow", "GuestEnabled"])
+        guard let out else { return .ok }
+        let t = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t == "1" ? .problem : .ok
+    }
+
+    // MARK: Exposed sharing services
+
+    /// Well-known sharing/remote-access ports we care about. Deliberately
+    /// narrow: a general "anything listening on 0.0.0.0" check is far too
+    /// noisy on a developer's Mac (every local dev server). These are the
+    /// services a user toggles in System Settings → General → Sharing.
+    private static let sharingPorts: [Int: String] = [
+        22: "Remote Login (SSH)",
+        5900: "Screen Sharing",
+        3283: "Remote Management",
+        445: "File Sharing (SMB)",
+        548: "File Sharing (AFP)"
+    ]
+
+    /// lsof truncates COMMAND to ~9 chars. These are the Apple daemons that
+    /// legitimately listen on all interfaces (AirPlay/Continuity/Bonjour/etc.)
+    /// — matched by prefix so we don't flag them as "unexpected".
+    private static let listenerAllowlist: [String] = [
+        "rapportd", "ControlCe", "sharingd", "mDNSRespo", "identitys",
+        "remoted", "AirPlayXP", "nehelper", "configd", "launchd",
+        "apsd", "netbiosd", "rapportd", "trustd", "akd"
+    ]
+
+    /// Enumerate all listening TCP sockets once and split them into the
+    /// known sharing services (high-signal, handled by ExposedServiceDetector)
+    /// and everything else bound externally that isn't allowlisted (noisier,
+    /// handled by UnexpectedListenerDetector with per-item muting).
+    private static func listeners() -> (exposed: [ExposedService], unexpected: [ListenerItem]) {
+        guard let out = Shell.run("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"]) else {
+            return ([], [])
+        }
+        var exposed: [Int: ExposedService] = [:]
+        var unexpected: [String: ListenerItem] = [:]
+        for line in out.split(separator: "\n").dropFirst() {
+            // lsof formats the NAME column as "<addr> (LISTEN)", e.g.
+            // "*:22 (LISTEN)" or "127.0.0.1:5000 (LISTEN)". Tokenizing on
+            // whitespace, COMMAND is token 0 and the address is the token
+            // right before "(LISTEN)".
+            let tokens = line.split(separator: " ").map(String.init)
+            guard let listenIdx = tokens.lastIndex(of: "(LISTEN)"), listenIdx > 0,
+                  let command = tokens.first else { continue }
+            let name = tokens[listenIdx - 1]
+            guard let port = listeningPort(from: name), isExternalBind(name) else { continue }
+
+            if let svc = sharingPorts[port] {
+                exposed[port] = ExposedService(name: svc, port: port)
+            } else if !listenerAllowlist.contains(where: { command.hasPrefix($0) }) {
+                unexpected["\(command):\(port)"] = ListenerItem(process: command, port: port)
+            }
+        }
+        return (Array(exposed.values), Array(unexpected.values))
+    }
+
+    // MARK: Unsigned apps
+
+    /// Flag running GUI apps that have *no* code signature. We deliberately
+    /// check only for the unsigned case via SecCodeCopySigningInformation
+    /// (cheap — no hash verification), rather than running the expensive deep
+    /// validity check on every signed app each scan. Ad-hoc-signed apps (like
+    /// Pulse itself) DO have a signature, so they're correctly not flagged.
+    private static func unsignedApps(_ apps: [RunningAppRef]) -> [UnsignedApp] {
+        apps.compactMap { app in
+            isUnsigned(path: app.path)
+                ? UnsignedApp(name: app.name, bundleID: app.bundleID, path: app.path)
+                : nil
+        }
+    }
+
+    private static func isUnsigned(path: String) -> Bool {
+        let url = URL(fileURLWithPath: path) as CFURL
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url, [], &staticCode) == errSecSuccess,
+              let code = staticCode else {
+            return false  // can't evaluate → don't flag (stay calm)
+        }
+        var info: CFDictionary?
+        let status = SecCodeCopySigningInformation(code, SecCSFlags(rawValue: 0), &info)
+        if status == errSecCSUnsigned { return true }
+        guard status == errSecSuccess, let dict = info as? [String: Any] else {
+            return false  // unknown failure → don't flag
+        }
+        // A signed binary always carries an identifier; its absence means
+        // there's no signature.
+        return dict[kSecCodeInfoIdentifier as String] == nil
+    }
+
+    private static func listeningPort(from name: String) -> Int? {
+        guard let colon = name.lastIndex(of: ":") else { return nil }
+        return Int(name[name.index(after: colon)...])
+    }
+
+    /// True when the bind address is reachable from off-machine — i.e. not
+    /// loopback-only. `*` and `0.0.0.0` / `[::]` are wildcard binds.
+    private static func isExternalBind(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        if lower.hasPrefix("127.0.0.1:") || lower.hasPrefix("[::1]:") || lower.hasPrefix("localhost:") {
+            return false
+        }
+        return true
+    }
+
+    // MARK: Persistence items
+
+    private static func persistenceItems() -> [PersistenceItem] {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let locations: [(String, URL)] = [
+            ("User LaunchAgents", home.appendingPathComponent("Library/LaunchAgents", isDirectory: true)),
+            ("LaunchAgents", URL(fileURLWithPath: "/Library/LaunchAgents", isDirectory: true)),
+            ("LaunchDaemons", URL(fileURLWithPath: "/Library/LaunchDaemons", isDirectory: true))
+        ]
+
+        var items: [PersistenceItem] = []
+        for (locName, dir) in locations {
+            guard let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { continue }
+            for url in entries where url.pathExtension == "plist" {
+                let fileName = url.lastPathComponent
+                let key = "\(locName)|\(fileName)"
+                let (label, program) = readPlist(url)
+                items.append(PersistenceItem(
+                    key: key,
+                    label: label ?? fileName,
+                    path: program ?? url.path,
+                    location: locName
+                ))
+            }
+        }
+        return items
+    }
+
+    /// Pull the human label and the launched program path out of a launchd
+    /// plist. Tolerant of missing keys — both are optional.
+    private static func readPlist(_ url: URL) -> (label: String?, program: String?) {
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let dict = obj as? [String: Any] else {
+            return (nil, nil)
+        }
+        let label = dict["Label"] as? String
+        var program = dict["Program"] as? String
+        if program == nil, let args = dict["ProgramArguments"] as? [String], let first = args.first {
+            program = first
+        }
+        return (label, program)
+    }
+
+    // MARK: XProtect Remediator history
+
+    /// Surface what Apple's background malware scanner (XProtect Remediator)
+    /// has done — last run time and anything it flagged — by reading the
+    /// unified log. Each scanner plugin emits an `XPEvent.structured` event
+    /// whose message is JSON like {"status_message":"NoThreatDetected",
+    /// "caused_by":[],...}. A non-"NoThreatDetected" status or a non-empty
+    /// `caused_by` means it acted on something. Reading the log needs an admin
+    /// account (no password prompt); a non-admin returns nothing.
+    private static func xprotectStatus() -> XProtectStatus {
+        // Version/status come from the `xprotect` CLI (no root) — works
+        // regardless of whether the log query below succeeds.
+        let info = xprotectDefinitions()
+
+        let predicate = "subsystem == \"com.apple.XProtectFramework.PluginAPI\" "
+            + "AND category == \"XPEvent.structured\""
+        // Process passes args directly (no shell), so the predicate's quotes
+        // need no escaping here.
+        guard let out = Shell.run("/usr/bin/log",
+            ["show", "--predicate", predicate, "--last", "30d", "--style", "ndjson"],
+            timeout: 30) else {
+            return XProtectStatus(
+                available: false, lastScan: nil, detections: [],
+                definitionsVersion: info.version, definitionsDate: info.date,
+                automaticScans: info.autoScans
+            )
+        }
+
+        var lastScan: Date?
+        var detections: [XProtectDetection] = []
+
+        for line in out.split(separator: "\n") {
+            guard let data = line.data(using: .utf8),
+                  let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            guard let tsString = event["timestamp"] as? String,
+                  let date = parseLogDate(tsString) else { continue }
+
+            if date > (lastScan ?? .distantPast) { lastScan = date }
+
+            let imagePath = (event["processImagePath"] as? String)
+                ?? (event["senderImagePath"] as? String) ?? ""
+            let plugin = pluginName(from: imagePath)
+
+            guard let message = event["eventMessage"] as? String,
+                  let msgData = message.data(using: .utf8),
+                  let inner = try? JSONSerialization.jsonObject(with: msgData) as? [String: Any] else { continue }
+
+            // A scan that found nothing leaves `caused_by` empty — the
+            // status_message varies harmlessly by plugin ("NoThreatDetected"
+            // for most, "Success" for MRTv3/Conductor). Only a NON-empty
+            // caused_by means the scanner actually acted on a threat, so that
+            // (not the status string) is what we key the alert on.
+            let causedBy = (inner["caused_by"] as? [Any]) ?? []
+            guard !causedBy.isEmpty else { continue }
+            let status = (inner["status_message"] as? String) ?? ""
+            detections.append(XProtectDetection(
+                plugin: plugin,
+                status: status.isEmpty ? "Threat remediated" : status,
+                date: date
+            ))
+        }
+
+        return XProtectStatus(
+            available: true, lastScan: lastScan, detections: detections,
+            definitionsVersion: info.version, definitionsDate: info.date,
+            automaticScans: info.autoScans
+        )
+    }
+
+    /// Read XProtect version, install date, and auto-scan status. Prefers the
+    /// `xprotect` CLI (macOS 15+, no root for version/status); falls back to
+    /// the world-readable bundle for the version on older systems.
+    private static func xprotectDefinitions() -> (version: String?, date: Date?, autoScans: Bool?) {
+        var version: String?
+        var date: Date?
+        var autoScans: Bool?
+
+        // `xprotect version` → "Version: 5347 Installed: 2026-06-05 17:05:00 +0000"
+        if let out = Shell.run("/usr/bin/xprotect", ["version"]) {
+            if let r = out.range(of: "Version:") {
+                version = out[r.upperBound...]
+                    .trimmingCharacters(in: .whitespaces)
+                    .split(separator: " ").first.map(String.init)
+            }
+            if let r = out.range(of: "Installed:") {
+                let raw = out[r.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+                let f = DateFormatter()
+                f.locale = Locale(identifier: "en_US_POSIX")
+                f.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
+                date = f.date(from: raw)
+            }
+        }
+
+        // Fallback: read the version from the bundle meta plist.
+        if version == nil {
+            let base = "/Library/Apple/System/Library/CoreServices/XProtect.bundle"
+            let metaURL = URL(fileURLWithPath: base + "/Contents/Resources/XProtect.meta.plist")
+            if let data = try? Data(contentsOf: metaURL),
+               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] {
+                if let v = plist["Version"] as? Int { version = String(v) }
+                else if let v = plist["Version"] as? String { version = v }
+            }
+            if date == nil {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: base)
+                date = attrs?[.modificationDate] as? Date
+            }
+        }
+
+        // `xprotect status --json` → {"xprotect_background_scans":true,...}
+        if let st = Shell.run("/usr/bin/xprotect", ["status", "--json"]),
+           let d = st.data(using: .utf8),
+           let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+            autoScans = (j["xprotect_background_scans"] as? Bool) ?? (j["xprotect_launch_scans"] as? Bool)
+        }
+
+        return (version, date, autoScans)
+    }
+
+    private static func pluginName(from imagePath: String) -> String {
+        let last = (imagePath as NSString).lastPathComponent
+        if last.hasPrefix("XProtectRemediator") {
+            return String(last.dropFirst("XProtectRemediator".count))
+        }
+        return last.isEmpty ? "XProtect" : last
+    }
+
+    private static func parseLogDate(_ s: String) -> Date? {
+        // Timestamps look like "2026-06-26 09:26:05.026280-0700". Drop the
+        // fractional seconds and parse the rest with a fixed POSIX formatter.
+        let cleaned = s.replacingOccurrences(
+            of: #"\.\d+"#, with: "", options: .regularExpression)
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd HH:mm:ssZ"
+        return fmt.date(from: cleaned)
+    }
+}
+
+// MARK: - Shell helper
+
+/// Minimal blocking subprocess runner for the read-only status tools. Returns
+/// stdout as a string, or nil if the process couldn't launch. A watchdog
+/// terminates anything that runs longer than `timeout` so a wedged tool can't
+/// stall the scan task forever.
+///
+/// Not main-actor isolated by design — only called from the detached scan.
+enum Shell {
+    static func run(_ path: String, _ args: [String], timeout: TimeInterval = 5) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: path) else { return nil }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: path)
+        proc.arguments = args
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = Pipe()
+
+        do {
+            try proc.run()
+        } catch {
+            return nil
+        }
+
+        let watchdog = DispatchWorkItem {
+            if proc.isRunning { proc.terminate() }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+
+        // Read before waiting so a large output can't deadlock against the
+        // pipe buffer; EOF arrives when the process exits or is terminated.
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        watchdog.cancel()
+        return String(data: data, encoding: .utf8)
+    }
+}

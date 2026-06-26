@@ -1,0 +1,284 @@
+import Foundation
+
+// The security detectors all read from `signals.security` (a SecuritySnapshot
+// produced by SecurityCollector) and emit `.security`-category incidents.
+// They follow the same contract as the system detectors: pure function of
+// signals, stable signature for dedup/mute, at most one incident per evaluate.
+//
+// Everything here is gated on `signals.security.scanned` so nothing fires
+// before the first scan completes or while monitoring is switched off (the
+// collector hands back an empty, unscanned snapshot in that case).
+
+// MARK: - Posture
+
+/// Generic single-fact posture detector. Each instance watches one field of
+/// the snapshot and fires when it reads `.problem`. We use one instance per
+/// check (rather than one mega-detector) so that, e.g., "SIP disabled" and
+/// "auto-login enabled" can be two independent cards the user mutes separately
+/// — exactly how the system detectors already behave.
+@MainActor
+final class PostureDetector: Detector {
+    let id: String
+
+    private let read: (SecuritySnapshot) -> PostureState
+    private let severity: IncidentSeverity
+    private let templateKey: String
+    private let signature: String
+
+    init(
+        id: String,
+        severity: IncidentSeverity,
+        templateKey: String,
+        signature: String,
+        read: @escaping (SecuritySnapshot) -> PostureState
+    ) {
+        self.id = id
+        self.severity = severity
+        self.templateKey = templateKey
+        self.signature = signature
+        self.read = read
+    }
+
+    func evaluate(signals: Signals) -> Incident? {
+        guard signals.security.scanned else { return nil }
+        guard read(signals.security) == .problem else { return nil }
+        return Incident(
+            category: .security,
+            severity: severity,
+            detectorID: id,
+            templateKey: templateKey,
+            signature: signature,
+            startedAt: signals.timestamp
+        )
+    }
+
+    /// The posture checks we surface by default. SIP/Gatekeeper disabled are
+    /// rare + serious (red); FileVault off, firewall off, and auto-login/guest
+    /// enabled are "worth knowing" (yellow). The firewall ships *off* on stock
+    /// macOS so it's common — but it's surfaced (per user request) at watch
+    /// level with per-item mute for those who keep it off on purpose.
+    static func defaults() -> [Detector] {
+        [
+            PostureDetector(
+                id: "security.filevault",
+                severity: .watch,
+                templateKey: "security.filevaultOff",
+                signature: "security:filevault:off",
+                read: { $0.fileVault }
+            ),
+            PostureDetector(
+                id: "security.sip",
+                severity: .issue,
+                templateKey: "security.sipOff",
+                signature: "security:sip:off",
+                read: { $0.sip }
+            ),
+            PostureDetector(
+                id: "security.gatekeeper",
+                severity: .issue,
+                templateKey: "security.gatekeeperOff",
+                signature: "security:gatekeeper:off",
+                read: { $0.gatekeeper }
+            ),
+            PostureDetector(
+                id: "security.firewall",
+                severity: .watch,
+                templateKey: "security.firewallOff",
+                signature: "security:firewall:off",
+                read: { $0.firewall }
+            ),
+            PostureDetector(
+                id: "security.autologin",
+                severity: .watch,
+                templateKey: "security.autoLoginOn",
+                signature: "security:autologin:on",
+                read: { $0.autoLogin }
+            ),
+            PostureDetector(
+                id: "security.guest",
+                severity: .watch,
+                templateKey: "security.guestOn",
+                signature: "security:guest:on",
+                read: { $0.guestAccount }
+            )
+        ]
+    }
+}
+
+// MARK: - Persistence change-watch
+
+/// Fires when a new LaunchAgent / LaunchDaemon appears that wasn't part of the
+/// baseline captured at install time. This is the KnockKnock-style core: the
+/// value is in flagging the *change*, not listing every startup item. Watch
+/// severity, because new auto-start entries are usually a legitimate installer
+/// — but "something new will now run at login" is worth a glance.
+///
+/// One incident *per* new item, each with a per-item signature, so "Always
+/// ignore this" permanently silences that specific startup item (and only it)
+/// — which doubles as a per-item baseline acknowledgement.
+@MainActor
+final class PersistenceChangeDetector: MultiDetector {
+    let id = "security.persistenceNew"
+
+    func evaluateAll(signals: Signals) -> [Incident] {
+        guard signals.security.scanned else { return [] }
+        return signals.security.newPersistenceItems.map { item in
+            Incident(
+                category: .security,
+                severity: .watch,
+                detectorID: id,
+                templateKey: "security.persistenceNew",
+                context: [
+                    "name": item.label,
+                    "path": item.path,
+                    "location": item.location
+                ],
+                signature: "security:persistence:\(djb2(item.key))",
+                startedAt: signals.timestamp
+            )
+        }
+    }
+}
+
+// MARK: - Exposed sharing services
+
+/// Fires when a remote-access service (SSH, Screen Sharing, File Sharing, …)
+/// is listening on a non-loopback interface. Severity escalates to red when
+/// you're simultaneously on an insecure/open Wi-Fi network with no VPN —
+/// reusing the same risk signal as InsecureNetworkDetector — because "SSH is
+/// open on this coffee-shop network" is the genuinely dangerous case.
+///
+/// One incident per service (keyed on the port, stable across network moves)
+/// so muting "Screen Sharing exposed" doesn't also mute "SSH exposed", and so
+/// a Wi-Fi change that flips the severity refreshes the same card rather than
+/// firing a fresh banner each time.
+@MainActor
+final class ExposedServiceDetector: MultiDetector {
+    let id = "security.exposedService"
+
+    func evaluateAll(signals: Signals) -> [Incident] {
+        guard signals.security.scanned else { return [] }
+        let services = signals.security.exposedServices
+        guard !services.isEmpty else { return [] }
+
+        let onRiskyNetwork = signals.wifi.hasWiFiLink
+            && signals.wifi.security.isInsecure
+            && !signals.wifi.vpnActive
+
+        return services.map { svc in
+            Incident(
+                category: .security,
+                severity: onRiskyNetwork ? .issue : .watch,
+                detectorID: id,
+                templateKey: onRiskyNetwork ? "security.exposedServiceRisky" : "security.exposedService",
+                context: ["services": svc.name],
+                signature: "security:exposed:\(svc.port)",
+                startedAt: signals.timestamp
+            )
+        }
+    }
+}
+
+// MARK: - Unsigned running apps
+
+/// Fires for each running GUI app with no code signature at all. Noisier than
+/// the posture checks (some legitimate hand-built / older tools are unsigned),
+/// which is exactly why it emits one card per app with a per-app signature:
+/// "Always ignore this" permanently whitelists that specific app. Ad-hoc and
+/// Developer-ID signed apps are NOT flagged — only the truly unsigned.
+@MainActor
+final class UnsignedAppDetector: MultiDetector {
+    let id = "security.unsignedApp"
+
+    func evaluateAll(signals: Signals) -> [Incident] {
+        guard signals.security.scanned else { return [] }
+        return signals.security.unsignedApps.map { app in
+            Incident(
+                category: .security,
+                severity: .watch,
+                detectorID: id,
+                templateKey: "security.unsignedApp",
+                context: ["name": app.name, "path": app.path],
+                signature: "security:unsigned:\(djb2(app.bundleID))",
+                startedAt: signals.timestamp
+            )
+        }
+    }
+}
+
+// MARK: - Unexpected network listeners
+
+/// Fires for each process listening on a non-loopback port that isn't a known
+/// sharing service and isn't an allowlisted Apple daemon — "something is
+/// accepting connections from the network that we don't recognize". Often a
+/// local dev server, hence one card per process+port with a per-item
+/// signature so the user can permanently ignore the ones they run on purpose.
+@MainActor
+final class UnexpectedListenerDetector: MultiDetector {
+    let id = "security.unexpectedListener"
+
+    func evaluateAll(signals: Signals) -> [Incident] {
+        guard signals.security.scanned else { return [] }
+        return signals.security.unexpectedListeners.map { listener in
+            Incident(
+                category: .security,
+                severity: .watch,
+                detectorID: id,
+                templateKey: "security.unexpectedListener",
+                context: ["process": listener.process, "port": String(listener.port)],
+                signature: "security:listener:\(listener.process):\(listener.port)",
+                startedAt: signals.timestamp
+            )
+        }
+    }
+}
+
+// MARK: - XProtect Remediator history
+
+/// Surfaces what Apple's own background malware scanner found — data macOS
+/// collects but never shows the user. One card per detection/remediation
+/// event (watch severity: macOS has usually already handled it, but you
+/// deserve to know it happened), each independently ignorable.
+@MainActor
+final class XProtectDetectionDetector: MultiDetector {
+    let id = "security.xprotect"
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    func evaluateAll(signals: Signals) -> [Incident] {
+        guard signals.security.scanned else { return [] }
+        return signals.security.xprotect.detections.map { d in
+            Incident(
+                category: .security,
+                severity: .watch,
+                detectorID: id,
+                templateKey: "security.xprotectDetection",
+                context: [
+                    "plugin": d.plugin,
+                    "status": d.status,
+                    "when": Self.dateFormatter.string(from: d.date)
+                ],
+                signature: "security:xprotect:\(djb2(d.key))",
+                startedAt: signals.timestamp
+            )
+        }
+    }
+}
+
+// MARK: - Helpers
+
+/// Small deterministic string hash so a set-of-items signature stays short and
+/// stable across runs. (Swift's `Hashable` is per-process randomized, which
+/// would break signature continuity — hence rolling our own.)
+private func djb2(_ s: String) -> String {
+    var hash: UInt64 = 5381
+    for byte in s.utf8 {
+        hash = (hash &* 33) &+ UInt64(byte)
+    }
+    return String(hash, radix: 36)
+}

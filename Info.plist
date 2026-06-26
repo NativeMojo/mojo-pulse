@@ -26,5 +26,11 @@
     <string>Mojo Pulse uses your location to read the current Wi-Fi network name so it can warn you when you connect to an open or insecure Wi-Fi network without a VPN. Your location is never sent off the device.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Mojo Pulse uses your location to read the current Wi-Fi network name so it can warn you when you connect to an open or insecure Wi-Fi network without a VPN. Your location is never sent off the device.</string>
+    <key>SUFeedURL</key>
+    <string>https://github.com/NativeMojo/mojo-pulse/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>REPLACE_WITH_SPARKLE_PUBLIC_ED_KEY</string>
+    <key>SUEnableAutomaticChecks</key>
+    <false/>
 </dict>
 </plist>

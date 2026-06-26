@@ -23,6 +23,8 @@ enum IncidentCategory: String, Sendable, Codable {
     case thermal
     case swap
     case disk
+    case app      // app crashes / hangs
+    case system   // kernel panics, unexpected restarts
 
     /// SF Symbol shown on the incident card.
     var systemImage: String {
@@ -35,6 +37,8 @@ enum IncidentCategory: String, Sendable, Codable {
         case .thermal: return "thermometer.high"
         case .swap: return "arrow.left.arrow.right"
         case .disk: return "internaldrive"
+        case .app: return "exclamationmark.triangle"
+        case .system: return "exclamationmark.octagon"
         }
     }
 
@@ -50,6 +54,8 @@ enum IncidentCategory: String, Sendable, Codable {
         case .thermal: return "Hot"
         case .swap: return "Swap"
         case .disk: return "Disk"
+        case .app: return "Crash"
+        case .system: return "Sys"
         }
     }
 }
@@ -132,6 +138,9 @@ struct Signals: Sendable {
     let reachability: ReachabilityMonitor.State
     let system: SystemSnapshot
     let wifi: WiFiSnapshot
+    let security: SecuritySnapshot
+    let processes: ProcessSnapshot
+    let events: SystemEventsSnapshot
 }
 
 /// Our own enum mirroring ProcessInfo.ThermalState so detectors don't
@@ -191,6 +200,33 @@ struct IncidentRecord: Identifiable, Sendable, Hashable {
     let startedAt: Date
     let endedAt: Date?
 
+    /// The attribution detail captured when the incident opened (e.g. the
+    /// process name behind a runaway, the SSID, the exposed service). Persisted
+    /// so a *past* event can still say which app/thing it was about.
+    let context: [String: String]
+
+    init(
+        id: UUID,
+        signature: String,
+        category: IncidentCategory,
+        severity: IncidentSeverity,
+        detectorID: String,
+        templateKey: String,
+        startedAt: Date,
+        endedAt: Date?,
+        context: [String: String] = [:]
+    ) {
+        self.id = id
+        self.signature = signature
+        self.category = category
+        self.severity = severity
+        self.detectorID = detectorID
+        self.templateKey = templateKey
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.context = context
+    }
+
     var isActive: Bool { endedAt == nil }
 
     /// Duration the incident was active. For still-active incidents, measured
@@ -199,22 +235,41 @@ struct IncidentRecord: Identifiable, Sendable, Hashable {
         (endedAt ?? now).timeIntervalSince(startedAt)
     }
 
-    /// Title rendered through the template registry — same copy a live
-    /// incident would get, so history and live UI look consistent. Uses an
-    /// empty context, which is fine because the registered templates
-    /// already degrade gracefully when attribution is missing.
-    var title: String {
-        let synthesized = Incident(
+    /// Full rendered copy (title / what / why / action) — same as a live
+    /// incident, now using the persisted context so a historical event reads
+    /// exactly as it did when it fired ("…pulsespin has been using 100% CPU…").
+    var copy: IncidentCopy {
+        IncidentTemplates.render(Incident(
             id: id,
             category: category,
             severity: severity,
             detectorID: detectorID,
             templateKey: templateKey,
-            context: [:],
+            context: context,
             signature: signature,
             startedAt: startedAt,
             endedAt: endedAt
+        ))
+    }
+
+    var title: String { copy.title }
+}
+
+extension IncidentRecord {
+    /// Bridge a live `Incident` into a record, so the active incident cards in
+    /// the popover can open the very same detail window the Recent list uses
+    /// (which is record-based). An active incident simply has `endedAt == nil`.
+    init(_ incident: Incident) {
+        self.init(
+            id: incident.id,
+            signature: incident.signature,
+            category: incident.category,
+            severity: incident.severity,
+            detectorID: incident.detectorID,
+            templateKey: incident.templateKey,
+            startedAt: incident.startedAt,
+            endedAt: incident.endedAt,
+            context: incident.context
         )
-        return IncidentTemplates.render(synthesized).title
     }
 }
