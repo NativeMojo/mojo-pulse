@@ -412,20 +412,51 @@ struct PopoverView: View {
         tile(icon: "cpu", label: "CPU",
              value: bigValue("\(Int(system.current.cpuPercent.rounded()))%"),
              firing: firingColor(for: .cpu),
-             tap: { onShowDetail(.cpu) }) {
+             tap: { onShowProcesses() }) {
             MiniSparkline(values: spark(metricHistory.cpu), color: SeverityColors.info)
         }
     }
 
     private var memoryTile: some View {
-        let used = Double(system.current.memoryUsedBytes) / 1_073_741_824
-        let total = Double(system.current.memoryTotalBytes) / 1_073_741_824
+        let usedBytes = Double(system.current.memoryUsedBytes)
+        let totalBytes = Double(system.current.memoryTotalBytes)
+        let usedRatio = totalBytes > 0 ? usedBytes / totalBytes : 0
+        let pct = Int((usedRatio * 100).rounded())
+        let swapBytes = system.current.swapUsedBytes
+        // Clean glance: "% used" colored by pressure (raw GB lives in the detail,
+        // not the tile). macOS keeps RAM near-full by design, so the *color* — not
+        // the fill — is the health signal: green at 72% means "full is fine."
+        // The swap bar appears only when actually swapping; on a RAM-rich Mac swap
+        // is usually zero, so a permanent empty bar would be noise — its appearance
+        // IS the "memory genuinely strained" signal. Tap → Top Processes ("what's
+        // using it"); trends + GB/free/swap depth → the Live charts link.
         return tile(icon: "memorychip", label: "Memory",
-             value: bigValue(String(format: "%.0f", used),
-                             unit: total > 0 ? "/\(String(format: "%.0f", total))" : nil),
+             value: bigValue("\(pct)%"),
              firing: firingColor(for: .memory),
-             tap: { onShowDetail(.memory) }) {
-            MiniSparkline(values: spark(metricHistory.memoryUsed), color: SeverityColors.good)
+             tap: { onShowProcesses() }) {
+            VStack(alignment: .trailing, spacing: 5) {
+                usageBar(usedRatio, memoryPressureColor)
+                    .help("Memory \(pct)% used · pressure \(system.current.memoryPressure.rawValue.capitalized)")
+                if swapBytes > 0, totalBytes > 0 {
+                    usageBar(min(Double(swapBytes) / totalBytes, 1), SeverityColors.watch)
+                        .help("Swap in use: \(memSwapText(swapBytes))")
+                }
+            }
+        }
+    }
+
+    private func memSwapText(_ bytes: UInt64) -> String {
+        let p = sizeParts(bytes)
+        return "\(p.0) \(p.1)"
+    }
+
+    /// Memory pressure → tile accent. Pressure (not raw usage) is the health
+    /// signal, so it drives the usage bar's color.
+    private var memoryPressureColor: Color {
+        switch system.current.memoryPressure {
+        case .normal: return SeverityColors.good
+        case .warn: return SeverityColors.watch
+        case .critical: return SeverityColors.issue
         }
     }
 
