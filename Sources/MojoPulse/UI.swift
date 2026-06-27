@@ -1176,6 +1176,8 @@ struct PopoverView: View {
 /// and then gets out of the way — the same restraint the app itself practices.
 /// Opened from the popover footer.
 struct AboutView: View {
+    private static let appIcon: NSImage = NSImage(named: "AppIcon") ?? NSApplication.shared.applicationIconImage
+
     private var versionLine: String {
         let info = Bundle.main.infoDictionary
         let v = info?["CFBundleShortVersionString"] as? String ?? "—"
@@ -1187,13 +1189,14 @@ struct AboutView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 11) {
-                Circle()
-                    .fill(Color(red: 0.30, green: 0.72, blue: 0.40))
-                    .frame(width: 14, height: 14)
-                VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 12) {
+                Image(nsImage: Self.appIcon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 54, height: 54)
+                VStack(alignment: .leading, spacing: 2) {
                     Text("Mojo Pulse")
-                        .font(.title3.weight(.semibold))
+                        .font(.title2.weight(.semibold))
                     Text("A calm companion for your Mac")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1472,12 +1475,15 @@ struct ProcessesView: View {
     @ObservedObject var processes: ProcessCollector
     @ObservedObject var system: SystemCollector
 
+    @State private var selected: ProcInfo?
+
     private struct Slice: Identifiable {
         let id: String
         let name: String
         let value: Double
         let display: String
         let color: Color
+        var proc: ProcInfo? = nil
     }
 
     private static let palette: [Color] = [.blue, .green, .orange, .purple, .pink]
@@ -1517,6 +1523,28 @@ struct ProcessesView: View {
         }
         .padding(20)
         .frame(width: 440)
+        .sheet(item: $selected) { ProcessDetailView(proc: $0) }
+    }
+
+    /// One legend entry. Real processes (those carrying a `proc`) are clickable
+    /// to open the detail sheet; aggregate slices ("Other", "Free") are not.
+    /// Layout is identical either way — only a tap target + link cursor are added.
+    @ViewBuilder
+    private func legendRow(_ s: Slice) -> some View {
+        let row = HStack(spacing: 8) {
+            Circle().fill(s.color).frame(width: 8, height: 8)
+            Text(s.name).font(.caption).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 6)
+            Text(s.display).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        if let proc = s.proc {
+            row
+                .contentShape(Rectangle())
+                .pointerStyle(.link)
+                .onTapGesture { selected = proc }
+        } else {
+            row
+        }
     }
 
     @ViewBuilder
@@ -1556,12 +1584,7 @@ struct ProcessesView: View {
 
                     VStack(alignment: .leading, spacing: 5) {
                         ForEach(slices) { s in
-                            HStack(spacing: 8) {
-                                Circle().fill(s.color).frame(width: 8, height: 8)
-                                Text(s.name).font(.caption).lineLimit(1).truncationMode(.middle)
-                                Spacer(minLength: 6)
-                                Text(s.display).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            }
+                            legendRow(s)
                         }
                     }
                 }
@@ -1584,7 +1607,7 @@ struct ProcessesView: View {
         guard !top.isEmpty else { return [] }
         var slices = top.enumerated().map { i, p in
             Slice(id: "cpu-\(p.pid)", name: p.name, value: max(p.cpuPercent, 0.1),
-                  display: p.cpuDisplay, color: Self.palette[i % Self.palette.count])
+                  display: p.cpuDisplay, color: Self.palette[i % Self.palette.count], proc: p)
         }
         let other = processes.current.totalCPUPercent - top.reduce(0) { $0 + $1.cpuPercent }
         if other > 1 {
@@ -1599,7 +1622,7 @@ struct ProcessesView: View {
         guard !top.isEmpty else { return [] }
         var slices = top.enumerated().map { i, p in
             Slice(id: "mem-\(p.pid)", name: p.name, value: Double(p.memoryBytes),
-                  display: p.memoryDisplay, color: Self.palette[i % Self.palette.count])
+                  display: p.memoryDisplay, color: Self.palette[i % Self.palette.count], proc: p)
         }
         let used = system.current.memoryUsedBytes
         let total = system.current.memoryTotalBytes
@@ -1620,6 +1643,141 @@ struct ProcessesView: View {
     private func gb(_ bytes: UInt64) -> String {
         let g = Double(bytes) / 1_073_741_824
         return g >= 1 ? String(format: "%.1f GB", g) : String(format: "%.0f MB", Double(bytes) / 1_048_576)
+    }
+}
+
+// MARK: - Process detail
+
+/// On-click detail for a process from Top Processes: what it is, where it's
+/// running from, who launched it, and whether it's signed. Fetches the extended
+/// fields lazily so opening it never slows the live sampler.
+struct ProcessDetailView: View {
+    let proc: ProcInfo
+    @Environment(\.dismiss) private var dismiss
+    @State private var detail: ProcessDetail?
+    @State private var loading = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+            metrics
+            Divider()
+            if loading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Gathering details…").font(.callout).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 10)
+            } else if let d = detail {
+                infoRow("Running from", d.path, mono: true)
+                infoRow("Command", d.command, mono: true)
+                infoRow("Launched by", launchedBy(d))
+                infoRow("Started", d.started)
+                infoRow("Signed by", d.signature)
+            }
+            Spacer(minLength: 0)
+            footer
+        }
+        .padding(20)
+        .frame(width: 470)
+        .task { await load() }
+    }
+
+    private var header: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "shippingbox")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(proc.name)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1).truncationMode(.middle)
+                Text(verbatim: "PID \(proc.pid)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    private var metrics: some View {
+        HStack(spacing: 10) {
+            metric("CPU", proc.cpuDisplay)
+            metric("Memory", proc.memoryDisplay)
+            if let d = detail, d.user != "—" { metric("User", d.user) }
+        }
+    }
+
+    private func metric(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+                .textCase(.uppercase).tracking(0.3)
+            Text(value).font(.system(.body, design: .rounded).weight(.semibold))
+                .lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
+    }
+
+    private func infoRow(_ label: String, _ value: String, mono: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+                .textCase(.uppercase).tracking(0.3)
+            HStack(alignment: .top, spacing: 8) {
+                Text(value)
+                    .font(mono ? .caption.monospaced() : .callout)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if value != "—" {
+                    Button { copy(value) } label: { Image(systemName: "doc.on.doc") }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .help("Copy")
+                }
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Spacer()
+            Button("Reveal in Finder") { revealInFinder() }
+                .controlSize(.small)
+                .disabled((detail?.path ?? "").isEmpty || !(detail?.path ?? "").hasPrefix("/"))
+            Button("Activity Monitor") {
+                NSWorkspace.shared.open(IncidentTemplates.activityMonitorURL)
+            }
+            .controlSize(.small)
+            Button("Done") { dismiss() }
+                .controlSize(.small)
+                .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private func launchedBy(_ d: ProcessDetail) -> String {
+        guard d.parentPID > 0, d.parentName != "—" else { return "—" }
+        return "\(d.parentName)  ·  PID \(d.parentPID)"
+    }
+
+    private func load() async {
+        let p = proc
+        let d = await Task.detached(priority: .userInitiated) {
+            ProcessDetailFetcher.fetch(pid: p.pid, name: p.name, fallbackPath: p.path)
+        }.value
+        detail = d
+        loading = false
+    }
+
+    private func revealInFinder() {
+        guard let path = detail?.path, path.hasPrefix("/") else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    private func copy(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
     }
 }
 
