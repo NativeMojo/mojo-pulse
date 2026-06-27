@@ -1052,7 +1052,9 @@ struct SettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject var loginItem: LoginItem
     @ObservedObject var security: SecurityCollector
+    var ignoredCount: Int = 0
     var onCheckForUpdates: () -> Void = {}
+    var onManageIgnored: () -> Void = {}
 
     private static let relative: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter(); f.unitsStyle = .full; return f
@@ -1070,6 +1072,27 @@ struct SettingsView: View {
                 toggleRow("Notifications",
                           "Alert you — and your Apple Watch — about red and security events.",
                           $settings.notificationsEnabled)
+            }
+
+            group("Menu bar icon") {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Icon style").font(.callout)
+                        Text("How Pulse appears in the menu bar. Color always shows status.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Picker("", selection: $settings.menuBarIconStyle) {
+                        ForEach(MenuBarIconStyle.allCases) { style in
+                            Text(style.displayName).tag(style)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                }
             }
 
             group("Scanning") {
@@ -1092,6 +1115,25 @@ struct SettingsView: View {
                 toggleRow("Runaway-process alerts",
                           "Warn when one app pegs a CPU core for over a minute.",
                           $settings.runawayAlertsEnabled)
+            }
+
+            group("Ignored items") {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(ignoredCount == 0
+                             ? "You're not ignoring anything."
+                             : "\(ignoredCount) active mute rule\(ignoredCount == 1 ? "" : "s").")
+                            .font(.callout)
+                        Text("Review and lift anything you've muted or chosen to always ignore.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Button("Manage…") { onManageIgnored() }
+                        .controlSize(.small)
+                        .fixedSize()
+                }
             }
 
             group("Malware protection (XProtect)") {
@@ -2202,6 +2244,185 @@ struct HistoryPanelView: View {
     private func durationLabel(for row: IncidentRecord) -> String {
         let seconds = Int(row.duration(now: now))
         return RelativeTime.duration(seconds: seconds)
+    }
+}
+
+// MARK: - Muted items manager
+
+/// Lists every active mute/ignore rule so the user can audit and lift them —
+/// the "undo" for "Always ignore this" / "Mute for 1 hour". Permanent ignores
+/// are grouped first; temporary mutes show a live countdown. Un-muting takes
+/// effect immediately; the next detector tick re-surfaces the condition if it
+/// still holds.
+struct MutedItemsView: View {
+    let engine: DetectorEngine
+
+    @State private var entries: [SuppressionEntry] = []
+    @State private var now = Date()
+
+    private let timer = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
+
+    private var permanent: [SuppressionEntry] { entries.filter(\.isPermanent) }
+    private var temporary: [SuppressionEntry] { entries.filter { !$0.isPermanent } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Ignored items")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Text(entries.isEmpty ? "none" : "\(entries.count) active")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            if entries.isEmpty {
+                emptyState
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if !permanent.isEmpty {
+                            section("Always ignored", permanent)
+                        }
+                        if !temporary.isEmpty {
+                            section("Muted temporarily", temporary)
+                        }
+                        Text("Un-muting takes effect right away — if the condition is still happening, the event comes back on the next check.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 2)
+                    }
+                    .padding(16)
+                }
+            }
+        }
+        .frame(width: 460, height: 430)
+        .onAppear { refresh() }
+        .onReceive(timer) { now = $0; refresh() }
+    }
+
+    private func section(_ title: String, _ items: [SuppressionEntry]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .tracking(0.4)
+            ForEach(items) { row($0) }
+        }
+    }
+
+    private func row(_ entry: SuppressionEntry) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: entry.record?.category.systemImage ?? "bell.slash")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label(for: entry))
+                    .font(.subheadline.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(scope(for: entry))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button("Un-mute") {
+                engine.unmute(signature: entry.signature)
+                refresh()
+            }
+            .controlSize(.small)
+            .fixedSize()
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "bell.badge.slash")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text("You're not ignoring anything")
+                .font(.headline)
+            Text("When you choose “Always ignore this” or “Mute for 1 hour” on an event, it shows up here so you can lift it later.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 320)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
+    private func label(for entry: SuppressionEntry) -> String {
+        let base = entry.record?.title ?? Self.fallbackLabel(entry.signature)
+        // The template title is category-level ("Unexpected network listener"),
+        // so two listeners look identical. Append the distinguishing detail
+        // (process:port, app name, …) so each muted rule is identifiable.
+        if let d = detail(for: entry) { return "\(base) — \(d)" }
+        return base
+    }
+
+    /// The specific thing a rule is about, pulled from the incident context
+    /// (preferred) or parsed from the signature as a fallback.
+    private func detail(for entry: SuppressionEntry) -> String? {
+        if let ctx = entry.record?.context, !ctx.isEmpty {
+            if let proc = ctx["process"], let port = ctx["port"] { return "\(proc):\(port)" }
+            if let port = ctx["port"] { return "port \(port)" }
+            if let name = ctx["name"] { return name }
+            if let app = ctx["app"] { return app }
+            if let ssid = ctx["ssid"] { return ssid }
+        }
+        return Self.signatureDetail(entry.signature)
+    }
+
+    /// Distinguishing tail parsed straight from a signature, for when no
+    /// incident row survives to supply context.
+    static func signatureDetail(_ signature: String) -> String? {
+        let p = signature.split(separator: ":").map(String.init)
+        if p.count >= 4, p[0] == "security", p[1] == "listener" { return "\(p[2]):\(p[3])" }
+        if p.count >= 3, p[0] == "security", p[1] == "exposed" { return "port \(p[2])" }
+        if p.count >= 3, p[0] == "cpu", p[1] == "runaway" { return p[2] }
+        if p.count >= 3, p[0] == "event", p[1] == "crash" { return p[2] }
+        return nil
+    }
+
+    private func scope(for entry: SuppressionEntry) -> String {
+        if entry.isPermanent { return "Ignored permanently" }
+        let secs = max(0, Int(entry.until.timeIntervalSince(now)))
+        return "Muted · \(RelativeTime.duration(seconds: secs)) left"
+    }
+
+    private func refresh() {
+        entries = engine.activeSuppressions(now: now)
+    }
+
+    /// Friendly text for a raw signature when no incident row survives to title
+    /// it (rare). Mirrors the signature shapes the detectors emit.
+    static func fallbackLabel(_ signature: String) -> String {
+        let p = signature.split(separator: ":").map(String.init)
+        switch p.first {
+        case "security" where p.count >= 2:
+            switch p[1] {
+            case "listener" where p.count >= 4: return "\(p[2]) listening on port \(p[3])"
+            case "exposed" where p.count >= 3: return "Exposed service on port \(p[2])"
+            case "unsigned": return "Unsigned app"
+            case "persistence": return "New startup item"
+            case "firewall": return "Firewall is off"
+            case "insecureWifi" where p.count >= 3: return "Insecure Wi-Fi · \(p[2])"
+            default: return signature
+            }
+        case "cpu" where p.count >= 3 && p[1] == "runaway": return "\(p[2]) running away"
+        case "event" where p.count >= 3 && p[1] == "crash": return "\(p[2]) crashing"
+        default: return signature
+        }
     }
 }
 

@@ -1,5 +1,24 @@
 import Foundation
 
+/// How Mojo Pulse draws its menu-bar mark. Color always encodes severity
+/// (quiet / VPN / watch / issue); this only changes the *shape*. Heartbeat is
+/// the default — a single beat that reads as "Pulse" while staying minimal.
+enum MenuBarIconStyle: String, CaseIterable, Identifiable, Sendable {
+    case heartbeat
+    case dot
+    case ping
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .heartbeat: return "Heartbeat"
+        case .dot: return "Dot"
+        case .ping: return "Ping"
+        }
+    }
+}
+
 /// User-tunable preferences. There is no settings *window* — these are the
 /// handful of toggles that live inline at the bottom of the popover, backed
 /// by UserDefaults so they survive restart. Kept deliberately tiny; if this
@@ -15,6 +34,7 @@ final class Settings: ObservableObject {
         static let securityMonitoring = "security.monitoringEnabled"
         static let notifications = "notifications.enabled"
         static let runawayAlerts = "process.runawayAlertsEnabled"
+        static let menuBarIcon = "ui.menuBarIconStyle"
     }
 
     /// Master switch for the whole security/posture subsystem. When off, the
@@ -38,17 +58,26 @@ final class Settings: ObservableObject {
         didSet { defaults.set(runawayAlertsEnabled, forKey: Key.runawayAlerts) }
     }
 
+    /// Which mark to draw in the menu bar. Purely cosmetic — color still encodes
+    /// severity in every style. Defaults to `.heartbeat`.
+    @Published var menuBarIconStyle: MenuBarIconStyle {
+        didSet { defaults.set(menuBarIconStyle.rawValue, forKey: Key.menuBarIcon) }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
             Key.securityMonitoring: true,
             Key.notifications: true,
-            Key.runawayAlerts: true
+            Key.runawayAlerts: true,
+            Key.menuBarIcon: MenuBarIconStyle.heartbeat.rawValue
         ])
         // Assigning stored properties inside init does not fire didSet, so the
         // first read here won't redundantly write back the registered default.
         self.securityMonitoringEnabled = defaults.bool(forKey: Key.securityMonitoring)
         self.notificationsEnabled = defaults.bool(forKey: Key.notifications)
         self.runawayAlertsEnabled = defaults.bool(forKey: Key.runawayAlerts)
+        self.menuBarIconStyle = MenuBarIconStyle(rawValue: defaults.string(forKey: Key.menuBarIcon) ?? "")
+            ?? .heartbeat
     }
 }

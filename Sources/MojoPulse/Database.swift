@@ -434,6 +434,78 @@ final class Database: @unchecked Sendable {
         return Date(timeIntervalSince1970: TimeInterval(seconds))
     }
 
+    /// All currently-active suppressions (mute rules), each joined to its most
+    /// recent incident so the UI can show a friendly label instead of the raw
+    /// signature. Expired temporary mutes are filtered out. Soonest-to-expire
+    /// first so temporary mutes naturally sort ahead of permanent ones.
+    func fetchSuppressions(now: Date) throws -> [SuppressionEntry] {
+        let sql = """
+            SELECT s.signature, s.until,
+                   i.id, i.category, i.severity, i.detector_id, i.template_key,
+                   i.started_at, i.ended_at, i.context
+            FROM suppressions s
+            LEFT JOIN incidents i
+                ON i.id = (SELECT id FROM incidents WHERE signature = s.signature
+                           ORDER BY started_at DESC LIMIT 1)
+            WHERE s.until > ?
+            ORDER BY s.until ASC;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DBError.prepareFailed
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(now.timeIntervalSince1970))
+
+        var results: [SuppressionEntry] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let sigC = sqlite3_column_text(stmt, 0) else { continue }
+            let signature = String(cString: sigC)
+            let until = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 1)))
+
+            var record: IncidentRecord?
+            if sqlite3_column_type(stmt, 2) != SQLITE_NULL,
+               let idC = sqlite3_column_text(stmt, 2),
+               let uuid = UUID(uuidString: String(cString: idC)),
+               let catC = sqlite3_column_text(stmt, 3),
+               let category = IncidentCategory(rawValue: String(cString: catC)),
+               let severity = IncidentSeverity(rawValue: Int(sqlite3_column_int(stmt, 4))),
+               let detC = sqlite3_column_text(stmt, 5),
+               let tplC = sqlite3_column_text(stmt, 6) {
+                let startedAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 7)))
+                let endedAt: Date? = sqlite3_column_type(stmt, 8) == SQLITE_NULL
+                    ? nil : Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 8)))
+                var context: [String: String] = [:]
+                if let ctxC = sqlite3_column_text(stmt, 9),
+                   let data = String(cString: ctxC).data(using: .utf8),
+                   let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+                    context = parsed
+                }
+                record = IncidentRecord(
+                    id: uuid, signature: signature, category: category, severity: severity,
+                    detectorID: String(cString: detC), templateKey: String(cString: tplC),
+                    startedAt: startedAt, endedAt: endedAt, context: context
+                )
+            }
+            results.append(SuppressionEntry(signature: signature, until: until, record: record))
+        }
+        return results
+    }
+
+    /// Remove a suppression rule entirely — the user un-muted it.
+    func deleteSuppression(signature: String) throws {
+        let sql = "DELETE FROM suppressions WHERE signature = ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DBError.prepareFailed
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, signature, -1, Database.SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw DBError.execFailed
+        }
+    }
+
     // MARK: - Internals
 
     private func columnExists(table: String, column: String) -> Bool {
@@ -556,5 +628,16 @@ final class DatabaseFeedbackStore: FeedbackStore {
         case .dismissed, .none, .confirmed:
             break
         }
+    }
+
+    func activeSuppressions(now: Date) -> [SuppressionEntry] {
+        (try? database.fetchSuppressions(now: now)) ?? []
+    }
+
+    func removeSuppression(signature: String) {
+        try? database.deleteSuppression(signature: signature)
+        // Drop the cached expiry so the next isSuppressed() check re-reads the
+        // (now empty) DB and the incident can re-surface immediately.
+        cache.removeValue(forKey: signature)
     }
 }

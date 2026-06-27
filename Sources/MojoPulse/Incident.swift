@@ -273,3 +273,21 @@ extension IncidentRecord {
         )
     }
 }
+
+// MARK: - Suppression (mute) rule
+
+/// One active "ignore"/mute rule, surfaced in the Manage Ignored Items panel so
+/// the user can see what they've silenced and lift it. `record` is the most
+/// recent incident that matched this signature, used only to render a friendly
+/// label + icon; it's nil if no incident row survives for the signature.
+struct SuppressionEntry: Identifiable, Sendable, Hashable {
+    let signature: String
+    let until: Date
+    let record: IncidentRecord?
+
+    var id: String { signature }
+
+    /// "Always ignore this" stores a far-future expiry; anything more than a
+    /// decade out is treated as permanent (vs a "Mute for 1 hour" countdown).
+    var isPermanent: Bool { until.timeIntervalSinceNow > 10 * 365 * 24 * 3600 }
+}

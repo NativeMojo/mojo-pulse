@@ -234,6 +234,17 @@ final class DetectorEngine: ObservableObject {
         }
     }
 
+    /// Active mute rules, for the "manage ignored items" panel.
+    func activeSuppressions(now: Date = Date()) -> [SuppressionEntry] {
+        feedback.activeSuppressions(now: now)
+    }
+
+    /// Lift a mute rule. The next tick re-surfaces the incident if its condition
+    /// still holds, so the user starts seeing it again right away.
+    func unmute(signature: String) {
+        feedback.removeSuppression(signature: signature)
+    }
+
     /// Record user feedback for a signature. Called by the UI when the user
     /// interacts with an incident card. Immediately removes the incident
     /// from the active list if it's a mute/dismiss action — instant
@@ -274,6 +285,13 @@ protocol FeedbackStore: AnyObject {
 
     /// Record a user action against a signature.
     func record(_ feedback: IncidentFeedback, signature: String, now: Date)
+
+    /// Currently-active mute rules, for the "manage ignored items" UI.
+    func activeSuppressions(now: Date) -> [SuppressionEntry]
+
+    /// Lift a mute rule immediately (delete it and drop any cached entry, so
+    /// the very next `isSuppressed` check returns false).
+    func removeSuppression(signature: String)
 }
 
 /// Default in-memory implementation. Uses an expiration date per signature
@@ -306,5 +324,16 @@ final class InMemoryFeedbackStore: FeedbackStore {
         case .none, .confirmed:
             break
         }
+    }
+
+    func activeSuppressions(now: Date) -> [SuppressionEntry] {
+        suppressUntil
+            .filter { $0.value > now }
+            .map { SuppressionEntry(signature: $0.key, until: $0.value, record: nil) }
+            .sorted { $0.until < $1.until }
+    }
+
+    func removeSuppression(signature: String) {
+        suppressUntil.removeValue(forKey: signature)
     }
 }

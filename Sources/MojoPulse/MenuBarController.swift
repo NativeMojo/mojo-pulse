@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 /// The menu bar face of the app. Renders a single colored dot in the status
 /// bar, plus — when an incident is active — a short label to the right of
@@ -34,6 +35,10 @@ final class MenuBarController: NSObject {
     private let settings: Settings
     private let updater: Updater
 
+    /// Combine subscriptions held for the controller's lifetime (e.g. redrawing
+    /// the menu-bar mark when the user changes its style in Settings).
+    private var cancellables = Set<AnyCancellable>()
+
     /// Retained reference to the history window so we reuse the same
     /// window across "Show all" clicks instead of spawning a new one
     /// every time. Nilled on close via the delegate.
@@ -56,6 +61,9 @@ final class MenuBarController: NSObject {
 
     /// Retained reference to the Settings window.
     private var settingsWindow: NSWindow?
+
+    /// Retained reference to the "Ignored items" manager window.
+    private var mutedItemsWindow: NSWindow?
 
     /// Retained reference to the Top Processes window, which bumps the
     /// aggregator into fast-sampling mode (so the list refreshes live) while open.
@@ -162,6 +170,12 @@ final class MenuBarController: NSObject {
         // so the popover and the (possibly open) history window update
         // without the user having to reopen anything.
         engine.onHistoryChange = { [weak self] in self?.history.refresh() }
+
+        // Redraw immediately when the user switches the menu-bar mark style.
+        settings.$menuBarIconStyle
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.render() }
+            .store(in: &cancellables)
     }
 
     /// Rebuild the status item title from the engine's current state.
@@ -193,30 +207,114 @@ final class MenuBarController: NSObject {
             dotColor = Self.quietColor
         }
 
-        // Dot is U+25CF BLACK CIRCLE. We color it via NSForegroundColorAttributeName
-        // rather than using an SF Symbol image, because multicolor SF Symbols
-        // on menu-bar buttons get coerced to monochrome by macOS's template
-        // rendering. The circle glyph bypasses that entirely.
+        // The color always carries severity. The *shape* is user-configurable;
+        // the dot uses a colored glyph (multicolor SF Symbols would be coerced
+        // to monochrome), the others use a custom non-template image so their
+        // color survives too.
+        switch settings.menuBarIconStyle {
+        case .dot:
+            button.image = nil
+            button.imagePosition = .noImage
+            button.attributedTitle = Self.dotTitle(color: dotColor, label: label)
+        case .heartbeat, .ping:
+            button.image = Self.statusImage(style: settings.menuBarIconStyle, color: dotColor, severity: severity)
+            button.imagePosition = label == nil ? .imageOnly : .imageLeading
+            button.attributedTitle = label.map { Self.labelTitle($0) } ?? NSAttributedString(string: "")
+        }
+
+        button.toolTip = makeTooltip(topIncident: topIncident)
+    }
+
+    /// Colored U+25CF circle glyph + optional category label, as an attributed
+    /// title (the classic "dot" style).
+    private static func dotTitle(color: NSColor, label: String?) -> NSAttributedString {
         let attributed = NSMutableAttributedString()
         attributed.append(NSAttributedString(
             string: "●",
             attributes: [
-                .foregroundColor: dotColor,
+                .foregroundColor: color,
                 .font: NSFont.systemFont(ofSize: 11, weight: .bold)
             ]
         ))
         if let label {
-            attributed.append(NSAttributedString(
-                string: " \(label)",
-                attributes: [
-                    .foregroundColor: NSColor.labelColor,
-                    .font: NSFont.systemFont(ofSize: 11, weight: .medium)
-                ]
-            ))
+            attributed.append(Self.labelTitle(label))
         }
-        button.attributedTitle = attributed
+        return attributed
+    }
 
-        button.toolTip = makeTooltip(topIncident: topIncident)
+    /// The category label ("Sec", "CPU", …) shown to the right of an image mark.
+    private static func labelTitle(_ label: String) -> NSAttributedString {
+        NSAttributedString(
+            string: " \(label)",
+            attributes: [
+                .foregroundColor: NSColor.labelColor,
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium)
+            ]
+        )
+    }
+
+    /// Draw the heartbeat / ping mark as a non-template (full-color) image so
+    /// the severity color is preserved in the menu bar. Visual weight scales
+    /// with urgency (`prominence`): calm and light when nothing's wrong, bold
+    /// and a touch larger when there's an issue — so it catches the eye exactly
+    /// when it needs to, without shouting the rest of the time.
+    private static func statusImage(style: MenuBarIconStyle, color: NSColor, severity: IncidentSeverity?) -> NSImage {
+        let prominence: CGFloat
+        switch severity {
+        case .issue: prominence = 1.0
+        case .watch: prominence = 0.55
+        default: prominence = 0.0
+        }
+
+        switch style {
+        case .heartbeat:
+            let w: CGFloat = 22, h: CGFloat = 16
+            let image = NSImage(size: NSSize(width: w, height: h))
+            image.lockFocus()
+            color.setStroke()
+            let midY = h / 2
+            let amp: CGFloat = 5 + 1.5 * prominence          // spike grows with urgency
+            let path = NSBezierPath()
+            path.lineWidth = 2.4 + 0.9 * prominence          // base 2.4 → 3.3 bold
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            path.move(to: NSPoint(x: 1.5, y: midY))
+            path.line(to: NSPoint(x: 6, y: midY))
+            path.line(to: NSPoint(x: 9, y: midY + amp))
+            path.line(to: NSPoint(x: 12, y: midY - amp))
+            path.line(to: NSPoint(x: 14.5, y: midY + amp * 0.5))
+            path.line(to: NSPoint(x: 17, y: midY))
+            path.line(to: NSPoint(x: w - 1.5, y: midY))
+            path.stroke()
+            image.unlockFocus()
+            image.isTemplate = false
+            return image
+        case .ping:
+            let s: CGFloat = 15
+            let image = NSImage(size: NSSize(width: s, height: s))
+            image.lockFocus()
+            color.setStroke()
+            color.setFill()
+            let c = NSPoint(x: s / 2, y: s / 2)
+            let ring = NSBezierPath(ovalIn: NSRect(x: c.x - 6.5, y: c.y - 6.5, width: 13, height: 13))
+            ring.lineWidth = 1.6 + 0.8 * prominence
+            ring.stroke()
+            let r: CGFloat = 2.6 + 1.1 * prominence
+            NSBezierPath(ovalIn: NSRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)).fill()
+            image.unlockFocus()
+            image.isTemplate = false
+            return image
+        case .dot:
+            let s: CGFloat = 12
+            let image = NSImage(size: NSSize(width: s, height: s))
+            image.lockFocus()
+            color.setFill()
+            let r: CGFloat = 4 + 0.8 * prominence
+            NSBezierPath(ovalIn: NSRect(x: s / 2 - r, y: s / 2 - r, width: r * 2, height: r * 2)).fill()
+            image.unlockFocus()
+            image.isTemplate = false
+            return image
+        }
     }
 
     /// Multi-line tooltip combining incident state + connection security.
@@ -528,7 +626,9 @@ final class MenuBarController: NSObject {
             settings: settings,
             loginItem: loginItem,
             security: security,
-            onCheckForUpdates: { [weak self] in self?.updater.checkForUpdates() }
+            ignoredCount: engine.activeSuppressions().count,
+            onCheckForUpdates: { [weak self] in self?.updater.checkForUpdates() },
+            onManageIgnored: { [weak self] in self?.showMutedItemsWindow() }
         )
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
@@ -540,6 +640,32 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         settingsWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Ignored items window
+
+    /// Open (or raise) the "Ignored items" manager — where the user audits and
+    /// lifts the mute/ignore rules they've set on incident cards.
+    private func showMutedItemsWindow() {
+        if let existing = mutedItemsWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: MutedItemsView(engine: engine))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Ignored Items"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        mutedItemsWindow = window
 
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
@@ -653,6 +779,8 @@ extension MenuBarController: NSWindowDelegate {
             postureWindow = nil
         } else if closing === settingsWindow {
             settingsWindow = nil
+        } else if closing === mutedItemsWindow {
+            mutedItemsWindow = nil
         } else if closing === processesWindow {
             endProcessesFastTick()
             processesWindow = nil
