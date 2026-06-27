@@ -2,18 +2,31 @@ APP_NAME         := MojoPulse
 BUILD_DIR        := .build/release
 APP_BUNDLE       := $(APP_NAME).app
 DIST_DIR         := dist
-# Marketing version base (MAJOR.MINOR). The patch component is filled in
-# automatically from the auto-incrementing build counter, so every bundle
-# build produces a fresh, monotonically increasing rev (1.0.10, 1.0.11, …).
-# Bump this by hand only for a real minor/major release.
-MARKETING_VERSION := 1.0
+# Marketing version shown to users (CFBundleShortVersionString). Bump by hand
+# per release. CFBundleVersion is the auto-incrementing build counter below —
+# that's what Sparkle compares to decide "is there a newer build?", so the
+# display version can stay fixed across builds without breaking auto-update.
+MARKETING_VERSION := 1.1.0
 BUILD_NUMBER_FILE := .build-number
-# Code-signing identity. "-" = ad-hoc (current). Override with your Developer
-# ID once you have the cert, e.g.:
-#   make app SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-SIGN_IDENTITY    := -
+# Code-signing identity. The Developer ID Application cert for 311 Labs, LLC.
+# (Team 7UURCYAQ8Y) is the default so `make app/install/release` sign for real.
+# Override with SIGN_IDENTITY="-" to fall back to ad-hoc (e.g. a machine without
+# the cert); the hardened-runtime flags below auto-disable for ad-hoc.
+SIGN_IDENTITY    := Developer ID Application: 311 Labs, LLC. (7UURCYAQ8Y)
+# Keychain profile holding the notarization credential (App Store Connect API
+# key), created via `xcrun notarytool store-credentials`.
+NOTARY_PROFILE   := mojopulse-notary
 
-.PHONY: build debug run app install dmg clean print-version
+# Hardened runtime + a secure timestamp are required for notarization, but only
+# work with a real Developer ID identity (ad-hoc "-" can't timestamp). Toggle
+# them off automatically when signing ad-hoc.
+ifeq ($(SIGN_IDENTITY),-)
+CODESIGN_OPTS    :=
+else
+CODESIGN_OPTS    := --options runtime --timestamp
+endif
+
+.PHONY: build debug run app install dmg notarize release clean print-version
 
 build:
 	swift build -c release
@@ -30,52 +43,48 @@ app: build
 	@mkdir -p $(APP_BUNDLE)/Contents/Resources
 	@cp $(BUILD_DIR)/$(APP_NAME) $(APP_BUNDLE)/Contents/MacOS/
 	@cp Info.plist $(APP_BUNDLE)/Contents/
-	@# Auto-increment the build counter, then stamp BOTH the marketing version
-	@# (MARKETING_VERSION.<build>) and CFBundleVersion into the bundle's copy of
-	@# Info.plist on every build. The counter lives in a gitignored file and we
-	@# only patch the copy inside the bundle, so the source Info.plist and the
-	@# working tree stay clean — but every build gets a unique, rising rev.
+	@# Auto-increment the build counter (gitignored file) and stamp the bundle's
+	@# COPY of Info.plist: CFBundleShortVersionString = the marketing version,
+	@# CFBundleVersion = the rising build number Sparkle compares. We patch only
+	@# the bundle copy, so the source Info.plist and working tree stay clean.
 	@BUILD_NUM=$$(( $$(cat $(BUILD_NUMBER_FILE) 2>/dev/null || echo 0) + 1 )); \
 		echo $$BUILD_NUM > $(BUILD_NUMBER_FILE); \
-		FULL_VERSION="$(MARKETING_VERSION).$$BUILD_NUM"; \
-		/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $$FULL_VERSION" $(APP_BUNDLE)/Contents/Info.plist; \
+		/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(MARKETING_VERSION)" $(APP_BUNDLE)/Contents/Info.plist; \
 		/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $$BUILD_NUM" $(APP_BUNDLE)/Contents/Info.plist; \
-		echo "Built $(APP_NAME) $$FULL_VERSION (build $$BUILD_NUM)"
+		echo "Built $(APP_NAME) $(MARKETING_VERSION) (build $$BUILD_NUM)"
 	@# Embed Sparkle.framework so the app can update itself, then code-sign
-	@# inside-out (nested XPC/helpers first, then the framework, then the app).
-	@# Ad-hoc ("-") for now; once you have a Developer ID cert, set
-	@# SIGN_IDENTITY to it and add `-o runtime` for notarization.
+	@# inside-out (nested XPC/helpers first, then the framework, then the app),
+	@# never with --deep. With a Developer ID identity CODESIGN_OPTS adds the
+	@# hardened runtime + secure timestamp that notarization requires. Sparkle's
+	@# Downloader.xpc ships sandbox/network entitlements that must be preserved.
 	@mkdir -p $(APP_BUNDLE)/Contents/Frameworks
 	@rm -rf $(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework
 	@cp -R $(BUILD_DIR)/Sparkle.framework $(APP_BUNDLE)/Contents/Frameworks/
 	@SP=$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework/Versions/B; \
-		codesign -f -s "$(SIGN_IDENTITY)" "$$SP/XPCServices/Installer.xpc"; \
-		codesign -f -s "$(SIGN_IDENTITY)" "$$SP/XPCServices/Downloader.xpc"; \
-		codesign -f -s "$(SIGN_IDENTITY)" "$$SP/Autoupdate"; \
-		codesign -f -s "$(SIGN_IDENTITY)" "$$SP/Updater.app"; \
-		codesign -f -s "$(SIGN_IDENTITY)" "$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework"; \
-		codesign -f -s "$(SIGN_IDENTITY)" "$(APP_BUNDLE)"
+		codesign -f $(CODESIGN_OPTS) --preserve-metadata=entitlements -s "$(SIGN_IDENTITY)" "$$SP/XPCServices/Downloader.xpc"; \
+		codesign -f $(CODESIGN_OPTS) -s "$(SIGN_IDENTITY)" "$$SP/XPCServices/Installer.xpc"; \
+		codesign -f $(CODESIGN_OPTS) -s "$(SIGN_IDENTITY)" "$$SP/Autoupdate"; \
+		codesign -f $(CODESIGN_OPTS) -s "$(SIGN_IDENTITY)" "$$SP/Updater.app"; \
+		codesign -f $(CODESIGN_OPTS) -s "$(SIGN_IDENTITY)" "$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework"; \
+		codesign -f $(CODESIGN_OPTS) -s "$(SIGN_IDENTITY)" "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
+	@codesign --verify --strict --verbose=2 "$(APP_BUNDLE)" 2>&1 | tail -1 || true
 
 install: app
 	@rm -rf /Applications/$(APP_BUNDLE)
 	@cp -R $(APP_BUNDLE) /Applications/
 	@echo "Installed to /Applications/$(APP_BUNDLE)"
 
-# Build a compressed, distributable DMG containing the ad-hoc-signed .app
-# and an Applications symlink (the familiar drag-to-Applications affordance).
-# Because we're ad-hoc signing, users who download the DMG will need to
-# right-click the .app and choose Open the first time so macOS Gatekeeper
-# lets it past the "developer cannot be verified" check, or run
-# `xattr -d com.apple.quarantine /Applications/$(APP_BUNDLE)` after install.
+# Build a compressed, distributable DMG (signed .app + an Applications symlink
+# for drag-to-install). For a notarized public release use `make release`
+# instead — this bare `dmg` target is just a quick local build.
 dmg: app
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $(DIST_DIR)/staging
 	@mkdir -p $(DIST_DIR)/staging
 	@cp -R $(APP_BUNDLE) $(DIST_DIR)/staging/
 	@ln -sf /Applications $(DIST_DIR)/staging/Applications
-	@BUILD_NUM=$$(cat $(BUILD_NUMBER_FILE)); \
-		FULL_VERSION="$(MARKETING_VERSION).$$BUILD_NUM"; \
+	@FULL_VERSION="$(MARKETING_VERSION)"; \
 		DMG_PATH="$(DIST_DIR)/$(APP_NAME)-$$FULL_VERSION.dmg"; \
 		rm -f "$$DMG_PATH"; \
 		hdiutil create \
@@ -86,9 +95,48 @@ dmg: app
 		rm -rf $(DIST_DIR)/staging; \
 		echo "Built $$DMG_PATH ($$(du -h "$$DMG_PATH" | cut -f1))"
 
+# Notarize the signed app: zip it, submit to Apple's notary service, wait for
+# the result, then staple the ticket onto the .app so it validates even offline.
+# Requires a Developer ID SIGN_IDENTITY and the NOTARY_PROFILE credential.
+notarize: app
+	@mkdir -p $(DIST_DIR)
+	@ditto -c -k --keepParent $(APP_BUNDLE) $(DIST_DIR)/$(APP_NAME)-notarize.zip
+	@echo "Submitting to Apple notary service (can take a few minutes)…"
+	xcrun notarytool submit $(DIST_DIR)/$(APP_NAME)-notarize.zip \
+		--keychain-profile "$(NOTARY_PROFILE)" --wait
+	@xcrun stapler staple $(APP_BUNDLE)
+	@rm -f $(DIST_DIR)/$(APP_NAME)-notarize.zip
+	@echo "Notarized + stapled $(APP_BUNDLE)"
+	@spctl -a -vvv --type execute $(APP_BUNDLE) 2>&1 || true
+
+# Full release: build → sign → notarize+staple the app → package the STAPLED
+# app into a DMG → notarize+staple the DMG → print the SHA256 (for the Homebrew
+# cask) and version. This is the distributable artifact.
+release: notarize
+	@mkdir -p $(DIST_DIR)/staging
+	@rm -rf $(DIST_DIR)/staging
+	@mkdir -p $(DIST_DIR)/staging
+	@cp -R $(APP_BUNDLE) $(DIST_DIR)/staging/
+	@ln -sf /Applications $(DIST_DIR)/staging/Applications
+	@FULL_VERSION="$(MARKETING_VERSION)"; \
+		DMG_PATH="$(DIST_DIR)/$(APP_NAME)-$$FULL_VERSION.dmg"; \
+		rm -f "$$DMG_PATH"; \
+		hdiutil create -volname "$(APP_NAME) $$FULL_VERSION" \
+			-srcfolder $(DIST_DIR)/staging -ov -format UDZO "$$DMG_PATH" >/dev/null; \
+		rm -rf $(DIST_DIR)/staging; \
+		echo "Submitting DMG to notary service…"; \
+		xcrun notarytool submit "$$DMG_PATH" --keychain-profile "$(NOTARY_PROFILE)" --wait; \
+		xcrun stapler staple "$$DMG_PATH"; \
+		SHA=$$(shasum -a 256 "$$DMG_PATH" | cut -d' ' -f1); \
+		echo ""; \
+		echo "=== Release ready ==="; \
+		echo "DMG:     $$DMG_PATH"; \
+		echo "Version: $$FULL_VERSION"; \
+		echo "SHA256:  $$SHA"
+
 print-version:
 	@BUILD_NUM=$$(cat $(BUILD_NUMBER_FILE) 2>/dev/null || echo 0); \
-		echo "$(MARKETING_VERSION).$$BUILD_NUM (build $$BUILD_NUM)"
+		echo "$(MARKETING_VERSION) (build $$BUILD_NUM)"
 
 clean:
 	@rm -rf .build $(APP_BUNDLE) $(DIST_DIR)
