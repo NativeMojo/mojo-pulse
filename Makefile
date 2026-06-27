@@ -1,5 +1,13 @@
 APP_NAME         := MojoPulse
-BUILD_DIR        := .build/release
+# We ship a universal (arm64 + x86_64) binary. SwiftPM emits each slice into its
+# own triple-named dir; the `build` target lipos them into BUILD_DIR, and every
+# downstream target (app/install/dmg/notarize/release) consumes BUILD_DIR as
+# before. The single-command `swift build --arch arm64 --arch x86_64` form needs
+# full Xcode's xcbuild, so we build each arch natively and fuse with lipo — that
+# works on a Command Line Tools-only box too.
+ARM64_DIR        := .build/arm64-apple-macosx/release
+X86_64_DIR       := .build/x86_64-apple-macosx/release
+BUILD_DIR        := .build/universal
 APP_BUNDLE       := $(APP_NAME).app
 DIST_DIR         := dist
 # Marketing version shown to users (CFBundleShortVersionString). Bump by hand
@@ -29,7 +37,16 @@ endif
 .PHONY: build debug run app install dmg notarize release clean print-version
 
 build:
-	swift build -c release
+	swift build -c release --arch x86_64
+	swift build -c release --arch arm64
+	@mkdir -p $(BUILD_DIR)
+	@# Fuse the two thin executables into one universal Mach-O.
+	@lipo -create $(ARM64_DIR)/$(APP_NAME) $(X86_64_DIR)/$(APP_NAME) -output $(BUILD_DIR)/$(APP_NAME)
+	@# Sparkle ships a prebuilt universal binary artifact, so its framework is
+	@# already arm64+x86_64 in either per-arch dir — copy it through unchanged.
+	@rm -rf $(BUILD_DIR)/Sparkle.framework
+	@cp -R $(ARM64_DIR)/Sparkle.framework $(BUILD_DIR)/Sparkle.framework
+	@echo "Universal binary: $$(lipo -info $(BUILD_DIR)/$(APP_NAME) | sed 's/.*are: //')"
 
 debug:
 	swift build
