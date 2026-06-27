@@ -121,6 +121,62 @@ final class Database: @unchecked Sendable {
                 until INTEGER NOT NULL
             );
         """)
+        // Per-minute metric rollups (min/avg/max) for the persistent history
+        // charts. One row per (metric, minute). Composite PK doubles as the
+        // lookup index; pruned to a rolling retention window.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS metric_rollups (
+                metric TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                min REAL NOT NULL,
+                avg REAL NOT NULL,
+                max REAL NOT NULL,
+                PRIMARY KEY (metric, ts)
+            );
+        """)
+    }
+
+    // MARK: - Metric rollups
+
+    func insertMetricRollup(metric: String, ts: Date, min: Double, avg: Double, max: Double) throws {
+        let sql = "INSERT OR REPLACE INTO metric_rollups (metric, ts, min, avg, max) VALUES (?, ?, ?, ?, ?);"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, metric, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, Int64(ts.timeIntervalSince1970))
+        sqlite3_bind_double(stmt, 3, min)
+        sqlite3_bind_double(stmt, 4, avg)
+        sqlite3_bind_double(stmt, 5, max)
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw DBError.execFailed }
+    }
+
+    func fetchMetricRollups(metric: String, since: Date) throws -> [MetricRollupRow] {
+        let sql = "SELECT ts, min, avg, max FROM metric_rollups WHERE metric = ? AND ts >= ? ORDER BY ts ASC;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, metric, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, Int64(since.timeIntervalSince1970))
+        var rows: [MetricRollupRow] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            rows.append(MetricRollupRow(
+                ts: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 0))),
+                min: sqlite3_column_double(stmt, 1),
+                avg: sqlite3_column_double(stmt, 2),
+                max: sqlite3_column_double(stmt, 3)
+            ))
+        }
+        return rows
+    }
+
+    func pruneMetricRollups(before cutoff: Date) throws {
+        let sql = "DELETE FROM metric_rollups WHERE ts < ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(cutoff.timeIntervalSince1970))
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw DBError.execFailed }
     }
 
     // MARK: - Reachability
@@ -147,6 +203,26 @@ final class Database: @unchecked Sendable {
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw DBError.execFailed
         }
+    }
+
+    /// Reachability transitions since a cutoff, oldest first — the read side of
+    /// the reachability log (used for the connectivity uptime/outage panel).
+    func fetchReachability(since: Date, limit: Int = 5000) throws -> [ReachabilitySample] {
+        let sql = "SELECT ts, state FROM reachability WHERE ts >= ? ORDER BY ts ASC LIMIT ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DBError.prepareFailed
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(since.timeIntervalSince1970))
+        sqlite3_bind_int(stmt, 2, Int32(limit))
+
+        var rows: [ReachabilitySample] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let ts = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 0)))
+            rows.append(ReachabilitySample(at: ts, state: Int(sqlite3_column_int(stmt, 1))))
+        }
+        return rows
     }
 
     // MARK: - Incidents

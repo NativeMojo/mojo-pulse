@@ -34,6 +34,7 @@ final class MenuBarController: NSObject {
     private let aggregator: SignalAggregator
     private let settings: Settings
     private let updater: Updater
+    private let database: Database?
 
     /// Combine subscriptions held for the controller's lifetime (e.g. redrawing
     /// the menu-bar mark when the user changes its style in Settings).
@@ -64,6 +65,12 @@ final class MenuBarController: NSObject {
 
     /// Retained reference to the "Ignored items" manager window.
     private var mutedItemsWindow: NSWindow?
+
+    /// Retained reference to the "Open ports" inventory window.
+    private var openPortsWindow: NSWindow?
+
+    /// Retained reference to the "Connection history" window.
+    private var connectivityWindow: NSWindow?
 
     /// Retained reference to the Top Processes window, which bumps the
     /// aggregator into fast-sampling mode (so the list refreshes live) while open.
@@ -109,7 +116,8 @@ final class MenuBarController: NSObject {
         processes: ProcessCollector,
         aggregator: SignalAggregator,
         settings: Settings,
-        updater: Updater
+        updater: Updater,
+        database: Database?
     ) {
         self.engine = engine
         self.networkInfo = networkInfo
@@ -123,6 +131,7 @@ final class MenuBarController: NSObject {
         self.aggregator = aggregator
         self.settings = settings
         self.updater = updater
+        self.database = database
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
         super.init()
@@ -140,6 +149,7 @@ final class MenuBarController: NSObject {
                 wifi: wifi,
                 system: system,
                 security: security,
+                processes: processes,
                 settings: settings,
                 onShowFullHistory: { [weak self] in self?.showHistoryWindow() },
                 onShowDetail: { [weak self] kind in self?.showDetailWindow(initial: kind) },
@@ -148,7 +158,9 @@ final class MenuBarController: NSObject {
                 onShowPosture: { [weak self] in self?.showPostureWindow() },
                 onShowSettings: { [weak self] in self?.showSettingsWindow() },
                 onShowProcesses: { [weak self] in self?.showProcessesWindow() },
-                onSelectEvent: { [weak self] record in self?.showEventWindow(record) }
+                onSelectEvent: { [weak self] record in self?.showEventWindow(record) },
+                onShowPorts: { [weak self] in self?.showOpenPortsWindow() },
+                onShowConnectivity: { [weak self] in self?.showConnectivityWindow() }
             )
         )
 
@@ -495,6 +507,7 @@ final class MenuBarController: NSObject {
 
         let view = MetricsDetailView(
             metricHistory: metricHistory,
+            system: system,
             initialKind: kind,
             totalMemoryBytes: system.current.memoryTotalBytes
         )
@@ -502,7 +515,7 @@ final class MenuBarController: NSObject {
         let window = NSWindow(contentViewController: hosting)
         window.title = "Mojo Pulse — Live Metrics"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 560, height: 420))
+        window.setContentSize(NSSize(width: 580, height: 540))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -595,7 +608,11 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: SecurityPostureView(security: security, settings: settings))
+        let hosting = NSHostingController(rootView: SecurityPostureView(
+            security: security,
+            settings: settings,
+            onShowPorts: { [weak self] in self?.showOpenPortsWindow() }
+        ))
         let window = NSWindow(contentViewController: hosting)
         window.title = "Security Posture"
         window.styleMask = [.titled, .closable]
@@ -640,6 +657,65 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         settingsWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Connectivity history window
+
+    /// Open (or raise) the connection uptime/outage history panel.
+    private func showConnectivityWindow() {
+        popover.performClose(nil)
+
+        if let existing = connectivityWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: ConnectivityHistoryView(
+            database: database,
+            networkInfo: networkInfo,
+            wifi: wifi
+        ))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Connection History"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        connectivityWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Open ports window
+
+    /// Open (or raise) the Open Ports inventory — every TCP listener split into
+    /// network-reachable vs localhost-only.
+    private func showOpenPortsWindow() {
+        popover.performClose(nil)
+
+        if let existing = openPortsWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: OpenPortsView())
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Open Ports"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        openPortsWindow = window
 
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
@@ -781,6 +857,10 @@ extension MenuBarController: NSWindowDelegate {
             settingsWindow = nil
         } else if closing === mutedItemsWindow {
             mutedItemsWindow = nil
+        } else if closing === openPortsWindow {
+            openPortsWindow = nil
+        } else if closing === connectivityWindow {
+            connectivityWindow = nil
         } else if closing === processesWindow {
             endProcessesFastTick()
             processesWindow = nil

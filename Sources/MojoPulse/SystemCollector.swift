@@ -224,6 +224,8 @@ final class SystemCollector: ObservableObject {
             let timeToFull = (dict[kIOPSTimeToFullChargeKey as String] as? Int).flatMap { $0 > 0 ? $0 : nil }
             let timeToEmpty = (dict[kIOPSTimeToEmptyKey as String] as? Int).flatMap { $0 > 0 ? $0 : nil }
 
+            let rawHealth = batteryHealth()
+
             return BatterySnapshot(
                 percent: percent,
                 isCharging: isCharging,
@@ -231,10 +233,51 @@ final class SystemCollector: ObservableObject {
                 healthLabel: healthLabel,
                 healthCondition: healthCondition,
                 timeToFullMinutes: timeToFull,
-                timeToEmptyMinutes: timeToEmpty
+                timeToEmptyMinutes: timeToEmpty,
+                healthPercent: rawHealth.health,
+                cycleCount: rawHealth.cycles
             )
         }
         return nil
+    }
+
+    private var batteryHealthCache: (health: Int?, cycles: Int?) = (nil, nil)
+    private var batteryHealthAt: Date?
+
+    /// Capacity health (max vs design) + cycle count from `ioreg`. Throttled to
+    /// once every 10 minutes — these change glacially and we don't want to spawn
+    /// a process on every 5s sample. Fully unprivileged.
+    private func batteryHealth() -> (health: Int?, cycles: Int?) {
+        if let at = batteryHealthAt, Date().timeIntervalSince(at) < 600 {
+            return batteryHealthCache
+        }
+        let value = Self.readBatteryRawHealth()
+        batteryHealthCache = value
+        batteryHealthAt = Date()
+        return value
+    }
+
+    private static func readBatteryRawHealth() -> (health: Int?, cycles: Int?) {
+        guard let out = Shell.run("/usr/sbin/ioreg", ["-r", "-c", "AppleSmartBattery"]) else {
+            return (nil, nil)
+        }
+        func intValue(_ key: String) -> Int? {
+            for line in out.split(separator: "\n") {
+                guard let r = line.range(of: "\"\(key)\" = ") else { continue }
+                let digits = line[r.upperBound...].prefix { $0.isNumber }
+                return Int(digits)
+            }
+            return nil
+        }
+        let cycles = intValue("CycleCount")
+        let rawMax = intValue("AppleRawMaxCapacity")
+        let design = intValue("DesignCapacity")
+        // Only trust the ratio when both look like real mAh (design is a large
+        // number); on some models MaxCapacity is normalized to 100 and would
+        // give a meaningless result.
+        guard let rawMax, let design, design > 100 else { return (nil, cycles) }
+        let pct = Int((Double(rawMax) / Double(design) * 100).rounded())
+        return (min(pct, 100), cycles)
     }
 
     /// Treat empty / whitespace-only strings as nil. IOKit string values
@@ -406,6 +449,13 @@ struct BatterySnapshot: Sendable, Equatable {
 
     let timeToFullMinutes: Int?
     let timeToEmptyMinutes: Int?
+
+    /// Maximum charge capacity as a percentage of the battery's original design
+    /// capacity (from ioreg AppleSmartBattery), nil if unavailable. Below ~80%
+    /// is roughly where macOS starts showing "Service Recommended".
+    let healthPercent: Int?
+    /// Charge cycles the battery has been through; nil if unknown.
+    let cycleCount: Int?
 
     /// True only when IOKit has set an explicit problem condition. We
     /// deliberately do NOT fire on `healthLabel` alone — a battery in

@@ -106,7 +106,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DiskDetector(),
             InsecureNetworkDetector(),
             DiskHealthDetector(),
-            PanicDetector()
+            PanicDetector(),
+            UpdateDetector()
         ]
             + PostureDetector.defaults()
 
@@ -136,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Resume still-open incidents from the prior session before the first
         // tick, so ongoing conditions continue as the same incident.
         engine.resume(openIncidents)
-        let metricHistory = MetricHistoryStore()
+        let metricHistory = MetricHistoryStore(database: db)
         self.metricHistory = metricHistory
 
         // Notifications: ask once at launch, then mirror new incidents (red
@@ -196,7 +197,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             processes: processes,
             aggregator: aggregator,
             settings: settings,
-            updater: updater
+            updater: updater,
+            database: db
         )
 
         // Single composite reachability handler. ReachabilityMonitor has

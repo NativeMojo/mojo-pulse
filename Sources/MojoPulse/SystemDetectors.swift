@@ -230,29 +230,47 @@ final class BatteryDetector: Detector {
             )
         }
 
-        // No charge alerts while plugged in — the user is actively
-        // recharging and a "low battery" warning would be noise.
-        guard !battery.isPluggedIn else { return nil }
-
-        if battery.percent <= 10 {
-            return Incident(
-                category: .battery,
-                severity: .issue,
-                detectorID: id,
-                templateKey: "battery.critical",
-                context: contextFor(battery),
-                signature: "battery:critical",
-                startedAt: signals.timestamp
-            )
+        // Charge alerts only while unplugged — a "low battery" warning during
+        // active charging would be noise.
+        if !battery.isPluggedIn {
+            if battery.percent <= 10 {
+                return Incident(
+                    category: .battery,
+                    severity: .issue,
+                    detectorID: id,
+                    templateKey: "battery.critical",
+                    context: contextFor(battery),
+                    signature: "battery:critical",
+                    startedAt: signals.timestamp
+                )
+            }
+            if battery.percent <= 20 {
+                return Incident(
+                    category: .battery,
+                    severity: .watch,
+                    detectorID: id,
+                    templateKey: "battery.low",
+                    context: contextFor(battery),
+                    signature: "battery:low",
+                    startedAt: signals.timestamp
+                )
+            }
         }
-        if battery.percent <= 20 {
+
+        // Capacity health — lowest priority, fires regardless of plug state. A
+        // max capacity below ~80% of design is roughly where macOS itself shows
+        // "Service Recommended". Persistent + per-signature so it's one calm,
+        // mutable card, not a recurring alarm.
+        if let health = battery.healthPercent, health > 0, health < 80 {
+            var ctx = ["health": String(health)]
+            if let cycles = battery.cycleCount { ctx["cycles"] = String(cycles) }
             return Incident(
                 category: .battery,
                 severity: .watch,
                 detectorID: id,
-                templateKey: "battery.low",
-                context: contextFor(battery),
-                signature: "battery:low",
+                templateKey: "battery.health",
+                context: ctx,
+                signature: "battery:health:low",
                 startedAt: signals.timestamp
             )
         }
@@ -444,6 +462,30 @@ final class PanicDetector: Detector {
             templateKey: "event.panic",
             context: ["when": Self.dateFormatter.string(from: date)],
             signature: "event:panic:\(Int(date.timeIntervalSince1970))",
+            startedAt: signals.timestamp
+        )
+    }
+}
+
+// MARK: - Software updates
+
+/// Calm watch when macOS has recommended software updates waiting. Read from the
+/// local SoftwareUpdate preferences (no network call) — updates are mostly
+/// security fixes, so a gentle nudge belongs in the posture story. Per-signature
+/// so the user can mute it; it clears on its own once everything's installed.
+@MainActor
+final class UpdateDetector: Detector {
+    let id = "system.updates"
+
+    func evaluate(signals: Signals) -> Incident? {
+        guard signals.events.scanned, signals.events.pendingUpdates > 0 else { return nil }
+        return Incident(
+            category: .security,
+            severity: .watch,
+            detectorID: id,
+            templateKey: "system.updatesPending",
+            context: ["count": String(signals.events.pendingUpdates)],
+            signature: "system:updates:pending",
             startedAt: signals.timestamp
         )
     }

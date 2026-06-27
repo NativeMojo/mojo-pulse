@@ -336,6 +336,17 @@ enum IncidentTemplates {
                 actionURL: batterySettingsURL
             )
 
+        case "battery.health":
+            let health = ctx["health"] ?? "?"
+            let cycles = ctx["cycles"].map { " over \($0) charge cycles" } ?? ""
+            return IncidentCopy(
+                title: "Battery health is declining",
+                what: "Maximum capacity is about \(health)% of when it was new\(cycles).",
+                why: "Below roughly 80% you'll notice shorter runtime, and macOS itself starts showing “Service Recommended.” It's not urgent — just worth knowing.",
+                action: "See Battery → Battery Health, and plan for a service appointment eventually.",
+                actionURL: batterySettingsURL
+            )
+
         // MARK: Disk
 
         case "disk.low":
@@ -393,6 +404,17 @@ enum IncidentTemplates {
                 why: "These come from a driver, kernel extension, or hardware fault. One is worth noting; repeats point to a specific cause.",
                 action: "If it recurs, note what you were doing and check for macOS, driver, or peripheral-firmware updates.",
                 actionURL: nil
+            )
+
+        case "system.updatesPending":
+            let count = ctx["count"] ?? "Some"
+            let plural = count == "1" ? "update is" : "updates are"
+            return IncidentCopy(
+                title: count == "1" ? "1 software update available" : "\(count) software updates available",
+                what: "\(count) \(plural) ready to install from Apple.",
+                why: "macOS and security updates usually include fixes for known vulnerabilities — installing promptly closes holes attackers rely on.",
+                action: "Review and install in Software Update.",
+                actionURL: softwareUpdateURL
             )
 
         // MARK: Fallback

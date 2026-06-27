@@ -34,6 +34,41 @@ private struct PopoverMiddleHeightKey: PreferenceKey {
     }
 }
 
+/// Tiny inline sparkline for the vitals tiles — a bare normalized line, no axes
+/// or labels. Drawn with a Path (not Swift Charts) so it's cheap to render many
+/// of them. Falls back to a flat baseline when there aren't enough points yet.
+struct MiniSparkline: View {
+    let values: [Double]
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            let pts = values
+            if pts.count >= 2 {
+                let lo = pts.min() ?? 0
+                let hi = pts.max() ?? 1
+                let range = Swift.max(hi - lo, 0.0001)
+                Path { p in
+                    for (i, v) in pts.enumerated() {
+                        let x = geo.size.width * CGFloat(i) / CGFloat(pts.count - 1)
+                        let y = geo.size.height * (1 - CGFloat((v - lo) / range))
+                        if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+                        else { p.addLine(to: CGPoint(x: x, y: y)) }
+                    }
+                }
+                .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            } else {
+                Path { p in
+                    p.move(to: CGPoint(x: 0, y: geo.size.height / 2))
+                    p.addLine(to: CGPoint(x: geo.size.width, y: geo.size.height / 2))
+                }
+                .stroke(color.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            }
+        }
+        .frame(width: 54, height: 20)
+    }
+}
+
 struct PopoverView: View {
     @ObservedObject var engine: DetectorEngine
     @ObservedObject var networkInfo: NetworkInfo
@@ -43,6 +78,7 @@ struct PopoverView: View {
     @ObservedObject var wifi: WiFiCollector
     @ObservedObject var system: SystemCollector
     @ObservedObject var security: SecurityCollector
+    @ObservedObject var processes: ProcessCollector
     @ObservedObject var settings: Settings
 
     /// Called when the user taps "Show all" under Recent. The concrete
@@ -77,6 +113,12 @@ struct PopoverView: View {
     /// Called when the user clicks a Recent event row. Opens its detail window.
     var onSelectEvent: (IncidentRecord) -> Void = { _ in }
 
+    /// Called when the user opens the Open Ports inventory.
+    var onShowPorts: () -> Void = {}
+
+    /// Called when the user opens the connection uptime/outage history.
+    var onShowConnectivity: () -> Void = {}
+
     /// Which expandable vital (if any) is currently showing its sparkline.
     /// Cleared by tapping the same cell again or expanding a different one.
     @State private var expanded: MetricKind? = nil
@@ -90,7 +132,7 @@ struct PopoverView: View {
     /// scroll area to exactly fit its content until that would push the popover
     /// off the screen, then cap it and let the cards scroll. Without this the
     /// popover grows taller than the display once several incidents are active.
-    @State private var middleContentHeight: CGFloat = 0
+    @State private var middleContentHeight: CGFloat = 400
 
     /// The tallest the scrollable middle is allowed to get: whatever vertical
     /// space the screen has below the menu bar, minus room for the always-
@@ -131,23 +173,7 @@ struct PopoverView: View {
 
                     Divider()
 
-                    securitySection
-
-                    Divider()
-
-                    disclosureRow(
-                        title: "Recent events",
-                        trailing: history.recent.isEmpty ? nil : "\(history.recent.count)",
-                        isOpen: showRecent
-                    ) { showRecent.toggle() }
-                    if showRecent { recentSection }
-
-                    disclosureRow(
-                        title: "Connection details",
-                        trailing: "IPs",
-                        isOpen: showConnection
-                    ) { showConnection.toggle() }
-                    if showConnection { connectionSection }
+                    detailsMenu
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -161,7 +187,9 @@ struct PopoverView: View {
                 )
             }
             .frame(height: min(max(middleContentHeight, 1), maxMiddleHeight))
-            .onPreferenceChange(PopoverMiddleHeightKey.self) { middleContentHeight = $0 }
+            .onPreferenceChange(PopoverMiddleHeightKey.self) { h in
+                if abs(h - middleContentHeight) > 0.5 { middleContentHeight = h }
+            }
 
             Divider()
 
@@ -351,15 +379,6 @@ struct PopoverView: View {
                 .textCase(.uppercase)
                 .tracking(0.4)
             Spacer()
-            Button { onShowProcesses() } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "list.bullet")
-                    Text("Top processes")
-                }
-                .font(.caption2)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
             Button {
                 onShowDetail(.cpu)
             } label: {
@@ -382,71 +401,164 @@ struct PopoverView: View {
     /// and Net cells are clickable: tap to expand a sparkline + "Open
     /// detail" button, tap again or tap a different cell to swap.
     private var vitalsGrid: some View {
-        VStack(spacing: 5) {
-            HStack(spacing: 10) {
-                expandableVital(
-                    kind: .cpu,
-                    icon: "cpu",
-                    label: "CPU",
-                    value: String(format: "%.0f%%", system.current.cpuPercent),
-                    firing: firingColor(for: .cpu),
-                    tooltip: cpuTooltip,
-                    fillRatio: cpuFillRatio
-                )
-                expandableVital(
-                    kind: .memory,
-                    icon: "memorychip",
-                    label: "RAM",
-                    value: ramValue,
-                    firing: firingColor(for: .memory),
-                    tooltip: ramTooltip,
-                    fillRatio: memoryFillRatio
-                )
-            }
-            HStack(spacing: 10) {
-                expandableVital(
-                    kind: .net,
-                    icon: "network",
-                    label: "Net",
-                    value: netValue,
-                    firing: firingColor(for: .network),
-                    tooltip: netTooltip,
-                    fillRatio: nil
-                )
-                VitalCell(
-                    icon: "internaldrive",
-                    label: "Disk",
-                    value: diskValue,
-                    firing: firingColor(for: .disk),
-                    tooltip: diskTooltip,
-                    fillRatio: diskFillRatio
-                )
-            }
-            HStack(spacing: 10) {
-                VitalCell(
-                    icon: batteryIcon,
-                    label: "Batt",
-                    value: battValue,
-                    firing: firingColor(for: .battery),
-                    tooltip: battTooltip,
-                    fillRatio: batteryFillRatio
-                )
-                VitalCell(
-                    icon: thermalIcon,
-                    label: "Therm",
-                    value: thermalValue,
-                    firing: firingColor(for: .thermal),
-                    tooltip: thermalTooltip,
-                    fillRatio: nil
-                )
-            }
+        VStack(spacing: 8) {
+            HStack(spacing: 8) { cpuTile; memoryTile }
+            HStack(spacing: 8) { networkTile; diskTile }
+            HStack(spacing: 8) { batteryTile; thermalTile }
+        }
+    }
 
-            if let expanded {
-                expandedPanel(for: expanded)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+    private var cpuTile: some View {
+        tile(icon: "cpu", label: "CPU",
+             value: bigValue("\(Int(system.current.cpuPercent.rounded()))%"),
+             firing: firingColor(for: .cpu),
+             tap: { onShowDetail(.cpu) }) {
+            MiniSparkline(values: spark(metricHistory.cpu), color: SeverityColors.info)
+        }
+    }
+
+    private var memoryTile: some View {
+        let used = Double(system.current.memoryUsedBytes) / 1_073_741_824
+        let total = Double(system.current.memoryTotalBytes) / 1_073_741_824
+        return tile(icon: "memorychip", label: "Memory",
+             value: bigValue(String(format: "%.0f", used),
+                             unit: total > 0 ? "/\(String(format: "%.0f", total))" : nil),
+             firing: firingColor(for: .memory),
+             tap: { onShowDetail(.memory) }) {
+            MiniSparkline(values: spark(metricHistory.memoryUsed), color: SeverityColors.good)
+        }
+    }
+
+    private var netUpColor: Color { Color(red: 0.61, green: 0.48, blue: 0.91) }
+
+    private func netRun(_ arrow: String, _ color: Color, _ parts: (String, String), trailing: String) -> Text {
+        let a: Text = Text(Image(systemName: arrow)).font(.system(size: 11, weight: .bold)).foregroundColor(color)
+        let n: Text = Text(" \(parts.0)").font(.system(size: 16, weight: .semibold)).foregroundColor(.primary)
+        let u: Text = Text(" \(parts.1)\(trailing)").font(.system(size: 10)).foregroundColor(.secondary)
+        return a + n + u
+    }
+
+    private var networkTile: some View {
+        let down = rateParts(system.current.netBytesInPerSec)
+        let up = rateParts(system.current.netBytesOutPerSec)
+        let value = netRun("arrow.down", SeverityColors.info, down, trailing: "   ")
+            + netRun("arrow.up", netUpColor, up, trailing: "")
+        return tile(icon: "network", label: "Network",
+             value: value,
+             firing: firingColor(for: .network),
+             tap: { onShowDetail(.net) }) {
+            EmptyView()
+        }
+    }
+
+    private var diskTile: some View {
+        let parts = sizeParts(system.current.diskFreeBytes)
+        return tile(icon: "internaldrive", label: "Disk",
+             value: bigValue(parts.0, unit: " \(parts.1)"),
+             firing: firingColor(for: .disk),
+             tap: nil) {
+            usageBar(diskFillRatio ?? 0, SeverityColors.good)
+        }
+    }
+
+    private var batteryTile: some View {
+        let pct = system.current.battery?.percent
+        return tile(icon: batteryIcon, label: "Battery",
+             value: bigValue(pct.map { "\($0)%" } ?? "—"),
+             firing: firingColor(for: .battery),
+             tap: nil) {
+            batteryIndicator
+        }
+    }
+
+    @ViewBuilder
+    private var batteryIndicator: some View {
+        if let b = system.current.battery {
+            if b.isPluggedIn {
+                Image(systemName: "bolt.fill").font(.system(size: 14)).foregroundStyle(SeverityColors.good)
+            } else {
+                usageBar(Double(b.percent) / 100.0, b.percent <= 20 ? SeverityColors.watch : SeverityColors.good)
             }
         }
-        .animation(.easeInOut(duration: 0.15), value: expanded)
+    }
+
+    private var thermalTile: some View {
+        tile(icon: thermalIcon, label: "Thermal",
+             value: Text(thermalValue).font(.system(size: 16, weight: .semibold)).foregroundColor(.primary),
+             firing: firingColor(for: .thermal),
+             tap: nil) {
+            Circle().fill(firingColor(for: .thermal) ?? SeverityColors.good).frame(width: 10, height: 10)
+        }
+    }
+
+    private func tile<Indicator: View>(
+        icon: String, label: String, value: Text, firing: Color?,
+        tap: (() -> Void)?, @ViewBuilder indicator: () -> Indicator
+    ) -> some View {
+        let content = VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                Text(label).font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if let firing { Circle().fill(firing).frame(width: 7, height: 7) }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                value.lineLimit(1).minimumScaleFactor(0.6)
+                Spacer(minLength: 4)
+                indicator()
+            }
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
+        .contentShape(Rectangle())
+
+        return Group {
+            if let tap {
+                Button(action: tap) { content }.buttonStyle(.plain)
+            } else {
+                content
+            }
+        }
+    }
+
+    private func bigValue(_ main: String, unit: String? = nil) -> Text {
+        var t = Text(main).font(.system(size: 22, weight: .semibold)).foregroundColor(.primary)
+        if let unit {
+            t = t + Text(unit).font(.system(size: 13, weight: .regular)).foregroundColor(.secondary)
+        }
+        return t
+    }
+
+    private func spark(_ series: MetricSeries) -> [Double] {
+        series.samples.suffix(40).map(\.value)
+    }
+
+    private func usageBar(_ ratio: Double, _ color: Color) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.15))
+                Capsule().fill(color)
+                    .frame(width: geo.size.width * CGFloat(min(max(ratio, 0), 1)))
+            }
+        }
+        .frame(width: 54, height: 6)
+    }
+
+    private func rateParts(_ bytesPerSec: UInt64) -> (String, String) {
+        let b = Double(bytesPerSec)
+        if b < 1024 { return (String(format: "%.0f", b), "B/s") }
+        if b < 1_048_576 { return (String(format: "%.0f", b / 1024), "KB/s") }
+        if b < 1_073_741_824 { return (String(format: "%.1f", b / 1_048_576), "MB/s") }
+        return (String(format: "%.1f", b / 1_073_741_824), "GB/s")
+    }
+
+    private func sizeParts(_ bytes: UInt64) -> (String, String) {
+        let gb = Double(bytes) / 1_073_741_824
+        if gb >= 1024 { return (String(format: "%.1f", gb / 1024), "TB") }
+        if gb >= 1 { return (String(format: "%.0f", gb), "GB") }
+        return (String(format: "%.0f", Double(bytes) / 1_048_576), "MB")
     }
 
     @ViewBuilder
@@ -579,7 +691,7 @@ struct PopoverView: View {
         let used = Double(system.current.memoryUsedBytes) / 1_073_741_824
         let total = Double(system.current.memoryTotalBytes) / 1_073_741_824
         if total > 0 {
-            return String(format: "%.1f / %.0f GB", used, total)
+            return String(format: "%.0f/%.0f GB", used, total)
         }
         return "—"
     }
@@ -767,7 +879,114 @@ struct PopoverView: View {
                 value: networkInfo.publicIP,
                 isLoading: networkInfo.isRefreshingPublic && networkInfo.publicIP == nil
             )
+            Button { onShowPorts() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.caption).foregroundStyle(.secondary).frame(width: 14)
+                    Text("Open ports").font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("See every port currently listening on this Mac.")
+
+            Button { onShowConnectivity() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption).foregroundStyle(.secondary).frame(width: 14)
+                    Text("Connection history").font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Uptime and outage history for your internet connection.")
         }
+    }
+
+    // MARK: - Details menu
+
+    /// The popover's navigation menu: one row per detail panel, each showing a
+    /// live value on the right and opening its window on tap. Replaces the old
+    /// scattered security section + collapsible disclosures with one consistent
+    /// list (Security posture · Malware scan · Open ports · Top Processes ·
+    /// Connection details · Recent events).
+    private var detailsMenu: some View {
+        VStack(spacing: 0) {
+            navRow(icon: postureIcon, tint: postureColor,
+                   title: "Security posture", value: postureMenuValue, action: onShowPosture)
+            navRow(icon: malwareScanIcon, tint: malwareScanColor,
+                   title: "Malware scan", value: malwareMenuValue, action: onShowMalwareInfo)
+            navRow(icon: "network", tint: neutralIconColor,
+                   title: "Open ports", value: nil, action: onShowPorts)
+            navRow(icon: "chart.pie", tint: neutralIconColor,
+                   title: "Top Processes", value: topProcessMenuValue, action: onShowProcesses)
+            navRow(icon: "wifi", tint: wifi.stableVPNActive ? SeverityColors.good : neutralIconColor,
+                   title: "Connection details", value: connectionMenuValue, action: onShowConnectivity)
+            navRow(icon: "clock.arrow.circlepath", tint: neutralIconColor,
+                   title: "Recent events",
+                   value: history.recent.isEmpty ? nil : "\(history.recent.count)",
+                   action: onShowFullHistory)
+        }
+    }
+
+    private var neutralIconColor: Color { Color(nsColor: .secondaryLabelColor) }
+
+    private func navRow(icon: String, tint: Color, title: String, value: String?, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 11) {
+                Image(systemName: icon)
+                    .font(.callout)
+                    .foregroundStyle(tint)
+                    .frame(width: 18)
+                Text(title)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 8)
+                if let value {
+                    Text(value)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 9)
+            .padding(.horizontal, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var postureMenuValue: String {
+        if !settings.securityMonitoringEnabled { return "Off" }
+        if !security.current.scanned { return "Checking…" }
+        let n = postureProblemCount
+        return n == 0 ? "All clear" : (n == 1 ? "1 to review" : "\(n) to review")
+    }
+
+    private var malwareMenuValue: String {
+        malwareScanText.replacingOccurrences(of: "Malware scan · ", with: "")
+    }
+
+    private var topProcessMenuValue: String? {
+        guard let p = processes.current.topByCPU.first else { return nil }
+        return "\(p.name) · \(p.cpuDisplay)"
+    }
+
+    private var connectionMenuValue: String? {
+        let snap = wifi.current
+        if snap.vpnActive { return "VPN active" }
+        if snap.hasWiFiLink { return snap.displaySSID() }
+        return nil
     }
 
     /// Grouped security summary: connection (VPN/Wi-Fi), posture, and malware
@@ -1544,6 +1763,7 @@ struct MalwareProtectionView: View {
 struct SecurityPostureView: View {
     @ObservedObject var security: SecurityCollector
     @ObservedObject var settings: Settings
+    var onShowPorts: () -> Void = {}
 
     private var s: SecuritySnapshot { security.current }
 
@@ -1591,7 +1811,8 @@ struct SecurityPostureView: View {
             VStack(spacing: 8) {
                 countItem("network", "Remote sharing exposed", s.exposedServices.count)
                 countItem("app.badge", "Unsigned apps running", s.unsignedApps.count)
-                countItem("dot.radiowaves.left.and.right", "Unexpected listeners", s.unexpectedListeners.count)
+                countItem("dot.radiowaves.left.and.right", "Unexpected listeners",
+                          s.unexpectedListeners.count, action: onShowPorts)
                 countItem("clock.arrow.circlepath", "New startup items", s.newPersistenceItems.count)
             }
 
@@ -1664,9 +1885,9 @@ struct SecurityPostureView: View {
     }
 
     @ViewBuilder
-    private func countItem(_ icon: String, _ name: String, _ count: Int) -> some View {
+    private func countItem(_ icon: String, _ name: String, _ count: Int, action: (() -> Void)? = nil) -> some View {
         let ok = count == 0
-        HStack(spacing: 10) {
+        let row = HStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -1677,9 +1898,20 @@ struct SecurityPostureView: View {
             Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .font(.caption)
                 .foregroundStyle(ok ? SeverityColors.good : SeverityColors.watch)
-            Text(ok ? "None" : "\(count)")
+            Text(ok ? "None" : String(count))
                 .font(.caption)
                 .foregroundStyle(ok ? SeverityColors.good : SeverityColors.watch)
+            if action != nil {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        if let action {
+            Button(action: action) { row.contentShape(Rectangle()) }
+                .buttonStyle(.plain)
+        } else {
+            row
         }
     }
 }
@@ -1860,14 +2092,14 @@ struct IncidentCard: View {
                 }
             }
         }
-        .padding(10)
+        .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.primary.opacity(0.04))
+            RoundedRectangle(cornerRadius: 11)
+                .fill(tint.opacity(0.08))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(tint.opacity(0.25), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 11)
+                .stroke(tint.opacity(0.22), lineWidth: 0.5)
         )
         // Whole card is a tap target for "show full details". The inner ••• menu
         // and action button are higher-priority controls, so they still handle
@@ -2126,10 +2358,26 @@ struct HistoryRowView: View {
 struct HistoryPanelView: View {
     @ObservedObject var history: HistoryStore
     @State private var now = Date()
-    @State private var selection: IncidentRecord.ID?
     @State private var detailRecord: IncidentRecord?
+    @State private var filter: EventFilter = .all
 
     private let timer = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
+
+    private enum EventFilter: String, CaseIterable, Identifiable {
+        case all = "All", security = "Security", performance = "Performance", system = "System"
+        var id: String { rawValue }
+    }
+
+    private func matches(_ c: IncidentCategory) -> Bool {
+        switch filter {
+        case .all: return true
+        case .security: return c == .security
+        case .performance: return [.cpu, .memory, .swap, .thermal, .battery, .disk].contains(c)
+        case .system: return [.app, .system, .network].contains(c)
+        }
+    }
+
+    private var filtered: [IncidentRecord] { history.all.filter { matches($0.category) } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -2140,25 +2388,30 @@ struct HistoryPanelView: View {
                 Text("\(history.all.count) events")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button {
-                    history.refresh()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .help("Refresh")
+                Button { history.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless)
+                    .help("Refresh")
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+
+            Picker("", selection: $filter) {
+                ForEach(EventFilter.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
 
             Divider()
 
-            if history.all.isEmpty {
+            if filtered.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "tray")
                         .font(.largeTitle)
                         .foregroundStyle(.secondary)
-                    Text("No events yet")
+                    Text(history.all.isEmpty ? "No events yet" : "Nothing in this filter")
                         .font(.headline)
                     Text("Events show up here as Mojo Pulse notices things.")
                         .font(.caption)
@@ -2167,65 +2420,26 @@ struct HistoryPanelView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding()
             } else {
-                Table(history.all, selection: $selection) {
-                    TableColumn("") { row in
-                        Circle()
-                            .fill(SeverityColors.color(for: row.severity, fallbackQuiet: false))
-                            .frame(width: 8, height: 8)
-                    }
-                    .width(16)
-
-                    TableColumn("Event") { row in
-                        HStack(spacing: 6) {
-                            Image(systemName: row.category.systemImage)
-                                .foregroundStyle(.secondary)
-                            Text(row.title)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filtered) { record in
+                            eventRow(record)
+                            Divider()
                         }
                     }
-                    .width(min: 160, ideal: 240)
-
-                    TableColumn("Started") { row in
-                        Text(startedLabel(row.startedAt))
-                            .foregroundStyle(.secondary)
-                            .font(.caption.monospacedDigit())
-                    }
-                    .width(min: 120, ideal: 160)
-
-                    TableColumn("Duration") { row in
-                        Text(durationLabel(for: row))
-                            .foregroundStyle(.secondary)
-                            .font(.caption.monospacedDigit())
-                    }
-                    .width(min: 70, ideal: 90)
-
-                    TableColumn("Status") { row in
-                        if row.isActive {
-                            Text("Active")
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(Color.accentColor)
-                        } else {
-                            Text("Resolved")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .width(min: 60, ideal: 80)
                 }
             }
         }
-        .frame(minWidth: 620, minHeight: 380)
+        .frame(minWidth: 640, minHeight: 420)
         .onReceive(timer) { now = $0 }
         .onAppear { history.refresh() }
-        .onChange(of: selection) { _, newValue in
-            detailRecord = history.all.first { $0.id == newValue }
-        }
         .sheet(item: $detailRecord) { record in
             VStack(spacing: 0) {
                 IncidentDetailView(record: record)
                 Divider()
                 HStack {
                     Spacer()
-                    Button("Done") { detailRecord = nil; selection = nil }
+                    Button("Done") { detailRecord = nil }
                         .keyboardShortcut(.defaultAction)
                 }
                 .padding(12)
@@ -2244,6 +2458,43 @@ struct HistoryPanelView: View {
     private func durationLabel(for row: IncidentRecord) -> String {
         let seconds = Int(row.duration(now: now))
         return RelativeTime.duration(seconds: seconds)
+    }
+
+    private func eventRow(_ r: IncidentRecord) -> some View {
+        Button { detailRecord = r } label: {
+            HStack(spacing: 11) {
+                Circle()
+                    .fill(SeverityColors.color(for: r.severity, fallbackQuiet: false))
+                    .frame(width: 8, height: 8)
+                Image(systemName: r.category.systemImage)
+                    .font(.callout).foregroundStyle(.secondary).frame(width: 18)
+                Text(r.title)
+                    .font(.callout).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 10)
+                Text(startedLabel(r.startedAt))
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    .frame(width: 120, alignment: .trailing)
+                Text(durationLabel(for: r))
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    .frame(width: 72, alignment: .trailing)
+                Group {
+                    if r.isActive {
+                        Text("Active")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 8).padding(.vertical, 2)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+                    } else {
+                        Text("Resolved")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 72, alignment: .trailing)
+            }
+            .padding(.vertical, 9).padding(.horizontal, 16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -2423,6 +2674,417 @@ struct MutedItemsView: View {
         case "event" where p.count >= 3 && p[1] == "crash": return "\(p[2]) crashing"
         default: return signature
         }
+    }
+}
+
+// MARK: - Open ports panel
+
+/// Live inventory of every TCP port in LISTEN state, split into network-reachable
+/// (your attack surface) and localhost-only (dev servers, generally harmless).
+/// Read unprivileged via lsof; re-scans on a slow timer while open.
+struct OpenPortsView: View {
+    @StateObject private var model = OpenPortsModel()
+    @State private var selectedPort: OpenPort?
+
+    private let timer = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
+
+    private var network: [OpenPort] { model.ports.filter { $0.exposure == .network } }
+    private var loopback: [OpenPort] { model.ports.filter { $0.exposure == .loopback } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            content
+        }
+        .frame(width: 520, height: 460)
+        .onAppear { model.refresh() }
+        .onReceive(timer) { _ in model.refresh() }
+        .sheet(item: $selectedPort) { port in
+            VStack(spacing: 0) {
+                PortDetailView(port: port)
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("Done") { selectedPort = nil }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(12)
+            }
+            .frame(width: 400)
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Open ports").font(.title3.weight(.semibold))
+                Text(summary).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Activity Monitor") { openActivityMonitor() }
+                .controlSize(.small)
+            Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(.borderless)
+                .help("Re-scan")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private var summary: String {
+        if !model.scannedOnce { return "Scanning…" }
+        let n = model.ports.count
+        let listening = n == 1 ? "1 listening" : "\(n) listening"
+        return "\(listening) · \(model.networkCount) network-reachable"
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if !model.scannedOnce && model.scanning {
+            centerNote("Scanning ports…")
+        } else if model.ports.isEmpty {
+            centerNote("No listening ports found.")
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !network.isEmpty { section("Network-reachable", network, reachable: true) }
+                    if !loopback.isEmpty { section("Localhost only", loopback, reachable: false) }
+                    Text("Localhost-only ports aren't reachable from the network. System processes may show limited detail — Pulse never asks for admin rights.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    private func section(_ title: String, _ items: [OpenPort], reachable: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .tracking(0.4)
+                Text("\(items.count)").font(.caption2).foregroundStyle(.tertiary)
+            }
+            ForEach(items) { portRow($0, reachable: reachable) }
+        }
+    }
+
+    private func portRow(_ p: OpenPort, reachable: Bool) -> some View {
+        Button { selectedPort = p } label: {
+            HStack(spacing: 12) {
+                VStack(spacing: 1) {
+                    Text(verbatim: "\(p.port)")
+                        .font(.system(.callout, design: .monospaced).weight(.semibold))
+                    Text("TCP").font(.system(size: 9, weight: .medium)).foregroundStyle(.tertiary)
+                }
+                .frame(width: 56)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(p.process).font(.subheadline.weight(.medium))
+                        if p.isAppleSystem {
+                            Text("system")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        }
+                    }
+                    Text(verbatim: "pid \(p.pid) · \(p.addressLabel)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(reachable ? "reachable" : "localhost")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(reachable ? SeverityColors.watch : SeverityColors.good)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(Capsule().fill((reachable ? SeverityColors.watch : SeverityColors.good).opacity(0.12)))
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func centerNote(_ text: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .font(.largeTitle).foregroundStyle(.secondary)
+            Text(text).font(.callout).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
+    private func openActivityMonitor() {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.ActivityMonitor") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+}
+
+/// Detail for one open port: full executable path, bind scope explained, and
+/// quick actions. Read-only — Pulse never closes ports for you.
+struct PortDetailView: View {
+    let port: OpenPort
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 11) {
+                Image(systemName: port.exposure == .network ? "dot.radiowaves.left.and.right" : "house")
+                    .font(.title2)
+                    .foregroundStyle(port.exposure == .network ? SeverityColors.watch : SeverityColors.good)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(verbatim: "\(port.process) · port \(port.port)")
+                        .font(.title3.weight(.semibold))
+                    Text(port.exposure == .network ? "Reachable from the network" : "Localhost only")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            VStack(spacing: 8) {
+                detailRow("Process", port.process)
+                detailRow("PID", String(port.pid))
+                detailRow("Port", "\(port.port) · TCP")
+                detailRow("Bind address", "\(port.address) (\(port.addressLabel))")
+                detailRow("Origin", port.isAppleSystem ? "Apple / system" : "Third-party")
+            }
+
+            if let path = port.path {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Executable")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                        .textCase(.uppercase).tracking(0.4)
+                    Text(path)
+                        .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Text(port.exposure == .network
+                 ? "This port accepts connections from other devices on your network. If you don't recognize it, quit the process or check it in Activity Monitor."
+                 : "Bound to localhost, so only apps on this Mac can reach it — usually a local dev server. Generally harmless.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("Activity Monitor") { openActivityMonitor() }
+                    .controlSize(.small)
+                if let path = port.path {
+                    Button("Reveal in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                    }
+                    .controlSize(.small)
+                }
+                Spacer()
+            }
+        }
+        .padding(20)
+        .frame(width: 400, alignment: .leading)
+    }
+
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).font(.callout).foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            Text(value).font(.callout).multilineTextAlignment(.trailing)
+        }
+    }
+
+    private func openActivityMonitor() {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.ActivityMonitor") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+}
+
+// MARK: - Connectivity history panel
+
+/// Uptime / outage history, folded from the reachability transition log. Shows
+/// 24h and 7d drop summaries plus a recent-outages list, with the current
+/// online/offline state. Read-only.
+struct ConnectivityHistoryView: View {
+    @StateObject private var model: ConnectivityHistoryModel
+    @State private var now = Date()
+
+    private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
+
+    @ObservedObject private var networkInfo: NetworkInfo
+    @ObservedObject private var wifi: WiFiCollector
+
+    init(database: Database?, networkInfo: NetworkInfo, wifi: WiFiCollector) {
+        _model = StateObject(wrappedValue: ConnectivityHistoryModel(database: database))
+        _networkInfo = ObservedObject(wrappedValue: networkInfo)
+        _wifi = ObservedObject(wrappedValue: wifi)
+    }
+
+    private var day: ConnectivitySummary {
+        ConnectivityAnalysis.summary(model.outages, since: now.addingTimeInterval(-24 * 3600), now: now)
+    }
+    private var week: ConnectivitySummary {
+        ConnectivityAnalysis.summary(model.outages, since: now.addingTimeInterval(-7 * 24 * 3600), now: now)
+    }
+    private var ongoing: Outage? { model.outages.first(where: \.isOngoing) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Connection").font(.title3.weight(.semibold))
+                Spacer()
+                Button { model.refresh(now: now) } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless).help("Refresh")
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    statusHero
+                    VStack(spacing: 6) {
+                        CopyableInfoRow(label: "Local IP", value: networkInfo.localIP)
+                        CopyableInfoRow(label: "Public IP", value: networkInfo.publicIP)
+                    }
+                    historySection
+                }
+                .padding(16)
+            }
+        }
+        .frame(width: 470, height: 470)
+        .onAppear { networkInfo.refresh(); model.refresh(now: now) }
+        .onReceive(timer) { now = $0; model.refresh(now: $0) }
+    }
+
+    private var statusStyle: (label: String, color: Color, icon: String) {
+        guard let o = ongoing else { return ("Online", SeverityColors.good, "wifi") }
+        return o.offline ? ("Offline", SeverityColors.issue, "wifi.slash")
+                         : ("Degraded", SeverityColors.watch, "wifi.exclamationmark")
+    }
+
+    private var wifiSubtitle: String {
+        let snap = wifi.current
+        guard snap.hasWiFiLink else { return snap.vpnActive ? "VPN tunnel · no Wi-Fi link" : "No Wi-Fi" }
+        var parts = ["\(snap.displaySSID()) · \(snap.security.label)"]
+        if let rssi = snap.rssi { parts.append("\(rssi) dBm") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var statusHero: some View {
+        let s = statusStyle
+        return HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(s.color.opacity(0.14)).frame(width: 44, height: 44)
+                Image(systemName: s.icon).font(.title2).foregroundStyle(s.color)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(s.label).font(.title3.weight(.semibold))
+                    if wifi.current.vpnActive {
+                        Text("VPN · \(wifi.current.vpnInterface ?? "active")")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(SeverityColors.good)
+                            .padding(.horizontal, 8).padding(.vertical, 2)
+                            .background(Capsule().fill(SeverityColors.good.opacity(0.14)))
+                    }
+                }
+                Text(wifiSubtitle).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12).fill(s.color.opacity(0.07)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(s.color.opacity(0.2), lineWidth: 0.5))
+    }
+
+    @ViewBuilder
+    private var historySection: some View {
+        Text("Connection history")
+            .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            .textCase(.uppercase).tracking(0.4)
+        if !model.loaded {
+            Text("Loading…").font(.caption).foregroundStyle(.secondary)
+        } else if model.outages.isEmpty {
+            Text("No outages recorded — your connection has been steady.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            HStack(spacing: 12) {
+                summaryCard("Last 24 hours", day)
+                summaryCard("Last 7 days", week)
+            }
+            outageList
+            Text("Recorded from connectivity changes Pulse sees while running. “Degraded” means the link was up but the internet was unreachable.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func summaryCard(_ title: String, _ s: ConnectivitySummary) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                .textCase(.uppercase).tracking(0.4)
+            Text(s.drops == 0 ? "No drops" : (s.drops == 1 ? "1 drop" : "\(s.drops) drops"))
+                .font(.title3.weight(.semibold))
+            if s.drops > 0 {
+                Text(verbatim: "\(durationText(s.totalDowntime)) total · longest \(durationText(s.longest))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
+    }
+
+    private var outageList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Recent outages").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                .textCase(.uppercase).tracking(0.4)
+            ForEach(model.outages.prefix(30)) { o in
+                HStack(spacing: 10) {
+                    Image(systemName: o.offline ? "wifi.slash" : "wifi.exclamationmark")
+                        .font(.callout)
+                        .foregroundStyle(o.offline ? SeverityColors.issue : SeverityColors.watch)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(o.offline ? "Offline" : "Degraded").font(.subheadline.weight(.medium))
+                        Text(startText(o.start)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Text(o.isOngoing ? "ongoing" : durationText(o.duration(now: now)))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(o.isOngoing ? SeverityColors.watch : .secondary)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+            }
+        }
+    }
+
+    private func centerNote(_ t: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "wifi").font(.largeTitle).foregroundStyle(.secondary)
+            Text(t).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 320)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity).padding()
+    }
+
+    private func durationText(_ t: TimeInterval) -> String { RelativeTime.duration(seconds: Int(t)) }
+    private func startText(_ d: Date) -> String {
+        let f = DateFormatter(); f.dateStyle = .short; f.timeStyle = .short
+        return f.string(from: d)
     }
 }
 

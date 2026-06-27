@@ -17,10 +17,12 @@ struct SystemEventsSnapshot: Sendable, Equatable {
     var smartFailing: Bool
     var smartDisk: String?
     var lastPanic: Date?
+    var pendingUpdates: Int
     var scanned: Bool
 
     static let empty = SystemEventsSnapshot(
-        crashes: [], smartFailing: false, smartDisk: nil, lastPanic: nil, scanned: false
+        crashes: [], smartFailing: false, smartDisk: nil, lastPanic: nil,
+        pendingUpdates: 0, scanned: false
     )
 }
 
@@ -90,8 +92,24 @@ enum SystemEventsScanner {
             smartFailing: smart.failing,
             smartDisk: smart.disk,
             lastPanic: recentPanic(),
+            pendingUpdates: pendingUpdateCount(),
             scanned: true
         )
+    }
+
+    // MARK: Pending software updates
+
+    /// Count of updates macOS already knows are recommended, read from the local
+    /// SoftwareUpdate preferences. No network call — this reflects the last
+    /// scheduled background check. Unprivileged: the plist is world-readable.
+    private static func pendingUpdateCount() -> Int {
+        let path = "/Library/Preferences/com.apple.SoftwareUpdate.plist"
+        guard let data = FileManager.default.contents(atPath: path),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let updates = plist["RecommendedUpdates"] as? [Any] else {
+            return 0
+        }
+        return updates.count
     }
 
     // MARK: Crashes
