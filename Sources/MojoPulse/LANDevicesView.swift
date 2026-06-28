@@ -10,10 +10,13 @@ struct LANDevicesView: View {
     @ObservedObject var arp: ARPCollector
     @ObservedObject var settings: Settings
 
+    @State private var selectedDevice: LANDevice?
+
     private var snap: LANSnapshot { arp.current }
     private var gateway: [LANDevice] { snap.devices.filter { $0.isGateway } }
-    private var identified: [LANDevice] { snap.devices.filter { !$0.isGateway && ($0.name != nil || $0.vendor != nil) } }
-    private var unidentified: [LANDevice] { snap.devices.filter { !$0.isGateway && $0.name == nil && $0.vendor == nil } }
+    private func isIdentified(_ d: LANDevice) -> Bool { d.name != nil || d.vendor != nil || d.isNamed }
+    private var identified: [LANDevice] { snap.devices.filter { !$0.isGateway && isIdentified($0) } }
+    private var unidentified: [LANDevice] { snap.devices.filter { !$0.isGateway && !isIdentified($0) } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -23,6 +26,9 @@ struct LANDevicesView: View {
         }
         .frame(width: 520, height: 480)
         .onAppear { arp.rescan() }
+        .sheet(item: $selectedDevice) { device in
+            LANDeviceDetailView(device: device, arp: arp, settings: settings)
+        }
     }
 
     private var header: some View {
@@ -101,9 +107,12 @@ struct LANDevicesView: View {
             } else if d.kind == .randomized {
                 badge("private", .secondary)
             }
+            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+        .contentShape(Rectangle())
+        .onTapGesture { selectedDevice = d }
     }
 
     /// Secondary line: Bonjour service type(s) + model + (vendor when the title

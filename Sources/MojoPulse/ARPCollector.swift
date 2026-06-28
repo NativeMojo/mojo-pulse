@@ -15,6 +15,11 @@ import Combine
 final class ARPCollector: ObservableObject {
     @Published private(set) var current: LANSnapshot = .empty
 
+    /// Transient active-probe results, keyed by device id (MAC). Deliberately a
+    /// SEPARATE published surface from `current` so live, churning probe state
+    /// never diffs the LAN snapshot and wakes the detector engine.
+    @Published private(set) var probeResults: [String: ProbeResult] = [:]
+
     /// Called whenever the snapshot changes. Hooked to forceTick so new-device
     /// and gateway-MAC incidents fire without waiting for the 5 s cadence.
     var onChange: (() -> Void)?
@@ -39,6 +44,9 @@ final class ARPCollector: ObservableObject {
     /// Active Bonjour identity layer (opt-in via Settings.lanIdentifyEnabled).
     private let identifier = BonjourIdentifier()
 
+    /// On-demand active prober (opt-in via Settings.lanActiveProbeEnabled).
+    private let prober = ActiveProber()
+
     init(settings: Settings, wifi: WiFiCollector, baseline: LANBaselineStore,
          interval: TimeInterval = 15) {
         self.settings = settings
@@ -47,6 +55,12 @@ final class ARPCollector: ObservableObject {
         self.interval = interval
         // A learned Bonjour identity (or a denial) re-merges into the snapshot.
         identifier.onChange = { [weak self] in self?.rescan() }
+        // Probe progress republishes its own surface — NOT a snapshot rescan, so
+        // it never wakes the detectors.
+        prober.onChange = { [weak self] in
+            guard let self else { return }
+            self.probeResults = self.prober.results
+        }
     }
 
     func start() {
@@ -75,7 +89,44 @@ final class ARPCollector: ObservableObject {
         if settings.lanWatchEnabled { scheduleLoop(); syncIdentifier(); rescan() }
     }
 
-    func stop() { stopLoop(); identifier.stop() }
+    func stop() { stopLoop(); identifier.stop(); prober.reset() }
+
+    // MARK: - Active probe (user-initiated, single device)
+
+    /// Run an on-demand active probe of one device. Double-gated: does nothing
+    /// unless both the LAN watch and the active-probe master switch are on. The
+    /// consent flow is enforced by the UI; this is the engine entry point.
+    func probeDevice(_ device: LANDevice, tier: ProbeResult.Tier) {
+        // Triple-gated, enforced in the engine (not just the UI): master switch,
+        // and per-network consent. The UI collects consent; this refuses without it.
+        guard settings.lanWatchEnabled, settings.lanActiveProbeEnabled,
+              settings.hasAcceptedProbeConsent(forNetwork: current.networkKey) else { return }
+        let onLink = ActiveProber.resolverIsOnLink(gatewayIP: current.gatewayIP)
+        prober.probe(device: device, tier: tier, resolverOnLink: onLink)
+    }
+
+    /// Cancel any in-flight probe (e.g. the detail sheet was closed).
+    func cancelProbe() { prober.cancel() }
+
+    func probeResult(for device: LANDevice) -> ProbeResult? { probeResults[device.id] }
+
+    // MARK: - Custom names (user-assigned)
+
+    /// Set or clear a device's user-given name. Persisted by the baseline store,
+    /// then folded into `current` in place so the inventory relabels instantly —
+    /// WITHOUT firing `onChange`, so renaming never wakes the detector engine.
+    func setCustomName(_ name: String?, for device: LANDevice) {
+        baseline.setCustomName(name, mac: device.mac, kind: device.kind,
+                               networkKey: current.networkKey)
+        let resolved = baseline.customName(mac: device.mac, kind: device.kind,
+                                           networkKey: current.networkKey)
+        var snap = current
+        snap.devices = snap.devices.map { d in
+            guard d.id == device.id else { return d }
+            var copy = d; copy.customName = resolved; return copy
+        }
+        current = snap   // republishes to the view; no onChange → no detector tick
+    }
 
     /// Bonjour identification runs only when both watch and identify are on.
     private func syncIdentifier() {
@@ -86,6 +137,7 @@ final class ARPCollector: ObservableObject {
     private func stopLoop() { task?.cancel(); task = nil }
 
     private func clear() {
+        prober.reset()
         if current != .empty { current = .empty; onChange?() }
     }
 
@@ -135,6 +187,7 @@ final class ARPCollector: ObservableObject {
         if key != lastNetworkKey {
             lastNetworkKey = key
             identifier.reset()
+            prober.reset()   // probe results from the old LAN can't carry over
         }
         // Expire stale Bonjour identities so a departed device's name can't stick
         // to whatever later reuses its IP.
@@ -173,7 +226,8 @@ final class ARPCollector: ObservableObject {
                 name: identity?.name,
                 model: identity?.model,
                 services: identity.map { $0.services.sorted() } ?? [],
-                isGateway: isGW, firstSeen: firstSeen, lastSeen: now, isNew: isNew))
+                isGateway: isGW, firstSeen: firstSeen, lastSeen: now, isNew: isNew,
+                customName: baseline.customName(mac: mac, kind: kind, networkKey: key)))
         }
 
         let gwMAC = devices.first(where: { $0.isGateway })?.mac

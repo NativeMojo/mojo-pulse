@@ -15,7 +15,41 @@ final class LANBaselineStore {
     private struct Mem { var firstSeen: Date; var isGateway: Bool; var lastSeen: Date }
     private var mem: [String: [String: Mem]] = [:]   // ssid -> mac -> Mem
 
-    init(database: Database?) { self.db = database }
+    /// User-assigned names, "scope\u{1}mac" -> name. Hydrated once at init so the
+    /// per-device scan fold-back is a pure dictionary read, never a SQLite hit.
+    private var nameCache: [String: String] = [:]
+
+    init(database: Database?) {
+        self.db = database
+        if let db { nameCache = (try? db.lanNamesAll()) ?? [:] }
+    }
+
+    /// The persistence scope for a device's custom name. A real hardware (global)
+    /// MAC is network-independent ("*"); a randomized/private MAC rotates per
+    /// network, so its name is scoped to the network it was set on.
+    static func nameScope(kind: MACKind, networkKey: String) -> String {
+        kind == .global ? "*" : networkKey
+    }
+
+    private static func nameKey(scope: String, mac: String) -> String { "\(scope)\u{1}\(mac)" }
+
+    /// The user's custom name for a device, or nil. Pure in-memory lookup.
+    func customName(mac: String, kind: MACKind, networkKey: String) -> String? {
+        let scope = Self.nameScope(kind: kind, networkKey: networkKey)
+        return nameCache[Self.nameKey(scope: scope, mac: mac)]
+    }
+
+    /// Set or clear a device's custom name. Writes through to SQLite (best-effort)
+    /// and updates the in-memory cache so the next snapshot rebuild reflects it.
+    func setCustomName(_ name: String?, mac: String, kind: MACKind,
+                       networkKey: String, at now: Date = Date()) {
+        let scope = Self.nameScope(kind: kind, networkKey: networkKey)
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = Self.nameKey(scope: scope, mac: mac)
+        if let trimmed, !trimmed.isEmpty { nameCache[key] = trimmed }
+        else { nameCache.removeValue(forKey: key) }
+        try? db?.lanSetName(scope: scope, mac: mac, name: trimmed, at: now)
+    }
 
     /// Upsert a sighting. Returns the device's first-seen time and whether this
     /// was the first time we've ever recorded this (ssid, mac).

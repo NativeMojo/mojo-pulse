@@ -1369,6 +1369,9 @@ struct SettingsView: View {
                     toggleRow("Identify devices (names & types)",
                               "Use Bonjour to label devices (e.g. “Living Room Apple TV”). Asks once for Local Network access; off = vendor names only.",
                               $settings.lanIdentifyEnabled)
+                    toggleRow("Allow active device probing",
+                              "Lets you run an on-demand scan on a device you pick — to identify what it is. Unlike everything else, this connects directly to that device. One at a time, only when you click, with a warning first. Use only on networks you own. Off by default.",
+                              $settings.lanActiveProbeEnabled)
                 }
             }
 

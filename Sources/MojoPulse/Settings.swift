@@ -39,7 +39,14 @@ final class Settings: ObservableObject {
         static let lanWatch = "network.lanWatchEnabled"
         static let lanIdentify = "network.lanIdentifyEnabled"
         static let lanNewDeviceAlerts = "network.lanNewDeviceAlertsEnabled"
+        static let lanActiveProbe = "network.lanActiveProbeEnabled"
+        static let lanProbeConsentVersion = "network.lanProbeConsentVersion"
+        static let lanProbeAckNetwork = "network.lanProbeAckNetwork"
     }
+
+    /// Version of the active-probe consent text. Bump if the warning's meaning
+    /// materially changes, to force everyone through the dialog again.
+    static let probeConsentVersion = 1
 
     /// Master switch for the whole security/posture subsystem. When off, the
     /// SecurityCollector stops scanning and clears its snapshot, so every
@@ -101,6 +108,40 @@ final class Settings: ObservableObject {
         didSet { defaults.set(lanNewDeviceAlertsEnabled, forKey: Key.lanNewDeviceAlerts) }
     }
 
+    /// Master kill-switch for *active* device probing (the on-demand port scan +
+    /// banner grab of a single user-chosen device). OFF by default and the most
+    /// guarded toggle in the app: unlike everything else Pulse does, a probe
+    /// reaches out and connects to another host. When off, the probe controls in
+    /// the device detail view are hidden — Pulse cannot emit a single probe
+    /// packet. Turning it on does NOT probe anything; each probe is still an
+    /// explicit, per-device click behind its own consent.
+    @Published var lanActiveProbeEnabled: Bool {
+        didSet { defaults.set(lanActiveProbeEnabled, forKey: Key.lanActiveProbe) }
+    }
+
+    /// Whether the user has accepted the active-probe warning **for this network**
+    /// at the current consent version. Scoped per-network (by the LAN snapshot's
+    /// `networkKey`) so moving to an unfamiliar Wi-Fi re-surfaces the "are you
+    /// authorized here?" check rather than carrying a home-network acceptance into
+    /// a coffee-shop or corporate LAN.
+    func hasAcceptedProbeConsent(forNetwork networkKey: String) -> Bool {
+        defaults.integer(forKey: Key.lanProbeConsentVersion) >= Settings.probeConsentVersion
+            && defaults.string(forKey: Key.lanProbeAckNetwork) == Settings.consentKey(for: networkKey)
+    }
+
+    /// Persist that the user accepted the probe warning for `networkKey`.
+    func recordProbeConsent(forNetwork networkKey: String) {
+        defaults.set(Settings.probeConsentVersion, forKey: Key.lanProbeConsentVersion)
+        defaults.set(Settings.consentKey(for: networkKey), forKey: Key.lanProbeAckNetwork)
+    }
+
+    /// Normalize the per-network consent key. SSID-less, gateway-less networks have
+    /// an empty `networkKey`; map them to a stable sentinel so consent can persist
+    /// instead of re-prompting on every probe.
+    private static func consentKey(for networkKey: String) -> String {
+        networkKey.isEmpty ? "local:no-network" : networkKey
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
@@ -111,7 +152,10 @@ final class Settings: ObservableObject {
             Key.geoLookup: false,
             Key.lanWatch: false,
             Key.lanIdentify: false,
-            Key.lanNewDeviceAlerts: false
+            Key.lanNewDeviceAlerts: false,
+            Key.lanActiveProbe: false,
+            Key.lanProbeConsentVersion: 0,
+            Key.lanProbeAckNetwork: ""
         ])
         // Assigning stored properties inside init does not fire didSet, so the
         // first read here won't redundantly write back the registered default.
@@ -124,5 +168,6 @@ final class Settings: ObservableObject {
         self.lanWatchEnabled = defaults.bool(forKey: Key.lanWatch)
         self.lanIdentifyEnabled = defaults.bool(forKey: Key.lanIdentify)
         self.lanNewDeviceAlertsEnabled = defaults.bool(forKey: Key.lanNewDeviceAlerts)
+        self.lanActiveProbeEnabled = defaults.bool(forKey: Key.lanActiveProbe)
     }
 }

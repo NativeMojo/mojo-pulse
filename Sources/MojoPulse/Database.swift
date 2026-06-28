@@ -163,6 +163,21 @@ final class Database: @unchecked Sendable {
         try exec("""
             CREATE INDEX IF NOT EXISTS idx_lan_devices_ssid ON lan_devices(ssid);
         """)
+        // User-assigned device names. Deliberately SEPARATE from lan_devices: a
+        // hand-typed name must survive the 90-day device prune and is keyed by
+        // `scope` not SSID. `scope` is "*" for a globally-unique (real hardware)
+        // MAC — network-independent, so a laptop keeps its name at home and the
+        // office — or the network key for a randomized/private MAC, which rotates
+        // per-network, so its name is correctly scoped to where it was set.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS lan_names (
+                scope TEXT NOT NULL,
+                mac TEXT NOT NULL,
+                name TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (scope, mac)
+            );
+        """)
     }
 
     // MARK: - LAN devices (passive ARP baseline)
@@ -248,6 +263,49 @@ final class Database: @unchecked Sendable {
         sqlite3_bind_int64(stmt, 3, Int64(since.timeIntervalSince1970))
         guard sqlite3_step(stmt) == SQLITE_ROW, let c = sqlite3_column_text(stmt, 0) else { return nil }
         return String(cString: c)
+    }
+
+    // MARK: - LAN custom names (user-assigned, keyed by scope+mac)
+
+    /// All user-assigned names as "scope\u{1}mac" -> name. Loaded once into the
+    /// baseline store so labeling a snapshot is a dictionary lookup, never a
+    /// per-device SQLite hit on the scan path.
+    func lanNamesAll() throws -> [String: String] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT scope, mac, name FROM lan_names;", -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        var out: [String: String] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let sC = sqlite3_column_text(stmt, 0),
+                  let mC = sqlite3_column_text(stmt, 1),
+                  let nC = sqlite3_column_text(stmt, 2) else { continue }
+            out["\(String(cString: sC))\u{1}\(String(cString: mC))"] = String(cString: nC)
+        }
+        return out
+    }
+
+    /// Upsert (non-empty name) or delete (nil/empty name) the custom name for a
+    /// (scope, mac).
+    func lanSetName(scope: String, mac: String, name: String?, at now: Date) throws {
+        if let name, !name.isEmpty {
+            let sql = "INSERT OR REPLACE INTO lan_names (scope, mac, name, updated_at) VALUES (?, ?, ?, ?);"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, scope, -1, Database.SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, mac, -1, Database.SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, name, -1, Database.SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 4, Int64(now.timeIntervalSince1970))
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw DBError.execFailed }
+        } else {
+            let sql = "DELETE FROM lan_names WHERE scope = ? AND mac = ?;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, scope, -1, Database.SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, mac, -1, Database.SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw DBError.execFailed }
+        }
     }
 
     // MARK: - GeoIP cache

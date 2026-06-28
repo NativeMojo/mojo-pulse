@@ -29,10 +29,13 @@ struct LANDevice: Sendable, Equatable, Identifiable {
     var firstSeen: Date
     var lastSeen: Date
     var isNew: Bool          // first seen within the "new" window on this network
+    var customName: String?  // user-assigned (persisted by MAC); wins over everything
 
-    /// A friendly one-liner for cards and lists. Prefers the Bonjour name, then
-    /// the OUI vendor; honest about uncertainty when a randomized MAC can't be named.
+    /// A friendly one-liner for cards and lists. A user-chosen name wins, then
+    /// the Bonjour name, then the OUI vendor; honest about uncertainty when a
+    /// randomized MAC can't be named.
     var label: String {
+        if let customName, !customName.isEmpty { return customName }
         if let name, !name.isEmpty { return name }
         if isGateway { return vendor.map { "Router · \($0)" } ?? "Router" }
         if let v = vendor { return v }
@@ -41,6 +44,9 @@ struct LANDevice: Sendable, Equatable, Identifiable {
         default: return "Unknown device"
         }
     }
+
+    /// True when the user has put their own name on this device.
+    var isNamed: Bool { (customName?.isEmpty == false) }
 }
 
 /// State of the active Bonjour identification layer, surfaced so the UI can show
