@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var securityCollector: SecurityCollector?
     private var processCollector: ProcessCollector?
     private var systemEventsCollector: SystemEventsCollector?
+    private var arpCollector: ARPCollector?
     private var detectorEngine: DetectorEngine?
     private var signalAggregator: SignalAggregator?
     private var networkInfo: NetworkInfo?
@@ -130,6 +131,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let security = SecurityCollector(settings: settings)
         let processes = ProcessCollector(settings: settings)
         let events = SystemEventsCollector()
+        // Passive LAN watcher: ARP-based device inventory + new-device and
+        // gateway-MAC-change detection. Off by default; baseline persists in the
+        // same DB (in-memory fallback when the DB is unavailable).
+        let lanBaseline = LANBaselineStore(database: db)
+        let arp = ARPCollector(settings: settings, wifi: wifi, baseline: lanBaseline)
         self.thermalCollector = thermal
         self.reachabilityMonitor = reach
         self.systemCollector = system
@@ -137,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.securityCollector = security
         self.processCollector = processes
         self.systemEventsCollector = events
+        self.arpCollector = arp
 
         // Detectors. Order here is irrelevant — DetectorEngine sorts by
         // severity for display — but we keep the same order as the UI would
@@ -154,7 +161,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             InsecureNetworkDetector(),
             DiskHealthDetector(),
             PanicDetector(),
-            UpdateDetector()
+            UpdateDetector(),
+            GatewayMACDetector(settings: settings)
         ]
             + PostureDetector.defaults()
 
@@ -169,7 +177,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UnexpectedListenerDetector(),
             XProtectDetectionDetector(),
             RunawayProcessDetector(settings: settings),
-            CrashDetector()
+            CrashDetector(),
+            NewDeviceDetector(settings: settings)
         ]
 
         // Engine and aggregator. Persistence flows straight into SQLite when
@@ -205,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             security: security,
             processes: processes,
             events: events,
+            arp: arp,
             history: metricHistory
         )
         self.detectorEngine = engine
@@ -242,6 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             system: system,
             security: security,
             processes: processes,
+            arp: arp,
             aggregator: aggregator,
             settings: settings,
             updater: updater,
@@ -280,6 +291,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the first scan completes.
         security.start()
         events.start()
+        // ARP watcher after the aggregator, so its onChange (wired in
+        // aggregator.start) is set before the first scan completes — same
+        // ordering rationale as security/events above.
+        arp.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -289,5 +304,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         systemCollector?.stop()
         securityCollector?.stop()
         systemEventsCollector?.stop()
+        arpCollector?.stop()
     }
 }

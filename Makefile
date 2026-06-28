@@ -14,7 +14,7 @@ DIST_DIR         := dist
 # per release. CFBundleVersion is the auto-incrementing build counter below —
 # that's what Sparkle compares to decide "is there a newer build?", so the
 # display version can stay fixed across builds without breaking auto-update.
-MARKETING_VERSION := 1.4.0
+MARKETING_VERSION := 1.5.0
 BUILD_NUMBER_FILE := .build-number
 # Code-signing identity. The Developer ID Application cert for 311 Labs, LLC.
 # (Team 7UURCYAQ8Y) is the default so `make app/install/release` sign for real.
@@ -70,6 +70,7 @@ app: build
 	@cp Info.plist $(APP_BUNDLE)/Contents/
 	@cp Resources/AppIcon.icns $(APP_BUNDLE)/Contents/Resources/
 	@cp Resources/WorldOutline.json $(APP_BUNDLE)/Contents/Resources/
+	@cp Resources/oui.csv $(APP_BUNDLE)/Contents/Resources/
 	@# Auto-increment the build counter (gitignored file) and stamp the bundle's
 	@# COPY of Info.plist: CFBundleShortVersionString = the marketing version,
 	@# CFBundleVersion = the rising build number Sparkle compares. We patch only

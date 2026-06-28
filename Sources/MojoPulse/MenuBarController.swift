@@ -31,6 +31,7 @@ final class MenuBarController: NSObject {
     private let system: SystemCollector
     private let security: SecurityCollector
     private let processes: ProcessCollector
+    private let arp: ARPCollector
     private let aggregator: SignalAggregator
     private let settings: Settings
     private let updater: Updater
@@ -68,6 +69,9 @@ final class MenuBarController: NSObject {
 
     /// Retained reference to the "Open ports" inventory window.
     private var openPortsWindow: NSWindow?
+
+    /// Retained reference to the "Devices on your network" inventory window.
+    private var lanDevicesWindow: NSWindow?
 
     /// Retained reference to the "Connection history" window.
     private var connectivityWindow: NSWindow?
@@ -119,6 +123,7 @@ final class MenuBarController: NSObject {
         system: SystemCollector,
         security: SecurityCollector,
         processes: ProcessCollector,
+        arp: ARPCollector,
         aggregator: SignalAggregator,
         settings: Settings,
         updater: Updater,
@@ -133,6 +138,7 @@ final class MenuBarController: NSObject {
         self.system = system
         self.security = security
         self.processes = processes
+        self.arp = arp
         self.aggregator = aggregator
         self.settings = settings
         self.updater = updater
@@ -155,6 +161,7 @@ final class MenuBarController: NSObject {
                 system: system,
                 security: security,
                 processes: processes,
+                arp: arp,
                 settings: settings,
                 onShowFullHistory: { [weak self] in self?.showHistoryWindow() },
                 onShowDetail: { [weak self] kind in self?.showDetailWindow(initial: kind) },
@@ -167,7 +174,8 @@ final class MenuBarController: NSObject {
                 onSelectEvent: { [weak self] record in self?.showEventWindow(record) },
                 onShowPorts: { [weak self] in self?.showOpenPortsWindow() },
                 onShowConnectivity: { [weak self] in self?.showConnectivityWindow() },
-                onShowNetwork: { [weak self] in self?.showNetworkActivityWindow() }
+                onShowNetwork: { [weak self] in self?.showNetworkActivityWindow() },
+                onShowDevices: { [weak self] in self?.showLANDevicesWindow() }
             )
         )
 
@@ -728,6 +736,36 @@ final class MenuBarController: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
+    // MARK: - LAN devices window
+
+    /// Open (or raise) the local-network device inventory — the passive ARP
+    /// view of everything on the current Wi-Fi, with vendors and new-device
+    /// badges. Shares the live ARPCollector so it reflects the same snapshot
+    /// the detectors see.
+    private func showLANDevicesWindow() {
+        popover.performClose(nil)
+
+        if let existing = lanDevicesWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let hosting = NSHostingController(rootView: LANDevicesView(arp: arp, settings: settings))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Devices on Your Network"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        lanDevicesWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
     // MARK: - Ignored items window
 
     /// Open (or raise) the "Ignored items" manager — where the user audits and
@@ -931,6 +969,8 @@ extension MenuBarController: NSWindowDelegate {
             mutedItemsWindow = nil
         } else if closing === openPortsWindow {
             openPortsWindow = nil
+        } else if closing === lanDevicesWindow {
+            lanDevicesWindow = nil
         } else if closing === connectivityWindow {
             connectivityWindow = nil
         } else if closing === processesWindow {

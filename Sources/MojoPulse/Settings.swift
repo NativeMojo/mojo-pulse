@@ -36,6 +36,9 @@ final class Settings: ObservableObject {
         static let runawayAlerts = "process.runawayAlertsEnabled"
         static let menuBarIcon = "ui.menuBarIconStyle"
         static let geoLookup = "network.geoLookupEnabled"
+        static let lanWatch = "network.lanWatchEnabled"
+        static let lanIdentify = "network.lanIdentifyEnabled"
+        static let lanNewDeviceAlerts = "network.lanNewDeviceAlertsEnabled"
     }
 
     /// Master switch for the whole security/posture subsystem. When off, the
@@ -73,6 +76,31 @@ final class Settings: ObservableObject {
         didSet { defaults.set(geoLookupEnabled, forKey: Key.geoLookup) }
     }
 
+    /// Master switch for the passive LAN watcher (ARP-based device inventory +
+    /// new-device and gateway-MAC-change detection). OFF by default: it opens no
+    /// listeners and needs no permissions, but it's a distinct feature the user
+    /// opts into. When off, ARPCollector idles and its detectors go quiet.
+    @Published var lanWatchEnabled: Bool {
+        didSet { defaults.set(lanWatchEnabled, forKey: Key.lanWatch) }
+    }
+
+    /// Whether the LAN watcher may actively browse Bonjour/mDNS to put real
+    /// names and device types on the inventory. OFF by default: unlike the
+    /// passive ARP watch it sends packets, so it triggers macOS's Local Network
+    /// permission prompt. When off (or denied), the inventory still works with
+    /// vendor-from-MAC labels only.
+    @Published var lanIdentifyEnabled: Bool {
+        didSet { defaults.set(lanIdentifyEnabled, forKey: Key.lanIdentify) }
+    }
+
+    /// Whether to surface a card when a previously-unseen device joins the
+    /// network. OFF by default — on busy, guest-heavy, or public networks this
+    /// is noisy, so it's a power-user opt-in. The device inventory and the
+    /// (rare, high-signal) gateway-MAC-change alarm don't depend on this.
+    @Published var lanNewDeviceAlertsEnabled: Bool {
+        didSet { defaults.set(lanNewDeviceAlertsEnabled, forKey: Key.lanNewDeviceAlerts) }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
@@ -80,7 +108,10 @@ final class Settings: ObservableObject {
             Key.notifications: true,
             Key.runawayAlerts: true,
             Key.menuBarIcon: MenuBarIconStyle.heartbeat.rawValue,
-            Key.geoLookup: false
+            Key.geoLookup: false,
+            Key.lanWatch: false,
+            Key.lanIdentify: false,
+            Key.lanNewDeviceAlerts: false
         ])
         // Assigning stored properties inside init does not fire didSet, so the
         // first read here won't redundantly write back the registered default.
@@ -90,5 +121,8 @@ final class Settings: ObservableObject {
         self.menuBarIconStyle = MenuBarIconStyle(rawValue: defaults.string(forKey: Key.menuBarIcon) ?? "")
             ?? .heartbeat
         self.geoLookupEnabled = defaults.bool(forKey: Key.geoLookup)
+        self.lanWatchEnabled = defaults.bool(forKey: Key.lanWatch)
+        self.lanIdentifyEnabled = defaults.bool(forKey: Key.lanIdentify)
+        self.lanNewDeviceAlertsEnabled = defaults.bool(forKey: Key.lanNewDeviceAlerts)
     }
 }

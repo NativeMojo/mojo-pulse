@@ -79,6 +79,7 @@ struct PopoverView: View {
     @ObservedObject var system: SystemCollector
     @ObservedObject var security: SecurityCollector
     @ObservedObject var processes: ProcessCollector
+    @ObservedObject var arp: ARPCollector
     @ObservedObject var settings: Settings
 
     /// Called when the user taps "Show all" under Recent. The concrete
@@ -124,6 +125,9 @@ struct PopoverView: View {
 
     /// Called when the user opens the Network Activity map/list tool.
     var onShowNetwork: () -> Void = {}
+
+    /// Called when the user opens the local-network device inventory.
+    var onShowDevices: () -> Void = {}
 
     /// Which expandable vital (if any) is currently showing its sparkline.
     /// Cleared by tapping the same cell again or expanding a different one.
@@ -969,6 +973,10 @@ struct PopoverView: View {
                    title: "Network activity", value: nil, action: onShowNetwork)
             navRow(icon: "network", tint: neutralIconColor,
                    title: "Open ports", value: nil, action: onShowPorts)
+            if settings.lanWatchEnabled {
+                navRow(icon: "rectangle.connected.to.line.below", tint: neutralIconColor,
+                       title: "Devices on network", value: lanDevicesMenuValue, action: onShowDevices)
+            }
 
             Divider().padding(.vertical, 4)
 
@@ -1031,6 +1039,11 @@ struct PopoverView: View {
         if snap.vpnActive { return "VPN active" }
         if snap.hasWiFiLink { return snap.displaySSID() }
         return nil
+    }
+
+    private var lanDevicesMenuValue: String? {
+        let n = arp.current.devices.count
+        return n == 0 ? nil : "\(n)"
     }
 
     /// Grouped security summary: connection (VPN/Wi-Fi), posture, and malware
@@ -1343,6 +1356,20 @@ struct SettingsView: View {
                 toggleRow("Notifications",
                           "Alert you — and your Apple Watch — about red and security events.",
                           $settings.notificationsEnabled)
+            }
+
+            group("Network watch") {
+                toggleRow("Watch the local network",
+                          "Quietly inventory the devices on your Wi-Fi and alert if your router's hardware address changes (a sign of an attack). No extra permissions, nothing leaves your Mac.",
+                          $settings.lanWatchEnabled)
+                if settings.lanWatchEnabled {
+                    toggleRow("Alert me about new devices",
+                              "Flag a card when a device you haven't seen joins. Off by default — noisy on busy, guest, or public networks.",
+                              $settings.lanNewDeviceAlertsEnabled)
+                    toggleRow("Identify devices (names & types)",
+                              "Use Bonjour to label devices (e.g. “Living Room Apple TV”). Asks once for Local Network access; off = vendor names only.",
+                              $settings.lanIdentifyEnabled)
+                }
             }
 
             group("Menu bar icon") {

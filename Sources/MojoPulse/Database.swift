@@ -145,6 +145,109 @@ final class Database: @unchecked Sendable {
                 expires INTEGER NOT NULL
             );
         """)
+        // Per-network device baseline for the passive LAN watcher. One row per
+        // (ssid, mac); `ssid` is "" for Ethernet/location-off. first_seen powers
+        // the "new device" window; is_gateway lets us detect a gateway-MAC change.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS lan_devices (
+                ssid TEXT NOT NULL,
+                mac TEXT NOT NULL,
+                ip TEXT,
+                vendor TEXT,
+                is_gateway INTEGER NOT NULL DEFAULT 0,
+                first_seen INTEGER NOT NULL,
+                last_seen INTEGER NOT NULL,
+                PRIMARY KEY (ssid, mac)
+            );
+        """)
+        try exec("""
+            CREATE INDEX IF NOT EXISTS idx_lan_devices_ssid ON lan_devices(ssid);
+        """)
+    }
+
+    // MARK: - LAN devices (passive ARP baseline)
+
+    /// Upsert a device sighting. Returns its first-seen time and whether this is
+    /// the first time this (ssid, mac) has ever been recorded. is_gateway is
+    /// sticky-OR'd so a row keeps the flag once seen as the gateway.
+    func lanObserve(ssid: String, mac: String, ip: String,
+                    isGateway: Bool, at now: Date) throws -> (firstSeen: Date, wasInsert: Bool) {
+        var existing: Date?
+        var sel: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT first_seen FROM lan_devices WHERE ssid = ? AND mac = ? LIMIT 1;", -1, &sel, nil) == SQLITE_OK {
+            sqlite3_bind_text(sel, 1, ssid, -1, Database.SQLITE_TRANSIENT)
+            sqlite3_bind_text(sel, 2, mac, -1, Database.SQLITE_TRANSIENT)
+            if sqlite3_step(sel) == SQLITE_ROW {
+                existing = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(sel, 0)))
+            }
+        }
+        sqlite3_finalize(sel)
+
+        if let firstSeen = existing {
+            let sql = "UPDATE lan_devices SET last_seen = ?, ip = ?, is_gateway = ? WHERE ssid = ? AND mac = ?;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, Int64(now.timeIntervalSince1970))
+            sqlite3_bind_text(stmt, 2, ip, -1, Database.SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 3, isGateway ? 1 : 0)
+            sqlite3_bind_text(stmt, 4, ssid, -1, Database.SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 5, mac, -1, Database.SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw DBError.execFailed }
+            return (firstSeen, false)
+        } else {
+            let sql = "INSERT INTO lan_devices (ssid, mac, ip, vendor, is_gateway, first_seen, last_seen) VALUES (?, ?, ?, NULL, ?, ?, ?);"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, ssid, -1, Database.SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, mac, -1, Database.SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, ip, -1, Database.SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 4, isGateway ? 1 : 0)
+            sqlite3_bind_int64(stmt, 5, Int64(now.timeIntervalSince1970))
+            sqlite3_bind_int64(stmt, 6, Int64(now.timeIntervalSince1970))
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw DBError.execFailed }
+            return (now, true)
+        }
+    }
+
+    /// When a network was first baselined (earliest first_seen), or nil if it has
+    /// no devices on record yet. Drives the "new device" cutoff so the first scan
+    /// of a network primes silently instead of flagging everything.
+    func lanEstablishedAt(ssid: String) throws -> Date? {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT MIN(first_seen) FROM lan_devices WHERE ssid = ?;", -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, ssid, -1, Database.SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_ROW, sqlite3_column_type(stmt, 0) != SQLITE_NULL else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 0)))
+    }
+
+    /// Delete devices not seen since `cutoff`. Bounds on-disk growth across every
+    /// network the Mac ever joins (mirrors pruneMetricRollups).
+    func pruneLANDevices(before cutoff: Date) throws {
+        let sql = "DELETE FROM lan_devices WHERE last_seen < ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(cutoff.timeIntervalSince1970))
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw DBError.execFailed }
+    }
+
+    /// The most-recently-seen prior gateway MAC for this SSID that differs from
+    /// the current one and was last seen at/after `since`. Non-nil means the
+    /// router's hardware address changed recently; the recency bound lets a benign
+    /// router swap auto-clear once the old box stops answering ARP.
+    func lanPriorGatewayMAC(ssid: String, current: String, since: Date) throws -> String? {
+        let sql = "SELECT mac FROM lan_devices WHERE ssid = ? AND is_gateway = 1 AND mac != ? AND last_seen >= ? ORDER BY last_seen DESC LIMIT 1;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, ssid, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, current, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 3, Int64(since.timeIntervalSince1970))
+        guard sqlite3_step(stmt) == SQLITE_ROW, let c = sqlite3_column_text(stmt, 0) else { return nil }
+        return String(cString: c)
     }
 
     // MARK: - GeoIP cache

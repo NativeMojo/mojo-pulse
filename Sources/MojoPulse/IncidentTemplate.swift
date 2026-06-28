@@ -417,6 +417,31 @@ enum IncidentTemplates {
                 actionURL: softwareUpdateURL
             )
 
+        // MARK: Local network
+
+        case "network.lan.newDevice":
+            let who = ctx["who"] ?? "A new device"
+            let ssid = ctx["ssid"] ?? "your network"
+            let at = ctx["ip"].map { " at \($0)" } ?? ""
+            return IncidentCopy(
+                title: "New device on \(ssid)",
+                what: "\(who) just appeared on \(ssid)\(at).",
+                why: "Knowing what's on your network helps you spot an intruder. Most new devices are harmless — a guest's phone, a new gadget, or one of yours reconnecting.",
+                action: "If you don't recognize it, check your router and consider changing your Wi-Fi password. Choose “Always ignore this” for devices you know.",
+                actionURL: nil
+            )
+
+        case "network.lan.gatewayMAC":
+            let ssid = ctx["ssid"] ?? "this network"
+            let gwIP = ctx["gatewayIP"] ?? "your router"
+            return IncidentCopy(
+                title: "Your router's address changed",
+                what: "The gateway (\(gwIP)) on \(ssid) is now answering from a different hardware (MAC) address.",
+                why: "If your router didn't just reboot or get replaced, this is a classic sign of an ARP-spoofing man-in-the-middle — someone on the network impersonating your router to intercept traffic.",
+                action: "On untrusted Wi-Fi, disconnect and use a VPN. If this is your own network, verify the router; otherwise treat the network as compromised.",
+                actionURL: privacySecurityURL
+            )
+
         // MARK: Fallback
 
         default:
