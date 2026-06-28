@@ -21,9 +21,17 @@ BUILD_NUMBER_FILE := .build-number
 # Override with SIGN_IDENTITY="-" to fall back to ad-hoc (e.g. a machine without
 # the cert); the hardened-runtime flags below auto-disable for ad-hoc.
 SIGN_IDENTITY    := Developer ID Application: 311 Labs, LLC. (7UURCYAQ8Y)
-# Keychain profile holding the notarization credential (App Store Connect API
-# key), created via `xcrun notarytool store-credentials`.
+# Notarization credential. A keychain profile (`notarytool store-credentials`)
+# works, but the login keychain relocks during the multi-minute `--wait` and the
+# submit then fails with "No Keychain password item found", killing the release
+# mid-flight. So we pass the App Store Connect API key (.p8) directly — no
+# keychain involved. The .p8 is the only secret and stays out of the repo in
+# ~/mojopulse-signing; the key-id and issuer are non-secret identifiers.
 NOTARY_PROFILE   := mojopulse-notary
+NOTARY_KEY       := $(HOME)/mojopulse-signing/AuthKey_D56868A4PH.p8
+NOTARY_KEY_ID    := D56868A4PH
+NOTARY_ISSUER    := 69a6de7e-f152-47e3-e053-5b8c7c11a4d1
+NOTARY_AUTH      := --key $(NOTARY_KEY) --key-id $(NOTARY_KEY_ID) --issuer $(NOTARY_ISSUER)
 
 # Hardened runtime + a secure timestamp are required for notarization, but only
 # work with a real Developer ID identity (ad-hoc "-" can't timestamp). Toggle
@@ -121,7 +129,7 @@ notarize: app
 	@ditto -c -k --keepParent $(APP_BUNDLE) $(DIST_DIR)/$(APP_NAME)-notarize.zip
 	@echo "Submitting to Apple notary service (can take a few minutes)…"
 	xcrun notarytool submit $(DIST_DIR)/$(APP_NAME)-notarize.zip \
-		--keychain-profile "$(NOTARY_PROFILE)" --wait
+		$(NOTARY_AUTH) --wait
 	@xcrun stapler staple $(APP_BUNDLE)
 	@rm -f $(DIST_DIR)/$(APP_NAME)-notarize.zip
 	@echo "Notarized + stapled $(APP_BUNDLE)"
@@ -143,7 +151,7 @@ release: notarize
 			-srcfolder $(DIST_DIR)/staging -ov -format UDZO "$$DMG_PATH" >/dev/null; \
 		rm -rf $(DIST_DIR)/staging; \
 		echo "Submitting DMG to notary service…"; \
-		xcrun notarytool submit "$$DMG_PATH" --keychain-profile "$(NOTARY_PROFILE)" --wait; \
+		xcrun notarytool submit "$$DMG_PATH" $(NOTARY_AUTH) --wait; \
 		xcrun stapler staple "$$DMG_PATH"; \
 		SHA=$$(shasum -a 256 "$$DMG_PATH" | cut -d' ' -f1); \
 		echo ""; \
