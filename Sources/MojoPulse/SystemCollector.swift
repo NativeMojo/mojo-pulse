@@ -84,6 +84,7 @@ final class SystemCollector: ObservableObject {
         let battery = readBattery()
         let disk = readDisk()
         let net = sampleNet(now: now)
+        let thermal = sampleThermal(now: now)
 
         current = SystemSnapshot(
             cpuPercent: cpu,
@@ -96,8 +97,28 @@ final class SystemCollector: ObservableObject {
             diskFreeBytes: disk.free,
             diskTotalBytes: disk.total,
             netBytesInPerSec: net.bytesInPerSec,
-            netBytesOutPerSec: net.bytesOutPerSec
+            netBytesOutPerSec: net.bytesOutPerSec,
+            thermal: thermal
         )
+    }
+
+    // MARK: - Thermal
+
+    private let thermalSensors = ThermalSensors()
+    private var thermalCache: ThermalSummary = .empty
+    private var thermalReadAt: Date?
+
+    /// Sample hardware temperatures/fans, throttled to once every ~3 s even
+    /// when the aggregator is fast-ticking (2 s). Silicon temperatures move
+    /// slowly, and a sensor read walks ~70 HID services + the SMC, so there's
+    /// no point re-reading on every fast tick — we reuse the cached summary.
+    private func sampleThermal(now: Date) -> ThermalSummary {
+        if let at = thermalReadAt, now.timeIntervalSince(at) < 3 {
+            return thermalCache
+        }
+        thermalCache = thermalSensors.read().summary
+        thermalReadAt = now
+        return thermalCache
     }
 
     // MARK: - CPU
@@ -394,6 +415,11 @@ struct SystemSnapshot: Sendable, Equatable {
     let netBytesInPerSec: UInt64
     let netBytesOutPerSec: UInt64
 
+    /// Live hardware temperature + fan summary (real degrees, not the OS
+    /// throttle state). Drives the popover Thermal tile. `.empty` until the
+    /// first thermal read lands.
+    let thermal: ThermalSummary
+
     static let empty = SystemSnapshot(
         cpuPercent: 0,
         memoryPressure: .normal,
@@ -405,7 +431,8 @@ struct SystemSnapshot: Sendable, Equatable {
         diskFreeBytes: 0,
         diskTotalBytes: 0,
         netBytesInPerSec: 0,
-        netBytesOutPerSec: 0
+        netBytesOutPerSec: 0,
+        thermal: .empty
     )
 
     var diskFreePercent: Double {

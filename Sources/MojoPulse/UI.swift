@@ -129,6 +129,10 @@ struct PopoverView: View {
     /// Called when the user opens the local-network device inventory.
     var onShowDevices: () -> Void = {}
 
+    /// Called when the user clicks the Thermal tile. Opens the thermal detail
+    /// window (live temperatures + fans). Window plumbing in MenuBarController.
+    var onShowThermal: () -> Void = {}
+
     /// Which expandable vital (if any) is currently showing its sparkline.
     /// Cleared by tapping the same cell again or expanding a different one.
     @State private var expanded: MetricKind? = nil
@@ -525,11 +529,31 @@ struct PopoverView: View {
 
     private var thermalTile: some View {
         tile(icon: thermalIcon, label: "Thermal",
-             value: Text(thermalValue).font(.system(size: 16, weight: .semibold)).foregroundColor(.primary),
+             value: thermalTileText,
              firing: firingColor(for: .thermal),
-             tap: nil) {
-            Circle().fill(firingColor(for: .thermal) ?? SeverityColors.good).frame(width: 10, height: 10)
+             tap: { onShowThermal() }) {
+            Circle().fill(firingColor(for: .thermal) ?? thermalGlanceColor).frame(width: 10, height: 10)
         }
+        .help(thermalTooltip)
+    }
+
+    /// The tile's headline: live degrees when we can read a sensor, falling
+    /// back to the OS thermal-state word otherwise (e.g. a VM with no sensors).
+    private var thermalTileText: Text {
+        if let c = system.current.thermal.cpuTempC {
+            return bigValue("\(Int(c.rounded()))°C")
+        }
+        return Text(thermalValue).font(.system(size: 16, weight: .semibold)).foregroundColor(.primary)
+    }
+
+    /// Indicator dot color when nothing is firing: tinted by actual temperature
+    /// so a hot-but-not-throttling Mac still reads "warm" at a glance — the
+    /// exact case `ProcessInfo.thermalState` alone would show as calm.
+    private var thermalGlanceColor: Color {
+        guard let c = system.current.thermal.cpuTempC else { return SeverityColors.good }
+        if c >= 95 { return SeverityColors.issue }
+        if c >= 80 { return SeverityColors.watch }
+        return SeverityColors.good
     }
 
     private func tile<Indicator: View>(
@@ -851,11 +875,31 @@ struct PopoverView: View {
         if let firing = engine.activeIncidents.first(where: { $0.category == .thermal }) {
             return firing.severity == .issue ? "thermometer.high" : "thermometer.medium"
         }
+        // Respond to real heat even when macOS isn't throttling yet.
+        if let c = system.current.thermal.cpuTempC {
+            if c >= 95 { return "thermometer.high" }
+            if c >= 80 { return "thermometer.medium" }
+        }
         return "thermometer.low"
     }
 
     private var thermalTooltip: String {
-        "Thermal state: \(thermalValue)\nReported by macOS — when serious or critical, the system is throttling."
+        let t = system.current.thermal
+        var lines: [String] = []
+        if let c = t.cpuTempC {
+            lines.append("CPU / SoC: \(Int(c.rounded()))°C")
+        }
+        if let h = t.hottestTempC, let name = t.hottestSensorName {
+            lines.append("Hottest: \(Int(h.rounded()))°C (\(name))")
+        }
+        if let rpm = t.fanRPM {
+            lines.append(rpm > 0 ? "Fan: \(rpm) rpm" : "Fans idle")
+        }
+        // The OS throttle state is the secondary signal now, not the headline.
+        lines.append("macOS state: \(thermalValue)" +
+                     (thermalValue == "Nominal" ? "" : " — system is throttling"))
+        lines.append("Click for full thermal detail.")
+        return lines.joined(separator: "\n")
     }
 
     private var cpuTooltip: String {
@@ -1347,134 +1391,194 @@ struct SettingsView: View {
         let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .none; return f
     }()
 
+    /// Sidebar categories. The old single tall scroll was overloaded; these
+    /// group the settings the way the user reaches for them.
+    enum SettingsSection: String, CaseIterable, Identifiable {
+        case general = "General"
+        case monitoring = "Monitoring"
+        case network = "Network"
+        case protection = "Protection"
+        var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .general: return "gearshape"
+            case .monitoring: return "waveform.path.ecg"
+            case .network: return "wifi"
+            case .protection: return "checkmark.shield"
+            }
+        }
+    }
+
+    @State private var section: SettingsSection? = .general
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            group("Monitoring") {
-                toggleRow("Security monitoring",
-                          "Watch posture, new startup items, listeners, and unsigned apps.",
-                          $settings.securityMonitoringEnabled)
-                toggleRow("Notifications",
-                          "Alert you — and your Apple Watch — about red and security events.",
-                          $settings.notificationsEnabled)
-            }
-
-            group("Network watch") {
-                toggleRow("Watch the local network",
-                          "Quietly inventory the devices on your Wi-Fi and alert if your router's hardware address changes (a sign of an attack). No extra permissions, nothing leaves your Mac.",
-                          $settings.lanWatchEnabled)
-                if settings.lanWatchEnabled {
-                    toggleRow("Alert me about new devices",
-                              "Flag a card when a device you haven't seen joins. Off by default — noisy on busy, guest, or public networks.",
-                              $settings.lanNewDeviceAlertsEnabled)
-                    toggleRow("Identify devices (names & types)",
-                              "Use Bonjour to label devices (e.g. “Living Room Apple TV”). Asks once for Local Network access; off = vendor names only.",
-                              $settings.lanIdentifyEnabled)
-                    toggleRow("Allow active device probing",
-                              "Lets you run an on-demand scan on a device you pick — to identify what it is. Unlike everything else, this connects directly to that device. One at a time, only when you click, with a warning first. Use only on networks you own. Off by default.",
-                              $settings.lanActiveProbeEnabled)
+        NavigationSplitView {
+            List(selection: $section) {
+                ForEach(SettingsSection.allCases) { item in
+                    Label(item.rawValue, systemImage: item.icon).tag(item)
                 }
             }
-
-            group("Menu bar icon") {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Icon style").font(.callout)
-                        Text("How Pulse appears in the menu bar. Color always shows status.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 8)
-                    Picker("", selection: $settings.menuBarIconStyle) {
-                        ForEach(MenuBarIconStyle.allCases) { style in
-                            Text(style.displayName).tag(style)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .fixedSize()
+            .navigationSplitViewColumnWidth(min: 150, ideal: 168, max: 200)
+        } detail: {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text((section ?? .general).rawValue)
+                        .font(.title2.weight(.semibold))
+                    sectionContent
                 }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+        .frame(width: 680, height: 480)
+    }
 
-            group("Scanning") {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Pulse re-checks automatically every minute.")
-                            .font(.callout)
-                        Text(lastCheckedText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    Button("Re-scan now") { security.forceRescan() }
-                        .controlSize(.small)
-                        .fixedSize()
-                }
-            }
+    @ViewBuilder
+    private var sectionContent: some View {
+        switch section ?? .general {
+        case .general: generalSection
+        case .monitoring: monitoringSection
+        case .network: networkSection
+        case .protection: protectionSection
+        }
+    }
 
-            group("Performance") {
-                toggleRow("Runaway-process alerts",
-                          "Warn when one app pegs a CPU core for over a minute.",
-                          $settings.runawayAlertsEnabled)
-            }
+    // MARK: Sections
 
-            group("Ignored items") {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(ignoredCount == 0
-                             ? "You're not ignoring anything."
-                             : "\(ignoredCount) active mute rule\(ignoredCount == 1 ? "" : "s").")
-                            .font(.callout)
-                        Text("Review and lift anything you've muted or chosen to always ignore.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 8)
-                    Button("Manage…") { onManageIgnored() }
-                        .controlSize(.small)
-                        .fixedSize()
-                }
-            }
-
-            group("Malware protection (XProtect)") {
-                infoRow("Definitions", definitionsText)
-                infoRow("Automatic scans", autoScansText)
-                HStack(alignment: .firstTextBaseline) {
-                    Text("macOS updates and runs XProtect automatically. Pulse only reads its status — it never asks for admin rights.")
+    @ViewBuilder
+    private var generalSection: some View {
+        group("Menu bar icon") {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Icon style").font(.callout)
+                    Text("How Pulse appears in the menu bar. Color always shows status.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 8)
-                    Button("Software Update") { open(IncidentTemplates.softwareUpdateURL) }
-                        .controlSize(.small)
-                        .fixedSize()
                 }
-            }
-
-            group("App updates") {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Mojo Pulse \(versionLine)")
-                        .font(.callout)
-                    Spacer(minLength: 8)
-                    Button("Check for Updates…") { onCheckForUpdates() }
-                        .controlSize(.small)
-                        .fixedSize()
+                Spacer(minLength: 8)
+                Picker("", selection: $settings.menuBarIconStyle) {
+                    ForEach(MenuBarIconStyle.allCases) { style in
+                        Text(style.displayName).tag(style)
+                    }
                 }
-            }
-
-            group("Startup") {
-                toggleRow("Launch at login",
-                          "Start Pulse automatically when you log in.",
-                          Binding(get: { loginItem.isEnabled }, set: { loginItem.set($0) }))
-                if loginItem.requiresApproval {
-                    Button("Approve in Login Items…") { open(IncidentTemplates.loginItemsURL) }
-                        .controlSize(.small)
-                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .fixedSize()
             }
         }
-        .padding(20)
-        .frame(width: 420)
+
+        group("Startup") {
+            toggleRow("Launch at login",
+                      "Start Pulse automatically when you log in.",
+                      Binding(get: { loginItem.isEnabled }, set: { loginItem.set($0) }))
+            if loginItem.requiresApproval {
+                Button("Approve in Login Items…") { open(IncidentTemplates.loginItemsURL) }
+                    .controlSize(.small)
+            }
+        }
+
+        group("App updates") {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Mojo Pulse \(versionLine)")
+                    .font(.callout)
+                Spacer(minLength: 8)
+                Button("Check for Updates…") { onCheckForUpdates() }
+                    .controlSize(.small)
+                    .fixedSize()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var monitoringSection: some View {
+        group("Monitoring") {
+            toggleRow("Security monitoring",
+                      "Watch posture, new startup items, listeners, and unsigned apps.",
+                      $settings.securityMonitoringEnabled)
+            toggleRow("Notifications",
+                      "Alert you — and your Apple Watch — about red and security events.",
+                      $settings.notificationsEnabled)
+        }
+
+        group("Performance") {
+            toggleRow("Runaway-process alerts",
+                      "Warn when one app pegs a CPU core for over a minute.",
+                      $settings.runawayAlertsEnabled)
+        }
+
+        group("Scanning") {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Pulse re-checks automatically every minute.")
+                        .font(.callout)
+                    Text(lastCheckedText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button("Re-scan now") { security.forceRescan() }
+                    .controlSize(.small)
+                    .fixedSize()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var networkSection: some View {
+        group("Network watch") {
+            toggleRow("Watch the local network",
+                      "Quietly inventory the devices on your Wi-Fi and alert if your router's hardware address changes (a sign of an attack). No extra permissions, nothing leaves your Mac.",
+                      $settings.lanWatchEnabled)
+            if settings.lanWatchEnabled {
+                toggleRow("Alert me about new devices",
+                          "Flag a card when a device you haven't seen joins. Off by default — noisy on busy, guest, or public networks.",
+                          $settings.lanNewDeviceAlertsEnabled)
+                toggleRow("Identify devices (names & types)",
+                          "Use Bonjour to label devices (e.g. “Living Room Apple TV”). Asks once for Local Network access; off = vendor names only.",
+                          $settings.lanIdentifyEnabled)
+                toggleRow("Allow active device probing",
+                          "Lets you run an on-demand scan on a device you pick — to identify what it is. Unlike everything else, this connects directly to that device. One at a time, only when you click, with a warning first. Use only on networks you own. Off by default.",
+                          $settings.lanActiveProbeEnabled)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var protectionSection: some View {
+        group("Malware protection (XProtect)") {
+            infoRow("Definitions", definitionsText)
+            infoRow("Automatic scans", autoScansText)
+            HStack(alignment: .firstTextBaseline) {
+                Text("macOS updates and runs XProtect automatically. Pulse only reads its status — it never asks for admin rights.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("Software Update") { open(IncidentTemplates.softwareUpdateURL) }
+                    .controlSize(.small)
+                    .fixedSize()
+            }
+        }
+
+        group("Ignored items") {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(ignoredCount == 0
+                         ? "You're not ignoring anything."
+                         : "\(ignoredCount) active mute rule\(ignoredCount == 1 ? "" : "s").")
+                        .font(.callout)
+                    Text("Review and lift anything you've muted or chosen to always ignore.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("Manage…") { onManageIgnored() }
+                    .controlSize(.small)
+                    .fixedSize()
+            }
+        }
     }
 
     @ViewBuilder

@@ -86,6 +86,10 @@ final class MenuBarController: NSObject {
     private var networkActivityWindow: NSWindow?
     private var networkWindowConsumingFastTick = false
 
+    /// Retained reference to the Thermal detail window (live temps + fans).
+    /// Self-sampling, so it needs no aggregator fast tick.
+    private var thermalWindow: NSWindow?
+
     /// Retained reference to the single event-detail window (content replaced
     /// per click rather than spawning one window per event).
     private var eventWindow: NSWindow?
@@ -175,7 +179,8 @@ final class MenuBarController: NSObject {
                 onShowPorts: { [weak self] in self?.showOpenPortsWindow() },
                 onShowConnectivity: { [weak self] in self?.showConnectivityWindow() },
                 onShowNetwork: { [weak self] in self?.showNetworkActivityWindow() },
-                onShowDevices: { [weak self] in self?.showLANDevicesWindow() }
+                onShowDevices: { [weak self] in self?.showLANDevicesWindow() },
+                onShowThermal: { [weak self] in self?.showThermalWindow() }
             )
         )
 
@@ -234,17 +239,30 @@ final class MenuBarController: NSObject {
             dotColor = Self.quietColor
         }
 
+        // The all-clear, no-VPN state. We render this one as a *template* image
+        // so macOS tints it the default menu-bar color (white on a dark bar,
+        // black on a light one) — matching the other system menu items instead
+        // of a custom gray. Every other state carries a real severity/VPN color,
+        // so those stay non-template to preserve it.
+        let isQuiet = (severity == nil && !wifi.stableVPNActive)
+
         // The color always carries severity. The *shape* is user-configurable;
         // the dot uses a colored glyph (multicolor SF Symbols would be coerced
         // to monochrome), the others use a custom non-template image so their
         // color survives too.
         switch settings.menuBarIconStyle {
         case .dot:
-            button.image = nil
-            button.imagePosition = .noImage
-            button.attributedTitle = Self.dotTitle(color: dotColor, label: label)
+            if isQuiet {
+                button.image = Self.statusImage(style: .dot, color: dotColor, severity: severity, template: true)
+                button.imagePosition = .imageOnly
+                button.attributedTitle = NSAttributedString(string: "")
+            } else {
+                button.image = nil
+                button.imagePosition = .noImage
+                button.attributedTitle = Self.dotTitle(color: dotColor, label: label)
+            }
         case .heartbeat, .ping:
-            button.image = Self.statusImage(style: settings.menuBarIconStyle, color: dotColor, severity: severity)
+            button.image = Self.statusImage(style: settings.menuBarIconStyle, color: dotColor, severity: severity, template: isQuiet)
             button.imagePosition = label == nil ? .imageOnly : .imageLeading
             button.attributedTitle = label.map { Self.labelTitle($0) } ?? NSAttributedString(string: "")
         }
@@ -285,7 +303,7 @@ final class MenuBarController: NSObject {
     /// with urgency (`prominence`): calm and light when nothing's wrong, bold
     /// and a touch larger when there's an issue — so it catches the eye exactly
     /// when it needs to, without shouting the rest of the time.
-    private static func statusImage(style: MenuBarIconStyle, color: NSColor, severity: IncidentSeverity?) -> NSImage {
+    private static func statusImage(style: MenuBarIconStyle, color: NSColor, severity: IncidentSeverity?, template: Bool = false) -> NSImage {
         let prominence: CGFloat
         switch severity {
         case .issue: prominence = 1.0
@@ -314,7 +332,7 @@ final class MenuBarController: NSObject {
             path.line(to: NSPoint(x: w - 1.5, y: midY))
             path.stroke()
             image.unlockFocus()
-            image.isTemplate = false
+            image.isTemplate = template
             return image
         case .ping:
             let s: CGFloat = 15
@@ -329,7 +347,7 @@ final class MenuBarController: NSObject {
             let r: CGFloat = 2.6 + 1.1 * prominence
             NSBezierPath(ovalIn: NSRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)).fill()
             image.unlockFocus()
-            image.isTemplate = false
+            image.isTemplate = template
             return image
         case .dot:
             let s: CGFloat = 12
@@ -339,7 +357,7 @@ final class MenuBarController: NSObject {
             let r: CGFloat = 4 + 0.8 * prominence
             NSBezierPath(ovalIn: NSRect(x: s / 2 - r, y: s / 2 - r, width: r * 2, height: r * 2)).fill()
             image.unlockFocus()
-            image.isTemplate = false
+            image.isTemplate = template
             return image
         }
     }
@@ -486,11 +504,11 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: HistoryPanelView(history: history))
+        let hosting = NSHostingController(rootView: DialogChrome { HistoryPanelView(history: history) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Mojo Pulse — Event History"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 680, height: 440))
+        window.setContentSize(NSSize(width: 680, height: 486))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -526,11 +544,11 @@ final class MenuBarController: NSObject {
             initialKind: kind,
             totalMemoryBytes: system.current.memoryTotalBytes
         )
-        let hosting = NSHostingController(rootView: view)
+        let hosting = NSHostingController(rootView: DialogChrome { view })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Mojo Pulse — Live Metrics"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 580, height: 540))
+        window.setContentSize(NSSize(width: 580, height: 586))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -567,7 +585,7 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: AboutView())
+        let hosting = NSHostingController(rootView: DialogChrome { AboutView() })
         let window = NSWindow(contentViewController: hosting)
         window.title = "About Mojo Pulse"
         window.styleMask = [.titled, .closable]
@@ -596,7 +614,7 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: MalwareProtectionView(security: security))
+        let hosting = NSHostingController(rootView: DialogChrome { MalwareProtectionView(security: security) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Malware Protection"
         window.styleMask = [.titled, .closable]
@@ -623,11 +641,11 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: SecurityPostureView(
+        let hosting = NSHostingController(rootView: DialogChrome { SecurityPostureView(
             security: security,
             settings: settings,
             onShowPorts: { [weak self] in self?.showOpenPortsWindow() }
-        ))
+        ) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Security Posture"
         window.styleMask = [.titled, .closable]
@@ -662,11 +680,13 @@ final class MenuBarController: NSObject {
             onCheckForUpdates: { [weak self] in self?.updater.checkForUpdates() },
             onManageIgnored: { [weak self] in self?.showMutedItemsWindow() }
         )
-        let hosting = NSHostingController(rootView: view)
+        let hosting = NSHostingController(rootView: DialogChrome { view })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Settings"
         window.styleMask = [.titled, .closable]
-        window.setContentSize(hosting.view.fittingSize)
+        // Fixed size: NavigationSplitView doesn't report a usable fittingSize.
+        // 680×480 content + the DialogChrome Done bar (~46).
+        window.setContentSize(NSSize(width: 680, height: 526))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -689,11 +709,11 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: ConnectivityHistoryView(
+        let hosting = NSHostingController(rootView: DialogChrome { ConnectivityHistoryView(
             database: database,
             networkInfo: networkInfo,
             wifi: wifi
-        ))
+        ) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Connection History"
         window.styleMask = [.titled, .closable]
@@ -721,7 +741,7 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: OpenPortsView())
+        let hosting = NSHostingController(rootView: DialogChrome { OpenPortsView() })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Open Ports"
         window.styleMask = [.titled, .closable]
@@ -751,7 +771,7 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: LANDevicesView(arp: arp, settings: settings))
+        let hosting = NSHostingController(rootView: DialogChrome { LANDevicesView(arp: arp, settings: settings) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Devices on Your Network"
         window.styleMask = [.titled, .closable]
@@ -777,7 +797,7 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: MutedItemsView(engine: engine))
+        let hosting = NSHostingController(rootView: DialogChrome { MutedItemsView(engine: engine) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Ignored Items"
         window.styleMask = [.titled, .closable]
@@ -806,9 +826,9 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: ProcessesView(
+        let hosting = NSHostingController(rootView: DialogChrome { ProcessesView(
             processes: processes, system: system,
-            onShowAllProcesses: { [weak self] in self?.showProcessViewerWindow() }))
+            onShowAllProcesses: { [weak self] in self?.showProcessViewerWindow() }) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Top Processes"
         window.styleMask = [.titled, .closable]
@@ -834,12 +854,12 @@ final class MenuBarController: NSObject {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let hosting = NSHostingController(rootView: ProcessViewerView(
-            onShowTopProcesses: { [weak self] in self?.showProcessesWindow() }))
+        let hosting = NSHostingController(rootView: DialogChrome { ProcessViewerView(
+            onShowTopProcesses: { [weak self] in self?.showProcessesWindow() }) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Processes"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 680, height: 540))
+        window.setContentSize(NSSize(width: 680, height: 586))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -858,11 +878,11 @@ final class MenuBarController: NSObject {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let hosting = NSHostingController(rootView: NetworkActivityView(settings: settings, system: system))
+        let hosting = NSHostingController(rootView: DialogChrome { NetworkActivityView(settings: settings, system: system) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Network Activity"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 820, height: 600))
+        window.setContentSize(NSSize(width: 820, height: 646))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -871,6 +891,30 @@ final class MenuBarController: NSObject {
 
         // Live throughput readout needs the fast sampling cadence while open.
         beginNetworkFastTick()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Thermal detail — live hardware temperatures + fan RPM. Standalone
+    /// window with its own 1.5 s sampler, so no aggregator fast tick.
+    private func showThermalWindow() {
+        popover.performClose(nil)
+        if let existing = thermalWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: DialogChrome { ThermalDetailView() })
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Mojo Pulse — Thermal"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 560, height: 606))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        thermalWindow = window
+
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
@@ -894,7 +938,7 @@ final class MenuBarController: NSObject {
     private func showEventWindow(_ record: IncidentRecord) {
         popover.performClose(nil)
 
-        let hosting = NSHostingController(rootView: IncidentDetailView(record: record))
+        let hosting = NSHostingController(rootView: DialogChrome { IncidentDetailView(record: record) })
         if let window = eventWindow {
             window.contentViewController = hosting
             window.setContentSize(hosting.view.fittingSize)
@@ -981,6 +1025,8 @@ extension MenuBarController: NSWindowDelegate {
         } else if closing === networkActivityWindow {
             endNetworkFastTick()
             networkActivityWindow = nil
+        } else if closing === thermalWindow {
+            thermalWindow = nil
         } else if closing === eventWindow {
             eventWindow = nil
         }
@@ -1008,5 +1054,29 @@ extension MenuBarController: NSWindowDelegate {
         guard NSApp.activationPolicy() != target else { return }
         NSApp.setActivationPolicy(target)
         if target == .regular { NSApp.activate(ignoringOtherApps: true) }
+    }
+}
+
+// MARK: - Dialog chrome
+
+/// Wraps a window's content with a standard bottom bar carrying a "Done"
+/// button, so every panel can be dismissed with an obvious click (or ⌘-Return)
+/// instead of hunting for the red traffic-light. Closes whichever window is key
+/// — i.e. the one hosting this content — so it needs no window reference.
+struct DialogChrome<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+            Divider()
+            HStack {
+                Spacer()
+                Button("Done") { NSApp.keyWindow?.performClose(nil) }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
     }
 }
