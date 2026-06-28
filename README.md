@@ -99,4 +99,6 @@ ReachabilityMon. ─┘     (ticks 5 s,         (dedup +
 
 ## License
 
-[MIT](LICENSE) © Native Mojo LLC
+Mojo Pulse is a product of **NativeMojo LLC**, licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
+
+© 2026 NativeMojo LLC. "Mojo Pulse" and "NativeMojo" are trademarks of NativeMojo LLC.

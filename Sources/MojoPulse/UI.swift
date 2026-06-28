@@ -1275,10 +1275,15 @@ struct AboutView: View {
 
             Divider()
 
-            HStack {
-                Text(versionLine)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+            HStack(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(versionLine)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text("© 2026 NativeMojo LLC · Apache 2.0")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
                 Spacer()
                 Button("View on GitHub") { NSWorkspace.shared.open(repoURL) }
                     .controlSize(.small)
