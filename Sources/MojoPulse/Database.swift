@@ -134,6 +134,46 @@ final class Database: @unchecked Sendable {
                 PRIMARY KEY (metric, ts)
             );
         """)
+        // Persistent cache of remote-IP geo/threat lookups (mojoverify), so the
+        // Network Activity map is instant on reopen and we don't re-hit the API
+        // for an IP we already know. `payload` is the server's raw `data` JSON;
+        // `expires` is its expires_at epoch (we honour it on read).
+        try exec("""
+            CREATE TABLE IF NOT EXISTS geoip_cache (
+                ip TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                expires INTEGER NOT NULL
+            );
+        """)
+    }
+
+    // MARK: - GeoIP cache
+
+    /// All non-expired cached lookups, as (ip, payloadJSON). Loaded once into
+    /// the GeoIPClient's in-memory cache at launch.
+    func geoipLoadAll(now: Date = Date()) throws -> [(ip: String, payload: String)] {
+        let sql = "SELECT ip, payload FROM geoip_cache WHERE expires > ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(now.timeIntervalSince1970))
+        var out: [(String, String)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let ipC = sqlite3_column_text(stmt, 0), let pC = sqlite3_column_text(stmt, 1) else { continue }
+            out.append((String(cString: ipC), String(cString: pC)))
+        }
+        return out
+    }
+
+    func geoipPut(ip: String, payload: String, expires: Date) throws {
+        let sql = "INSERT OR REPLACE INTO geoip_cache (ip, payload, expires) VALUES (?, ?, ?);"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, ip, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, payload, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 3, Int64(expires.timeIntervalSince1970))
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw DBError.execFailed }
     }
 
     // MARK: - Metric rollups

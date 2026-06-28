@@ -122,6 +122,9 @@ struct PopoverView: View {
     /// Called when the user opens the connection uptime/outage history.
     var onShowConnectivity: () -> Void = {}
 
+    /// Called when the user opens the Network Activity map/list tool.
+    var onShowNetwork: () -> Void = {}
+
     /// Which expandable vital (if any) is currently showing its sparkline.
     /// Cleared by tapping the same cell again or expanding a different one.
     @State private var expanded: MetricKind? = nil
@@ -962,6 +965,8 @@ struct PopoverView: View {
                    title: "All processes", value: nil, action: onShowProcessViewer)
             navRow(icon: "wifi", tint: wifi.stableVPNActive ? SeverityColors.good : neutralIconColor,
                    title: "Connection details", value: connectionMenuValue, action: onShowConnectivity)
+            navRow(icon: "globe", tint: neutralIconColor,
+                   title: "Network activity", value: nil, action: onShowNetwork)
             navRow(icon: "network", tint: neutralIconColor,
                    title: "Open ports", value: nil, action: onShowPorts)
 

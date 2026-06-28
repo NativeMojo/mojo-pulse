@@ -14,7 +14,7 @@ DIST_DIR         := dist
 # per release. CFBundleVersion is the auto-incrementing build counter below —
 # that's what Sparkle compares to decide "is there a newer build?", so the
 # display version can stay fixed across builds without breaking auto-update.
-MARKETING_VERSION := 1.3.0
+MARKETING_VERSION := 1.4.0
 BUILD_NUMBER_FILE := .build-number
 # Code-signing identity. The Developer ID Application cert for 311 Labs, LLC.
 # (Team 7UURCYAQ8Y) is the default so `make app/install/release` sign for real.
@@ -69,6 +69,7 @@ app: build
 	@cp $(BUILD_DIR)/$(APP_NAME) $(APP_BUNDLE)/Contents/MacOS/
 	@cp Info.plist $(APP_BUNDLE)/Contents/
 	@cp Resources/AppIcon.icns $(APP_BUNDLE)/Contents/Resources/
+	@cp Resources/WorldOutline.json $(APP_BUNDLE)/Contents/Resources/
 	@# Auto-increment the build counter (gitignored file) and stamp the bundle's
 	@# COPY of Info.plist: CFBundleShortVersionString = the marketing version,
 	@# CFBundleVersion = the rising build number Sparkle compares. We patch only
@@ -78,6 +79,15 @@ app: build
 		/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(MARKETING_VERSION)" $(APP_BUNDLE)/Contents/Info.plist; \
 		/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $$BUILD_NUM" $(APP_BUNDLE)/Contents/Info.plist; \
 		echo "Built $(APP_NAME) $(MARKETING_VERSION) (build $$BUILD_NUM)"
+	@# Inject the mojoverify geo-lookup API key into the bundle's Info.plist
+	@# (NOT the source plist) from the dev secrets file, so the key is never
+	@# committed. Absent file = geo lookup simply stays unavailable in the build.
+	@if [ -f "$(HOME)/mojopulse-signing/mojoverify-apikey.txt" ]; then \
+		KEY=$$(tr -d ' \n\r' < "$(HOME)/mojopulse-signing/mojoverify-apikey.txt"); \
+		/usr/libexec/PlistBuddy -c "Add :MVGeoAPIKey string $$KEY" $(APP_BUNDLE)/Contents/Info.plist 2>/dev/null \
+			|| /usr/libexec/PlistBuddy -c "Set :MVGeoAPIKey $$KEY" $(APP_BUNDLE)/Contents/Info.plist; \
+		echo "Injected mojoverify geo API key into bundle"; \
+	else echo "No mojoverify API key file — geo lookup disabled in this build"; fi
 	@# Embed Sparkle.framework so the app can update itself, then code-sign
 	@# inside-out (nested XPC/helpers first, then the framework, then the app),
 	@# never with --deep. With a Developer ID identity CODESIGN_OPTS adds the

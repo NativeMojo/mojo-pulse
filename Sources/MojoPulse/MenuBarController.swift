@@ -78,6 +78,10 @@ final class MenuBarController: NSObject {
     private var processViewerWindow: NSWindow?
     private var processesWindowConsumingFastTick = false
 
+    /// Retained reference to the Network Activity (map/list connections) window.
+    private var networkActivityWindow: NSWindow?
+    private var networkWindowConsumingFastTick = false
+
     /// Retained reference to the single event-detail window (content replaced
     /// per click rather than spawning one window per event).
     private var eventWindow: NSWindow?
@@ -162,7 +166,8 @@ final class MenuBarController: NSObject {
                 onShowProcessViewer: { [weak self] in self?.showProcessViewerWindow() },
                 onSelectEvent: { [weak self] record in self?.showEventWindow(record) },
                 onShowPorts: { [weak self] in self?.showOpenPortsWindow() },
-                onShowConnectivity: { [weak self] in self?.showConnectivityWindow() }
+                onShowConnectivity: { [weak self] in self?.showConnectivityWindow() },
+                onShowNetwork: { [weak self] in self?.showNetworkActivityWindow() }
             )
         )
 
@@ -806,6 +811,44 @@ final class MenuBarController: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Network Activity — the connections map + list with geo/threat intel.
+    /// Standalone resizable window with its own sampler + refresh loop.
+    private func showNetworkActivityWindow() {
+        popover.performClose(nil)
+        if let existing = networkActivityWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: NetworkActivityView(settings: settings, system: system))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Network Activity"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 820, height: 600))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        networkActivityWindow = window
+
+        // Live throughput readout needs the fast sampling cadence while open.
+        beginNetworkFastTick()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func beginNetworkFastTick() {
+        guard !networkWindowConsumingFastTick else { return }
+        networkWindowConsumingFastTick = true
+        aggregator.addFastConsumer()
+    }
+
+    private func endNetworkFastTick() {
+        guard networkWindowConsumingFastTick else { return }
+        networkWindowConsumingFastTick = false
+        aggregator.removeFastConsumer()
+    }
+
     // MARK: - Event detail window
 
     /// Open (or re-use) the event-detail window for a given history record.
@@ -895,6 +938,9 @@ extension MenuBarController: NSWindowDelegate {
             processesWindow = nil
         } else if closing === processViewerWindow {
             processViewerWindow = nil
+        } else if closing === networkActivityWindow {
+            endNetworkFastTick()
+            networkActivityWindow = nil
         } else if closing === eventWindow {
             eventWindow = nil
         }

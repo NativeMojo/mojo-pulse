@@ -35,6 +35,7 @@ final class Settings: ObservableObject {
         static let notifications = "notifications.enabled"
         static let runawayAlerts = "process.runawayAlertsEnabled"
         static let menuBarIcon = "ui.menuBarIconStyle"
+        static let geoLookup = "network.geoLookupEnabled"
     }
 
     /// Master switch for the whole security/posture subsystem. When off, the
@@ -64,13 +65,22 @@ final class Settings: ObservableObject {
         didSet { defaults.set(menuBarIconStyle.rawValue, forKey: Key.menuBarIcon) }
     }
 
+    /// Whether the Network Activity tool may look up remote IPs (country, host,
+    /// threat flags) via mojoverify. This is the ONE feature that sends data off
+    /// the Mac, so it's OFF by default and only ever sends *public* remote IPs.
+    /// When off, the connection list still works fully — just without geo.
+    @Published var geoLookupEnabled: Bool {
+        didSet { defaults.set(geoLookupEnabled, forKey: Key.geoLookup) }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
             Key.securityMonitoring: true,
             Key.notifications: true,
             Key.runawayAlerts: true,
-            Key.menuBarIcon: MenuBarIconStyle.heartbeat.rawValue
+            Key.menuBarIcon: MenuBarIconStyle.heartbeat.rawValue,
+            Key.geoLookup: false
         ])
         // Assigning stored properties inside init does not fire didSet, so the
         // first read here won't redundantly write back the registered default.
@@ -79,5 +89,6 @@ final class Settings: ObservableObject {
         self.runawayAlertsEnabled = defaults.bool(forKey: Key.runawayAlerts)
         self.menuBarIconStyle = MenuBarIconStyle(rawValue: defaults.string(forKey: Key.menuBarIcon) ?? "")
             ?? .heartbeat
+        self.geoLookupEnabled = defaults.bool(forKey: Key.geoLookup)
     }
 }

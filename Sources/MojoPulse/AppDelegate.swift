@@ -91,6 +91,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.database = db
 
+        // Preload the persistent geo-lookup cache so the Network Activity map is
+        // instant on reopen and we don't re-hit the API for known IPs.
+        if let db {
+            Task { await GeoIPClient.shared.configure(database: db) }
+        }
+
         // Incidents that were still open when we last quit. We *resume* these
         // into the engine (below, after it's created) rather than closing them
         // and letting detection re-log duplicates — an ongoing condition stays
