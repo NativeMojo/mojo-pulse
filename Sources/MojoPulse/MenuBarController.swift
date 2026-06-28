@@ -75,6 +75,7 @@ final class MenuBarController: NSObject {
     /// Retained reference to the Top Processes window, which bumps the
     /// aggregator into fast-sampling mode (so the list refreshes live) while open.
     private var processesWindow: NSWindow?
+    private var processViewerWindow: NSWindow?
     private var processesWindowConsumingFastTick = false
 
     /// Retained reference to the single event-detail window (content replaced
@@ -158,6 +159,7 @@ final class MenuBarController: NSObject {
                 onShowPosture: { [weak self] in self?.showPostureWindow() },
                 onShowSettings: { [weak self] in self?.showSettingsWindow() },
                 onShowProcesses: { [weak self] in self?.showProcessesWindow() },
+                onShowProcessViewer: { [weak self] in self?.showProcessViewerWindow() },
                 onSelectEvent: { [weak self] record in self?.showEventWindow(record) },
                 onShowPorts: { [weak self] in self?.showOpenPortsWindow() },
                 onShowConnectivity: { [weak self] in self?.showConnectivityWindow() }
@@ -761,7 +763,9 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: ProcessesView(processes: processes, system: system))
+        let hosting = NSHostingController(rootView: ProcessesView(
+            processes: processes, system: system,
+            onShowAllProcesses: { [weak self] in self?.showProcessViewerWindow() }))
         let window = NSWindow(contentViewController: hosting)
         window.title = "Top Processes"
         window.styleMask = [.titled, .closable]
@@ -773,6 +777,31 @@ final class MenuBarController: NSObject {
         processesWindow = window
 
         beginProcessesFastTick()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Pulse's own process viewer — a security-lens alternative to Activity
+    /// Monitor (trust badges, owner, per-process detail). Standalone window with
+    /// its own sampler + 2 s refresh, so it needs no aggregator fast tick.
+    private func showProcessViewerWindow() {
+        popover.performClose(nil)
+        if let existing = processViewerWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: ProcessViewerView(
+            onShowTopProcesses: { [weak self] in self?.showProcessesWindow() }))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Processes"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 680, height: 540))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        processViewerWindow = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
@@ -864,8 +893,34 @@ extension MenuBarController: NSWindowDelegate {
         } else if closing === processesWindow {
             endProcessesFastTick()
             processesWindow = nil
+        } else if closing === processViewerWindow {
+            processViewerWindow = nil
         } else if closing === eventWindow {
             eventWindow = nil
         }
+        // After the window is actually gone, drop the Dock icon if it was the last.
+        DispatchQueue.main.async { [weak self] in self?.syncActivationPolicy() }
+    }
+
+    /// A standalone window gaining focus means we have visible UI — ensure the
+    /// app is showing a Dock icon so it can always be raised again.
+    func windowDidBecomeKey(_ notification: Notification) {
+        syncActivationPolicy()
+    }
+
+    /// Accessory (menu-bar-only) apps have no Dock icon or ⌘-Tab entry, so a
+    /// window buried behind others becomes unreachable. Fix: while any standalone
+    /// window is open, run as a regular (`.regular`) app — gaining a Dock icon and
+    /// ⌘-Tab entry so the user can always raise it — and revert to `.accessory`
+    /// (pure menu-bar) once the last window closes. All managed windows set
+    /// `delegate = self`, which is how we detect them.
+    private func syncActivationPolicy() {
+        let hasWindow = NSApp.windows.contains {
+            ($0.delegate as? NSObject) === self && $0.isVisible
+        }
+        let target: NSApplication.ActivationPolicy = hasWindow ? .regular : .accessory
+        guard NSApp.activationPolicy() != target else { return }
+        NSApp.setActivationPolicy(target)
+        if target == .regular { NSApp.activate(ignoringOtherApps: true) }
     }
 }

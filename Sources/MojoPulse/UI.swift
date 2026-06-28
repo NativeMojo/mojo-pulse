@@ -110,6 +110,9 @@ struct PopoverView: View {
     /// Called when the user taps "Top processes". Opens the processes window.
     var onShowProcesses: () -> Void = {}
 
+    /// Called when the user opens the full Process Viewer (all processes).
+    var onShowProcessViewer: () -> Void = {}
+
     /// Called when the user clicks a Recent event row. Opens its detail window.
     var onSelectEvent: (IncidentRecord) -> Void = { _ in }
 
@@ -943,26 +946,31 @@ struct PopoverView: View {
     // MARK: - Details menu
 
     /// The popover's navigation menu: one row per detail panel, each showing a
-    /// live value on the right and opening its window on tap. Replaces the old
-    /// scattered security section + collapsible disclosures with one consistent
-    /// list (Security posture · Malware scan · Open ports · Top Processes ·
-    /// Connection details · Recent events).
+    /// live value on the right and opening its window on tap. Grouped into
+    /// "what's happening now" (Recent events · Top Processes · All processes ·
+    /// Connection details · Open ports) and, below a divider, "security posture"
+    /// (Security posture · Malware scan).
     private var detailsMenu: some View {
         VStack(spacing: 0) {
-            navRow(icon: postureIcon, tint: postureColor,
-                   title: "Security posture", value: postureMenuValue, action: onShowPosture)
-            navRow(icon: malwareScanIcon, tint: malwareScanColor,
-                   title: "Malware scan", value: malwareMenuValue, action: onShowMalwareInfo)
-            navRow(icon: "network", tint: neutralIconColor,
-                   title: "Open ports", value: nil, action: onShowPorts)
-            navRow(icon: "chart.pie", tint: neutralIconColor,
-                   title: "Top Processes", value: topProcessMenuValue, action: onShowProcesses)
-            navRow(icon: "wifi", tint: wifi.stableVPNActive ? SeverityColors.good : neutralIconColor,
-                   title: "Connection details", value: connectionMenuValue, action: onShowConnectivity)
             navRow(icon: "clock.arrow.circlepath", tint: neutralIconColor,
                    title: "Recent events",
                    value: history.recent.isEmpty ? nil : "\(history.recent.count)",
                    action: onShowFullHistory)
+            navRow(icon: "chart.pie", tint: neutralIconColor,
+                   title: "Top Processes", value: topProcessMenuValue, action: onShowProcesses)
+            navRow(icon: "list.bullet.rectangle", tint: neutralIconColor,
+                   title: "All processes", value: nil, action: onShowProcessViewer)
+            navRow(icon: "wifi", tint: wifi.stableVPNActive ? SeverityColors.good : neutralIconColor,
+                   title: "Connection details", value: connectionMenuValue, action: onShowConnectivity)
+            navRow(icon: "network", tint: neutralIconColor,
+                   title: "Open ports", value: nil, action: onShowPorts)
+
+            Divider().padding(.vertical, 4)
+
+            navRow(icon: postureIcon, tint: postureColor,
+                   title: "Security posture", value: postureMenuValue, action: onShowPosture)
+            navRow(icon: malwareScanIcon, tint: malwareScanColor,
+                   title: "Malware scan", value: malwareMenuValue, action: onShowMalwareInfo)
         }
     }
 
@@ -1505,6 +1513,7 @@ struct SettingsView: View {
 struct ProcessesView: View {
     @ObservedObject var processes: ProcessCollector
     @ObservedObject var system: SystemCollector
+    var onShowAllProcesses: () -> Void = {}
 
     @State private var selected: ProcInfo?
 
@@ -1545,6 +1554,9 @@ struct ProcessesView: View {
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
+                Button("All processes") { onShowAllProcesses() }
+                    .controlSize(.small)
+                    .fixedSize()
                 Button("Activity Monitor") {
                     NSWorkspace.shared.open(IncidentTemplates.activityMonitorURL)
                 }
@@ -1687,31 +1699,42 @@ struct ProcessDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var detail: ProcessDetail?
     @State private var loading = true
+    @State private var connections: [Connection] = []
+    @State private var posture: [PostureFlag] = []
+    @State private var verifying = false
+    @State private var verifyResult: (ok: Bool, message: String)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            metrics
-            Divider()
-            if loading {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Gathering details…").font(.callout).foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    header
+                    metrics
+                    Divider()
+                    if loading {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Gathering details…").font(.callout).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 10)
+                    } else if let d = detail {
+                        infoRow("Running from", d.path, mono: true)
+                        infoRow("Command", d.command, mono: true)
+                        infoRow("Launched by", launchedBy(d))
+                        infoRow("Started", d.started)
+                        infoRow("Signed by", d.signature)
+                        integrityRow
+                        if !posture.isEmpty { postureSection }
+                        connectionsSection
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, 10)
-            } else if let d = detail {
-                infoRow("Running from", d.path, mono: true)
-                infoRow("Command", d.command, mono: true)
-                infoRow("Launched by", launchedBy(d))
-                infoRow("Started", d.started)
-                infoRow("Signed by", d.signature)
+                .padding(20)
             }
-            Spacer(minLength: 0)
-            footer
+            Divider()
+            footer.padding(.horizontal, 20).padding(.vertical, 12)
         }
-        .padding(20)
-        .frame(width: 470)
+        .frame(width: 480, height: 560)
         .task { await load() }
     }
 
@@ -1792,12 +1815,122 @@ struct ProcessDetailView: View {
         return "\(d.parentName)  ·  PID \(d.parentPID)"
     }
 
+    // MARK: Integrity
+
+    private var integrityRow: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Integrity").font(.caption2).foregroundStyle(.secondary)
+                .textCase(.uppercase).tracking(0.3)
+            HStack(alignment: .top, spacing: 8) {
+                if verifying {
+                    ProgressView().controlSize(.small)
+                    Text("Verifying…").font(.callout).foregroundStyle(.secondary)
+                } else if let r = verifyResult {
+                    Image(systemName: r.ok ? "checkmark.seal.fill" : "xmark.seal.fill")
+                        .foregroundStyle(r.ok ? SeverityColors.good : SeverityColors.issue)
+                    Text(r.message).font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Button("Verify integrity") { runVerify() }.controlSize(.small)
+                    Text("Confirm the code on disk matches its signature.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func runVerify() {
+        verifying = true
+        verifyResult = nil
+        let p = proc
+        Task {
+            let r = await Task.detached(priority: .userInitiated) {
+                ProcessPosture.verifyIntegrity(path: p.path)
+            }.value
+            verifying = false
+            verifyResult = r
+        }
+    }
+
+    // MARK: Posture flags
+
+    private var postureSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Posture").font(.caption2).foregroundStyle(.secondary)
+                .textCase(.uppercase).tracking(0.3)
+            ForEach(posture) { f in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: f.isWarning ? "exclamationmark.triangle.fill" : "info.circle")
+                        .foregroundStyle(f.isWarning ? SeverityColors.watch : Color.secondary)
+                        .font(.callout)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(f.title).font(.subheadline.weight(.medium))
+                        Text(f.detail).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Connections
+
+    private var connectionsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Network").font(.caption2).foregroundStyle(.secondary)
+                .textCase(.uppercase).tracking(0.3)
+            if connections.isEmpty {
+                Text("No active connections or listening ports.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                ForEach(connections) { connectionRow($0) }
+            }
+        }
+    }
+
+    private func connectionRow(_ c: Connection) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(connColor(c)).frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(connText(c)).font(.caption.monospaced())
+                    .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                Text(connSub(c)).font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func connColor(_ c: Connection) -> Color {
+        if c.isListening { return SeverityColors.good }
+        if c.state.uppercased() == "ESTABLISHED" { return SeverityColors.info }
+        return Color.secondary
+    }
+
+    private func connText(_ c: Connection) -> String {
+        if c.isListening { return "Listening on \(c.local)" }
+        if let r = c.remote { return "\(c.local) → \(r)" }
+        return c.local
+    }
+
+    private func connSub(_ c: Connection) -> String {
+        var parts = [c.proto]
+        if !c.state.isEmpty && c.state.uppercased() != "LISTEN" { parts.append(c.state.capitalized) }
+        if c.limited { parts.append("limited detail") }
+        return parts.joined(separator: " · ")
+    }
+
     private func load() async {
         let p = proc
         let d = await Task.detached(priority: .userInitiated) {
             ProcessDetailFetcher.fetch(pid: p.pid, name: p.name, fallbackPath: p.path)
         }.value
+        let conns = await Task.detached(priority: .utility) {
+            ProcessConnections.fetch(pid: p.pid)
+        }.value
         detail = d
+        connections = conns
+        posture = ProcessPosture.fullFlags(path: p.path, name: p.name)
         loading = false
     }
 

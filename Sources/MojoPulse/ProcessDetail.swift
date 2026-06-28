@@ -31,7 +31,7 @@ enum ProcessDetailFetcher {
         }
 
         let comm = ps("comm=")
-        let path = comm.isEmpty ? fallbackPath : comm
+        let path = ProcessPath.resolve(pid: pid, fallback: comm.isEmpty ? fallbackPath : comm)
         let command = ps("command=")
         let user = ps("user=")
         let ppid = Int(ps("ppid=")) ?? 0
@@ -73,15 +73,22 @@ enum ProcessDetailFetcher {
         let authorities = lines.compactMap {
             $0.hasPrefix("Authority=") ? String($0.dropFirst("Authority=".count)) : nil
         }
+        let team = lines.first(where: { $0.hasPrefix("TeamIdentifier=") })
+            .map { String($0.dropFirst("TeamIdentifier=".count)) }
+            .flatMap { $0 == "not set" ? nil : $0 }
         guard let leaf = authorities.first else { return "Unknown" }
 
+        // Exact leaf match — "Apple Mac OS Application Signing" is the App Store
+        // signer (Apple re-signs every App Store app), NOT Apple authoring it, so
+        // it must be checked before any "contains Apple" heuristic. Genuine Apple
+        // system code signs as "Software Signing".
         if leaf.hasPrefix("Developer ID Application: ") {
             return "Developer ID: " + String(leaf.dropFirst("Developer ID Application: ".count))
         }
-        if leaf == "Software Signing" || (authorities.contains("Apple Root CA") && leaf.contains("Apple")) {
-            return "Apple"
+        if leaf == "Apple Mac OS Application Signing" {
+            return team.map { "Mac App Store · Team \($0)" } ?? "Mac App Store"
         }
-        if leaf == "Apple Mac OS Application Signing" { return "Mac App Store" }
+        if leaf == "Software Signing" { return "Apple" }
         return leaf
     }
 
