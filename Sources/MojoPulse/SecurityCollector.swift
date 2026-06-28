@@ -561,22 +561,34 @@ enum SecurityScanner {
         return (label, program)
     }
 
-    // MARK: XProtect Remediator history
+    // MARK: XProtect scan history
 
-    /// Surface what Apple's background malware scanner (XProtect Remediator)
-    /// has done — last run time and anything it flagged — by reading the
-    /// unified log. Each scanner plugin emits an `XPEvent.structured` event
-    /// whose message is JSON like {"status_message":"NoThreatDetected",
-    /// "caused_by":[],...}. A non-"NoThreatDetected" status or a non-empty
-    /// `caused_by` means it acted on something. Reading the log needs an admin
-    /// account (no password prompt); a non-admin returns nothing.
+    /// Surface what Apple's built-in malware scanning (XProtect) has done —
+    /// last run time and anything it flagged — by reading the unified log.
+    ///
+    /// macOS 26 (Tahoe) changed where this lives. The legacy path: XProtect
+    /// Remediator emitted one `XPEvent.structured` event per plugin under
+    /// `com.apple.XProtectFramework.PluginAPI`, with JSON like
+    /// {"status_message":"NoThreatDetected","caused_by":[],...} — a non-empty
+    /// `caused_by` meant it acted on a threat. On macOS 26 that path is gone
+    /// (zero such events); XProtect.app now logs plain-text "Starting/Finished
+    /// system scan" messages under `com.apple.XProtectFramework` / `Runner`,
+    /// with no structured detection payload. We match both predicates so the
+    /// last-scan time shows on macOS 15–26 and detections still parse on the
+    /// versions that still emit them. Reading the log needs an admin account
+    /// (no password prompt); a non-admin returns nothing.
     private static func xprotectStatus() -> XProtectStatus {
         // Version/status come from the `xprotect` CLI (no root) — works
         // regardless of whether the log query below succeeds.
         let info = xprotectDefinitions()
 
-        let predicate = "subsystem == \"com.apple.XProtectFramework.PluginAPI\" "
-            + "AND category == \"XPEvent.structured\""
+        // New (macOS 26): XProtect.app "system scan" runner messages.
+        // Legacy (macOS 15): XProtect Remediator structured plugin events.
+        let predicate =
+            "(subsystem == \"com.apple.XProtectFramework\" AND category == \"Runner\" "
+            + "AND eventMessage CONTAINS \"scan\") "
+            + "OR (subsystem == \"com.apple.XProtectFramework.PluginAPI\" "
+            + "AND category == \"XPEvent.structured\")"
         // Process passes args directly (no shell), so the predicate's quotes
         // need no escaping here.
         guard let out = Shell.run("/usr/bin/log",
