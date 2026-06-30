@@ -89,9 +89,10 @@ struct RecentScreen: View {
                     .foregroundStyle(.tertiary)
             }
             .padding(.vertical, 7)
+            .padding(.horizontal, 6)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle())
     }
 
     private var breakout: some View {

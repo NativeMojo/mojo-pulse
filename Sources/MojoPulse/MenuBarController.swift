@@ -98,6 +98,11 @@ final class MenuBarController: NSObject {
     /// broadcasts + exposes to others). Reads on open, so no fast tick.
     private var networkVisibilityWindow: NSWindow?
 
+    /// Retained references to the Disk Usage and Battery Health windows
+    /// (placeholders for now; opened from their vitals tiles).
+    private var diskWindow: NSWindow?
+    private var batteryWindow: NSWindow?
+
     /// Retained reference to the single event-detail window (content replaced
     /// per click rather than spawning one window per event).
     private var eventWindow: NSWindow?
@@ -190,7 +195,9 @@ final class MenuBarController: NSObject {
                 onShowNetwork: { [weak self] in self?.showNetworkActivityWindow() },
                 onShowDevices: { [weak self] in self?.showLANDevicesWindow() },
                 onShowThermal: { [weak self] in self?.showThermalWindow() },
-                onShowNetworkVisibility: { [weak self] in self?.showNetworkVisibilityWindow() }
+                onShowNetworkVisibility: { [weak self] in self?.showNetworkVisibilityWindow() },
+                onShowDisk: { [weak self] in self?.showDiskWindow() },
+                onShowBattery: { [weak self] in self?.showBatteryWindow() }
             )
         )
 
@@ -958,6 +965,52 @@ final class MenuBarController: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Disk Usage tool (placeholder for now), opened from the Disk tile.
+    private func showDiskWindow() {
+        popover.performClose(nil)
+        if let existing = diskWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: DialogChrome { DiskUsageView() })
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Disk Usage"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        diskWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Battery Health tool (placeholder for now), opened from the Battery tile.
+    private func showBatteryWindow() {
+        popover.performClose(nil)
+        if let existing = batteryWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: DialogChrome { BatteryHealthView() })
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Battery Health"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        batteryWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
     private func beginNetworkFastTick() {
         guard !networkWindowConsumingFastTick else { return }
         networkWindowConsumingFastTick = true
@@ -1070,6 +1123,10 @@ extension MenuBarController: NSWindowDelegate {
             thermalWindow = nil
         } else if closing === networkVisibilityWindow {
             networkVisibilityWindow = nil
+        } else if closing === diskWindow {
+            diskWindow = nil
+        } else if closing === batteryWindow {
+            batteryWindow = nil
         } else if closing === eventWindow {
             eventWindow = nil
         }

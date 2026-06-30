@@ -58,7 +58,7 @@ struct NetworkScreen: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 11).fill(Color.primary.opacity(0.04)))
+        .cardSurface()
     }
 
     private var computerLine: String {
@@ -115,8 +115,9 @@ struct NetworkScreen: View {
                     .foregroundStyle(.tertiary)
             }
             .padding(.vertical, 8)
+            .padding(.horizontal, 6)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle())
     }
 }

@@ -59,7 +59,7 @@ struct SecurityScreen: View {
         }
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 11).fill(Color.primary.opacity(0.045)))
+        .cardSurface()
     }
 
     private var problemCount: Int {
@@ -148,9 +148,11 @@ struct SecurityScreen: View {
                 Spacer(minLength: 8)
                 Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(.tertiary)
             }
+            .padding(.vertical, 7)
+            .padding(.horizontal, 6)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle())
     }
 
     private var malwareRow: some View {

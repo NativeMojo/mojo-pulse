@@ -165,6 +165,12 @@ struct PopoverView: View {
     /// broadcasts + exposes to others). Window plumbing in MenuBarController.
     var onShowNetworkVisibility: () -> Void = {}
 
+    /// Called when the user taps the Disk tile. Opens the Disk Usage tool.
+    var onShowDisk: () -> Void = {}
+
+    /// Called when the user taps the Battery tile. Opens the Battery Health tool.
+    var onShowBattery: () -> Void = {}
+
     /// The Mac's `.local` Bonjour name, read cheaply on appear for the Network
     /// row subtitle (no port scan).
     @State private var localBonjour: String?
@@ -374,10 +380,10 @@ struct PopoverView: View {
             }
             .padding(.vertical, 10)
             .padding(.horizontal, 12)
-            .background(RoundedRectangle(cornerRadius: 11).fill(Color.primary.opacity(0.045)))
-            .contentShape(RoundedRectangle(cornerRadius: 11))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CardButtonStyle())
     }
 
     private var networkSubtitle: String? {
@@ -623,7 +629,7 @@ struct PopoverView: View {
         return tile(icon: "internaldrive", label: "Disk",
              value: bigValue(parts.0, unit: " \(parts.1)"),
              firing: firingColor(for: .disk),
-             tap: nil) {
+             tap: { onShowDisk() }) {
             usageBar(diskFillRatio ?? 0, SeverityColors.good)
         }
     }
@@ -633,7 +639,7 @@ struct PopoverView: View {
         return tile(icon: batteryIcon, label: "Battery",
              value: bigValue(pct.map { "\($0)%" } ?? "—"),
              firing: firingColor(for: .battery),
-             tap: nil) {
+             tap: { onShowBattery() }) {
             batteryIndicator
         }
     }
@@ -703,7 +709,7 @@ struct PopoverView: View {
 
         return Group {
             if let tap {
-                Button(action: tap) { content }.buttonStyle(.plain)
+                Button(action: tap) { content }.buttonStyle(TileButtonStyle())
             } else {
                 content
             }
