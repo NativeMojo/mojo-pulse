@@ -40,6 +40,7 @@ enum IncidentTemplates {
     static let loginItemsURL = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
     static let usersGroupsURL = URL(string: "x-apple.systempreferences:com.apple.Users-Groups-Settings.extension")
     static let sharingURL = URL(string: "x-apple.systempreferences:com.apple.Sharing-Settings.extension")
+    static let airDropHandoffURL = URL(string: "x-apple.systempreferences:com.apple.AirDrop-Handoff-Settings.extension")
     static let softwareUpdateURL = URL(string: "x-apple.systempreferences:com.apple.Software-Update-Settings.extension")
 
     static func render(_ incident: Incident) -> IncidentCopy {

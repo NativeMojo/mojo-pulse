@@ -30,6 +30,8 @@
     <string>Mojo Pulse uses your location to read the current Wi-Fi network name so it can warn you when you connect to an open or insecure Wi-Fi network without a VPN. Your location is never sent off the device.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Mojo Pulse looks up the names and types of devices on your current Wi-Fi or Ethernet network (via Bonjour) so it can label them in the device list. This is optional and off by default. Nothing about your network ever leaves your Mac.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Mojo Pulse lists the Bluetooth devices paired with this Mac so you can spot unexpected pairings. This is optional and off by default. Nothing about your devices ever leaves your Mac.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_airplay._tcp</string>

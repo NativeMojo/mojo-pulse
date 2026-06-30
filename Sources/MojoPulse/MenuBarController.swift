@@ -41,6 +41,10 @@ final class MenuBarController: NSObject {
     /// the menu-bar mark when the user changes its style in Settings).
     private var cancellables = Set<AnyCancellable>()
 
+    /// The popover's drill-in route, owned here so it can be reset to home
+    /// whenever the popover closes (the SwiftUI view is created once and reused).
+    private let popoverNavigation = PopoverNavigation()
+
     /// Retained reference to the history window so we reuse the same
     /// window across "Show all" clicks instead of spawning a new one
     /// every time. Nilled on close via the delegate.
@@ -89,6 +93,10 @@ final class MenuBarController: NSObject {
     /// Retained reference to the Thermal detail window (live temps + fans).
     /// Self-sampling, so it needs no aggregator fast tick.
     private var thermalWindow: NSWindow?
+
+    /// Retained reference to the Network Visibility window (what this Mac
+    /// broadcasts + exposes to others). Reads on open, so no fast tick.
+    private var networkVisibilityWindow: NSWindow?
 
     /// Retained reference to the single event-detail window (content replaced
     /// per click rather than spawning one window per event).
@@ -167,6 +175,7 @@ final class MenuBarController: NSObject {
                 processes: processes,
                 arp: arp,
                 settings: settings,
+                navigation: popoverNavigation,
                 onShowFullHistory: { [weak self] in self?.showHistoryWindow() },
                 onShowDetail: { [weak self] kind in self?.showDetailWindow(initial: kind) },
                 onShowAbout: { [weak self] in self?.showAboutWindow() },
@@ -180,7 +189,8 @@ final class MenuBarController: NSObject {
                 onShowConnectivity: { [weak self] in self?.showConnectivityWindow() },
                 onShowNetwork: { [weak self] in self?.showNetworkActivityWindow() },
                 onShowDevices: { [weak self] in self?.showLANDevicesWindow() },
-                onShowThermal: { [weak self] in self?.showThermalWindow() }
+                onShowThermal: { [weak self] in self?.showThermalWindow() },
+                onShowNetworkVisibility: { [weak self] in self?.showNetworkVisibilityWindow() }
             )
         )
 
@@ -919,6 +929,35 @@ final class MenuBarController: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Network Visibility — the outside-in mirror of what this Mac broadcasts
+    /// (names/model) and exposes (reachable sharing services) to others on the
+    /// LAN, plus AirDrop guidance and the opt-in paired-Bluetooth list. Reads on
+    /// open; no aggregator fast tick.
+    private func showNetworkVisibilityWindow() {
+        popover.performClose(nil)
+        if let existing = networkVisibilityWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: DialogChrome { NetworkVisibilityView(
+            settings: settings,
+            onShowPorts: { [weak self] in self?.showOpenPortsWindow() }
+        ) })
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "What You Broadcast"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        networkVisibilityWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
     private func beginNetworkFastTick() {
         guard !networkWindowConsumingFastTick else { return }
         networkWindowConsumingFastTick = true
@@ -984,6 +1023,8 @@ extension MenuBarController: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
         endPopoverFastTick()
         removePopoverResizeObserver()
+        // Always reopen on the home screen rather than wherever the user drilled.
+        popoverNavigation.route = .home
     }
 }
 
@@ -1027,6 +1068,8 @@ extension MenuBarController: NSWindowDelegate {
             networkActivityWindow = nil
         } else if closing === thermalWindow {
             thermalWindow = nil
+        } else if closing === networkVisibilityWindow {
+            networkVisibilityWindow = nil
         } else if closing === eventWindow {
             eventWindow = nil
         }

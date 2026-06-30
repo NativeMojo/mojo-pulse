@@ -421,7 +421,11 @@ enum SecurityScanner {
     /// narrow: a general "anything listening on 0.0.0.0" check is far too
     /// noisy on a developer's Mac (every local dev server). These are the
     /// services a user toggles in System Settings → General → Sharing.
-    private static let sharingPorts: [Int: String] = [
+    ///
+    /// Not private: NetworkVisibilityModel reuses this same table to label the
+    /// services it reports as reachable from the network, so the two views never
+    /// disagree about what counts as a "sharing service".
+    static let sharingPorts: [Int: String] = [
         22: "Remote Login (SSH)",
         5900: "Screen Sharing",
         3283: "Remote Management",

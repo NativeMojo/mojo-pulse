@@ -42,6 +42,7 @@ final class Settings: ObservableObject {
         static let lanActiveProbe = "network.lanActiveProbeEnabled"
         static let lanProbeConsentVersion = "network.lanProbeConsentVersion"
         static let lanProbeAckNetwork = "network.lanProbeAckNetwork"
+        static let bluetoothInventory = "network.bluetoothInventoryEnabled"
     }
 
     /// Version of the active-probe consent text. Bump if the warning's meaning
@@ -119,6 +120,14 @@ final class Settings: ObservableObject {
         didSet { defaults.set(lanActiveProbeEnabled, forKey: Key.lanActiveProbe) }
     }
 
+    /// Whether the Network Visibility panel lists the Bluetooth devices paired
+    /// with this Mac. OFF by default: enumerating paired devices can prompt for
+    /// Bluetooth access, so it's an explicit opt-in like the rest of the
+    /// network-watch family. When off, the panel's Bluetooth section is hidden.
+    @Published var bluetoothInventoryEnabled: Bool {
+        didSet { defaults.set(bluetoothInventoryEnabled, forKey: Key.bluetoothInventory) }
+    }
+
     /// Whether the user has accepted the active-probe warning **for this network**
     /// at the current consent version. Scoped per-network (by the LAN snapshot's
     /// `networkKey`) so moving to an unfamiliar Wi-Fi re-surfaces the "are you
@@ -155,7 +164,8 @@ final class Settings: ObservableObject {
             Key.lanNewDeviceAlerts: false,
             Key.lanActiveProbe: false,
             Key.lanProbeConsentVersion: 0,
-            Key.lanProbeAckNetwork: ""
+            Key.lanProbeAckNetwork: "",
+            Key.bluetoothInventory: false
         ])
         // Assigning stored properties inside init does not fire didSet, so the
         // first read here won't redundantly write back the registered default.
@@ -169,5 +179,6 @@ final class Settings: ObservableObject {
         self.lanIdentifyEnabled = defaults.bool(forKey: Key.lanIdentify)
         self.lanNewDeviceAlertsEnabled = defaults.bool(forKey: Key.lanNewDeviceAlerts)
         self.lanActiveProbeEnabled = defaults.bool(forKey: Key.lanActiveProbe)
+        self.bluetoothInventoryEnabled = defaults.bool(forKey: Key.bluetoothInventory)
     }
 }

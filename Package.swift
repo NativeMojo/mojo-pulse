@@ -18,6 +18,8 @@ let package = Package(
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("CoreWLAN"),
                 .linkedFramework("IOKit"),
+                .linkedFramework("SystemConfiguration"),
+                .linkedFramework("IOBluetooth"),
                 // Let the relocated executable find Sparkle.framework once the
                 // Makefile embeds it in MojoPulse.app/Contents/Frameworks.
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])

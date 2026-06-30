@@ -69,6 +69,33 @@ struct MiniSparkline: View {
     }
 }
 
+/// Which screen the popover is showing. The popover is a small navigation
+/// stack: `home` is the dashboard; the rest are domain screens you drill into
+/// in place (back chevron returns to home), instead of spawning a window.
+enum PopoverRoute: Equatable {
+    case home
+    case network
+    case security
+    case recent
+
+    var title: String {
+        switch self {
+        case .home: return ""
+        case .network: return "Network"
+        case .security: return "Security"
+        case .recent: return "Recent activity"
+        }
+    }
+}
+
+/// Holds the popover's current route. Lives outside the SwiftUI view (which is
+/// created once and reused across opens) so MenuBarController can reset it to
+/// home whenever the popover closes — reopening always lands on home.
+@MainActor
+final class PopoverNavigation: ObservableObject {
+    @Published var route: PopoverRoute = .home
+}
+
 struct PopoverView: View {
     @ObservedObject var engine: DetectorEngine
     @ObservedObject var networkInfo: NetworkInfo
@@ -81,6 +108,7 @@ struct PopoverView: View {
     @ObservedObject var processes: ProcessCollector
     @ObservedObject var arp: ARPCollector
     @ObservedObject var settings: Settings
+    @ObservedObject var navigation: PopoverNavigation
 
     /// Called when the user taps "Show all" under Recent. The concrete
     /// window-opening logic lives in MenuBarController so PopoverView
@@ -133,6 +161,14 @@ struct PopoverView: View {
     /// window (live temperatures + fans). Window plumbing in MenuBarController.
     var onShowThermal: () -> Void = {}
 
+    /// Called when the user opens the Network Visibility panel (what this Mac
+    /// broadcasts + exposes to others). Window plumbing in MenuBarController.
+    var onShowNetworkVisibility: () -> Void = {}
+
+    /// The Mac's `.local` Bonjour name, read cheaply on appear for the Network
+    /// row subtitle (no port scan).
+    @State private var localBonjour: String?
+
     /// Which expandable vital (if any) is currently showing its sparkline.
     /// Cleared by tapping the same cell again or expanding a different one.
     @State private var expanded: MetricKind? = nil
@@ -159,35 +195,51 @@ struct PopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            statusLine
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-                .padding(.bottom, 10)
+            Group {
+                if navigation.route == .home {
+                    statusLine
+                } else {
+                    backHeader(title: navigation.route.title)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 10)
 
             Divider()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if !engine.activeIncidents.isEmpty {
-                        VStack(spacing: 10) {
-                            ForEach(engine.activeIncidents) { incident in
-                                IncidentCard(
-                                    incident: incident,
-                                    onSelect: { onSelectEvent(IncidentRecord(incident)) }
-                                ) { feedback in
-                                    engine.recordFeedback(feedback, for: incident)
-                                }
-                            }
-                        }
-                        Divider()
+                Group {
+                    switch navigation.route {
+                    case .home:
+                        homeContent
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                    case .network:
+                        NetworkScreen(
+                            networkInfo: networkInfo,
+                            wifi: wifi,
+                            settings: settings,
+                            onShowActivity: onShowNetwork,
+                            onShowDevices: onShowDevices,
+                            onShowPorts: onShowPorts,
+                            onShowBroadcast: onShowNetworkVisibility
+                        )
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    case .security:
+                        SecurityScreen(
+                            security: security,
+                            settings: settings,
+                            onShowPorts: onShowPorts
+                        )
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    case .recent:
+                        RecentScreen(
+                            history: history,
+                            onSelectEvent: onSelectEvent,
+                            onShowFullHistory: onShowFullHistory
+                        )
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
-
-                    vitalsHeader
-                    vitalsGrid
-
-                    Divider()
-
-                    detailsMenu
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -216,11 +268,129 @@ struct PopoverView: View {
             loginItem.refresh()
             networkInfo.refresh()
             history.refresh()
+            localBonjour = NetworkVisibilityModel.localBonjourName()
             autoExpandForIncident()
         }
         .onChange(of: engine.activeIncidents.map(\.category)) { _, _ in
             autoExpandForIncident()
         }
+    }
+
+    /// The home dashboard: active incident cards (when loud), the vitals grid,
+    /// and the three domain rows that replace the old flat nav list.
+    @ViewBuilder
+    private var homeContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !engine.activeIncidents.isEmpty {
+                VStack(spacing: 10) {
+                    ForEach(engine.activeIncidents) { incident in
+                        IncidentCard(
+                            incident: incident,
+                            onSelect: { onSelectEvent(IncidentRecord(incident)) }
+                        ) { feedback in
+                            engine.recordFeedback(feedback, for: incident)
+                        }
+                    }
+                }
+                Divider()
+            }
+
+            vitalsHeader
+            vitalsGrid
+
+            domainRows
+                .padding(.top, 2)
+        }
+    }
+
+    /// Back chevron + screen title, shown in place of the status line while
+    /// drilled into a domain screen. The whole bar is the back target — tapping
+    /// anywhere in it returns home.
+    private func backHeader(title: String) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.22)) { navigation.route = .home }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The three domain cards. Network drills in place; Security and Recent open
+    /// their windows for now (they become drill-in screens in a later pass).
+    private var domainRows: some View {
+        VStack(spacing: 7) {
+            domainCard(icon: "wifi",
+                       tint: wifi.stableVPNActive ? SeverityColors.good : neutralIconColor,
+                       title: "Network", subtitle: networkSubtitle) {
+                withAnimation(.easeInOut(duration: 0.22)) { navigation.route = .network }
+            }
+            domainCard(icon: postureIcon, tint: postureColor,
+                       title: "Security", subtitle: securitySubtitle) {
+                withAnimation(.easeInOut(duration: 0.22)) { navigation.route = .security }
+            }
+            domainCard(icon: "clock.arrow.circlepath", tint: neutralIconColor,
+                       title: "Recent activity",
+                       subtitle: history.recent.isEmpty ? nil : "\(history.recent.count) events") {
+                withAnimation(.easeInOut(duration: 0.22)) { navigation.route = .recent }
+            }
+        }
+    }
+
+    /// A domain navigation card: icon + title over a muted subtitle + chevron,
+    /// on a subtly filled rounded surface — matching the redesign mockups.
+    private func domainCard(icon: String, tint: Color, title: String, subtitle: String?,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 11) {
+                Image(systemName: icon)
+                    .font(.system(size: 16))
+                    .foregroundStyle(tint)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.primary)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 11).fill(Color.primary.opacity(0.045)))
+            .contentShape(RoundedRectangle(cornerRadius: 11))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var networkSubtitle: String? {
+        let parts = [localBonjour, networkInfo.localIP].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var securitySubtitle: String {
+        let posture = postureMenuValue
+        let malware = malwareMenuValue
+            .split(separator: "·").first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return malware.isEmpty ? posture : "\(posture) · \(malware)"
     }
 
     /// If the popover opens with an active incident that maps to a chartable
@@ -245,13 +415,23 @@ struct PopoverView: View {
     /// what the user needs to know. The count badge on the right mirrors
     /// the menu-bar label and is suppressed when there's nothing firing.
     private var statusLine: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 9) {
             Circle()
                 .fill(aggregateDotColor)
                 .frame(width: 10, height: 10)
-            Text(headline)
-                .font(.headline)
-            Spacer()
+                .padding(.top, 3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(headline)
+                    .font(.headline)
+                if !statusSubline.isEmpty {
+                    Text(statusSubline)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            Spacer(minLength: 8)
             if !engine.activeIncidents.isEmpty {
                 Text("\(engine.activeIncidents.count)")
                     .font(.caption2.monospacedDigit())
@@ -260,7 +440,31 @@ struct PopoverView: View {
                     .padding(.vertical, 2)
                     .background(Capsule().fill(Color.primary.opacity(0.08)))
             }
+            Button { onShowSettings() } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
         }
+    }
+
+    /// Context line under the headline. When something's firing it names the
+    /// top issue; when calm it carries environment context the vitals tiles
+    /// don't — connection, VPN, and when XProtect last scanned.
+    private var statusSubline: String {
+        if let top = engine.activeIncidents.first {
+            return IncidentTemplates.render(top).title
+        }
+        var parts: [String] = []
+        let w = wifi.current
+        if w.hasWiFiLink { parts.append("Wi-Fi") }
+        parts.append(w.vpnActive ? "VPN on" : "VPN off")
+        if settings.securityMonitoringEnabled, let last = security.current.xprotect.lastScan {
+            parts.append("scanned " + Self.relativeFormatter.localizedString(for: last, relativeTo: Date()))
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var aggregateDotColor: Color {
@@ -282,100 +486,7 @@ struct PopoverView: View {
         if watches > 0 {
             return watches == 1 ? "1 thing to know" : "\(watches) things to know"
         }
-        return wifi.stableVPNActive ? "You're good · VPN active" : "You're good"
-    }
-
-    // MARK: - Security line
-
-    /// Single-line passive connection summary. Color of the shield reflects
-    /// security posture — green when VPN is up; yellow when on insecure
-    /// Wi-Fi without VPN (the InsecureNetworkDetector card already shouts
-    /// the details, this is the always-visible reminder); muted secondary
-    /// when on encrypted Wi-Fi but no VPN.
-    ///
-    /// Whole row is a button that opens Wi-Fi Settings — natural shortcut
-    /// since the user's first instinct on noticing a yellow shield is
-    /// "let me check / change my network".
-    private var securityLine: some View {
-        Button {
-            if let url = IncidentTemplates.wifiSettingsURL {
-                NSWorkspace.shared.open(url)
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: shieldIcon)
-                    .font(.caption)
-                    .foregroundStyle(shieldColor)
-                    .frame(width: 14)
-                Text(securityText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(securityTooltip + "\n\nClick to open Wi-Fi Settings.")
-    }
-
-    private var shieldIcon: String {
-        wifi.stableVPNActive ? "lock.shield.fill" : "lock.shield"
-    }
-
-    private var shieldColor: Color {
-        if wifi.stableVPNActive { return SeverityColors.good }
-        let snap = wifi.current
-        if snap.hasWiFiLink && snap.security.isInsecure { return SeverityColors.watch }
-        return SeverityColors.quiet
-    }
-
-    private var securityText: String {
-        let snap = wifi.current
-        var parts: [String] = []
-        if snap.vpnActive {
-            parts.append("VPN: \(snap.vpnInterface ?? "active")")
-        }
-        if snap.hasWiFiLink {
-            parts.append("\(snap.displaySSID()) (\(snap.security.label))")
-        } else if !snap.vpnActive {
-            parts.append("No Wi-Fi")
-        }
-        if !snap.vpnActive && snap.hasWiFiLink {
-            parts.append("no VPN")
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private var securityTooltip: String {
-        let snap = wifi.current
-        var lines: [String] = []
-        if snap.vpnActive {
-            lines.append("VPN tunnel: \(snap.vpnInterface ?? "(unknown interface)")")
-        } else {
-            lines.append("VPN: not active")
-        }
-        if snap.hasWiFiLink {
-            lines.append("Wi-Fi SSID: \(snap.displaySSID())")
-            lines.append("Encryption: \(snap.security.label)")
-            if let rssi = snap.rssi {
-                lines.append("Signal: \(rssi) dBm \(rssiDescription(rssi))")
-            }
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    private func rssiDescription(_ dBm: Int) -> String {
-        switch dBm {
-        case (-50)... : return "(excellent)"
-        case (-65)...(-51): return "(good)"
-        case (-75)...(-66): return "(fair)"
-        default: return "(weak)"
-        }
+        return "You're good"
     }
 
     // MARK: - Vitals header
@@ -393,6 +504,17 @@ struct PopoverView: View {
                 .textCase(.uppercase)
                 .tracking(0.4)
             Spacer()
+            Button {
+                onShowProcesses()
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "list.bullet.rectangle")
+                    Text("Top Processes")
+                }
+                .font(.caption2)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
             Button {
                 onShowDetail(.cpu)
             } label: {
@@ -919,148 +1041,7 @@ struct PopoverView: View {
         return String(format: "%.2f GB", v / 1_073_741_824)
     }
 
-    // MARK: - Recent section
-
-    /// Inline mini-history. Shows the last few incidents (active or closed)
-    /// so the user has some continuity — "did I just see that dot flash
-    /// yellow?". The "Show all" link opens the full-history panel for
-    /// deeper retrospective browsing.
-    private var recentSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if history.recent.isEmpty {
-                Text("No events yet.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 2)
-            } else {
-                VStack(spacing: 3) {
-                    ForEach(history.recent) { row in
-                        Button { onSelectEvent(row) } label: {
-                            HistoryRowView(record: row)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                if !history.all.isEmpty {
-                    Button("Show all") { onShowFullHistory() }
-                        .buttonStyle(.plain)
-                        .font(.caption2)
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-        }
-    }
-
-    // MARK: - Connection section
-
-    /// Always-present. These are informational (LAN address, WAN address)
-    /// — they're what the user opens the popover to check *between*
-    /// incidents. Click-to-copy with visual feedback, no chrome.
-    private var connectionSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            CopyableInfoRow(label: "Local IP", value: networkInfo.localIP)
-            CopyableInfoRow(
-                label: "Public IP",
-                value: networkInfo.publicIP,
-                isLoading: networkInfo.isRefreshingPublic && networkInfo.publicIP == nil
-            )
-            Button { onShowPorts() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "dot.radiowaves.left.and.right")
-                        .font(.caption).foregroundStyle(.secondary).frame(width: 14)
-                    Text("Open ports").font(.caption).foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("See every port currently listening on this Mac.")
-
-            Button { onShowConnectivity() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.caption).foregroundStyle(.secondary).frame(width: 14)
-                    Text("Connection history").font(.caption).foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Uptime and outage history for your internet connection.")
-        }
-    }
-
-    // MARK: - Details menu
-
-    /// The popover's navigation menu: one row per detail panel, each showing a
-    /// live value on the right and opening its window on tap. Grouped into
-    /// "what's happening now" (Recent events · Top Processes · All processes ·
-    /// Connection details · Open ports) and, below a divider, "security posture"
-    /// (Security posture · Malware scan).
-    private var detailsMenu: some View {
-        VStack(spacing: 0) {
-            navRow(icon: "clock.arrow.circlepath", tint: neutralIconColor,
-                   title: "Recent events",
-                   value: history.recent.isEmpty ? nil : "\(history.recent.count)",
-                   action: onShowFullHistory)
-            navRow(icon: "chart.pie", tint: neutralIconColor,
-                   title: "Top Processes", value: topProcessMenuValue, action: onShowProcesses)
-            navRow(icon: "list.bullet.rectangle", tint: neutralIconColor,
-                   title: "All processes", value: nil, action: onShowProcessViewer)
-            navRow(icon: "wifi", tint: wifi.stableVPNActive ? SeverityColors.good : neutralIconColor,
-                   title: "Connection details", value: connectionMenuValue, action: onShowConnectivity)
-            navRow(icon: "globe", tint: neutralIconColor,
-                   title: "Network activity", value: nil, action: onShowNetwork)
-            navRow(icon: "network", tint: neutralIconColor,
-                   title: "Open ports", value: nil, action: onShowPorts)
-            if settings.lanWatchEnabled {
-                navRow(icon: "rectangle.connected.to.line.below", tint: neutralIconColor,
-                       title: "Devices on network", value: lanDevicesMenuValue, action: onShowDevices)
-            }
-
-            Divider().padding(.vertical, 4)
-
-            navRow(icon: postureIcon, tint: postureColor,
-                   title: "Security posture", value: postureMenuValue, action: onShowPosture)
-            navRow(icon: malwareScanIcon, tint: malwareScanColor,
-                   title: "Malware scan", value: malwareMenuValue, action: onShowMalwareInfo)
-        }
-    }
-
     private var neutralIconColor: Color { Color(nsColor: .secondaryLabelColor) }
-
-    private func navRow(icon: String, tint: Color, title: String, value: String?, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 11) {
-                Image(systemName: icon)
-                    .font(.callout)
-                    .foregroundStyle(tint)
-                    .frame(width: 18)
-                Text(title)
-                    .font(.callout)
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 8)
-                if let value {
-                    Text(value)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.vertical, 9)
-            .padding(.horizontal, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
 
     private var postureMenuValue: String {
         if !settings.securityMonitoringEnabled { return "Off" }
@@ -1073,105 +1054,16 @@ struct PopoverView: View {
         malwareScanText.replacingOccurrences(of: "Malware scan · ", with: "")
     }
 
-    private var topProcessMenuValue: String? {
-        guard let p = processes.current.topByCPU.first else { return nil }
-        return "\(p.name) · \(p.cpuDisplay)"
-    }
-
-    private var connectionMenuValue: String? {
-        let snap = wifi.current
-        if snap.vpnActive { return "VPN active" }
-        if snap.hasWiFiLink { return snap.displaySSID() }
-        return nil
-    }
-
-    private var lanDevicesMenuValue: String? {
-        let n = arp.current.devices.count
-        return n == 0 ? nil : "\(n)"
-    }
-
-    /// Grouped security summary: connection (VPN/Wi-Fi), posture, and malware
-    /// as three sibling one-liners, instead of being scattered top and bottom.
-    private var securitySection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Security")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-                .tracking(0.4)
-            securityLine
-            postureRow
-            malwareScanRow
-        }
-    }
-
-    /// Collapsible header row for the lower reference sections (Recent,
-    /// Connection). Chevron rotates open/closed; optional trailing count.
-    private func disclosureRow(title: String, trailing: String?, isOpen: Bool, toggle: @escaping () -> Void) -> some View {
-        Button(action: toggle) {
-            HStack(spacing: 6) {
-                Image(systemName: isOpen ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 12)
-                Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                if let trailing {
-                    Text(trailing)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
     /// Footer: primary actions inline, full settings behind the gear.
     private var footerBar: some View {
         HStack(spacing: 8) {
             Button("About") { onShowAbout() }
                 .controlSize(.small)
-            Button { onShowSettings() } label: {
-                Image(systemName: "gearshape")
-            }
-            .controlSize(.small)
-            .help("Settings")
             Spacer()
             Button("Quit") { NSApp.terminate(nil) }
                 .keyboardShortcut("q", modifiers: .command)
                 .controlSize(.small)
         }
-    }
-
-    /// Always-visible summary of Pulse's on-device posture checks — gives a
-    /// calm "all clear" when nothing's wrong (problems still surface as cards).
-    /// Clickable into the full posture panel.
-    private var postureRow: some View {
-        Button {
-            onShowPosture()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: postureIcon)
-                    .font(.caption)
-                    .foregroundStyle(postureColor)
-                    .frame(width: 14)
-                Text(postureText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("On-device checks of your Mac's security settings and running software. Click for details.")
     }
 
     /// Count of posture concerns across the checks Pulse performs.
@@ -1198,61 +1090,11 @@ struct PopoverView: View {
         return postureProblemCount == 0 ? SeverityColors.good : SeverityColors.watch
     }
 
-    private var postureText: String {
-        if !settings.securityMonitoringEnabled { return "Security posture · monitoring off" }
-        if !security.current.scanned { return "Security posture · checking…" }
-        let n = postureProblemCount
-        if n == 0 { return "Security posture · all clear" }
-        return n == 1 ? "Security posture · 1 to review" : "Security posture · \(n) to review"
-    }
-
-    /// Compact readout of Apple's own background malware scanner (XProtect
-    /// Remediator): the "last scan, no threats" reassurance macOS normally
-    /// hides. Actual detections arrive separately as incident cards.
-    private var malwareScanRow: some View {
-        Button {
-            onShowMalwareInfo()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: malwareScanIcon)
-                    .font(.caption)
-                    .foregroundStyle(malwareScanColor)
-                    .frame(width: 14)
-                Text(malwareScanText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Powered by macOS's built-in XProtect malware protection. Click for details.")
-    }
-
     private static let relativeFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .abbreviated
         return f
     }()
-
-    private var malwareScanIcon: String {
-        let xp = security.current.xprotect
-        if !xp.detections.isEmpty { return "exclamationmark.shield.fill" }
-        if xp.lastScan != nil { return "checkmark.shield" }
-        return "shield"
-    }
-
-    private var malwareScanColor: Color {
-        let xp = security.current.xprotect
-        if !xp.detections.isEmpty { return SeverityColors.watch }
-        if xp.lastScan != nil { return SeverityColors.good }
-        return SeverityColors.quiet
-    }
 
     private var malwareScanText: String {
         if !settings.securityMonitoringEnabled { return "Malware scan · monitoring off" }
@@ -1541,6 +1383,12 @@ struct SettingsView: View {
                           "Lets you run an on-demand scan on a device you pick — to identify what it is. Unlike everything else, this connects directly to that device. One at a time, only when you click, with a warning first. Use only on networks you own. Off by default.",
                           $settings.lanActiveProbeEnabled)
             }
+        }
+
+        group("Network visibility") {
+            toggleRow("Show paired Bluetooth devices",
+                      "List the Bluetooth devices paired with this Mac in the Network Visibility panel, so unexpected pairings stand out. Asks once for Bluetooth access; off by default.",
+                      $settings.bluetoothInventoryEnabled)
         }
     }
 
@@ -2771,49 +2619,6 @@ struct IncidentDetailView: View {
         f.dateStyle = .medium
         f.timeStyle = .medium
         return f.string(from: date)
-    }
-}
-
-struct HistoryRowView: View {
-    let record: IncidentRecord
-    @State private var now = Date()
-
-    private let timer = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(tint)
-                .frame(width: 6, height: 6)
-            Image(systemName: record.category.systemImage)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: 14)
-            Text(record.title)
-                .font(.caption)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Spacer(minLength: 6)
-            Text(relativeLabel)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .onReceive(timer) { now = $0 }
-    }
-
-    private var tint: Color {
-        SeverityColors.color(for: record.severity, fallbackQuiet: false)
-    }
-
-    /// "2m ago" for closed incidents, "· live" for active ones. We dropped
-    /// showing duration in this compact row because it's too much text —
-    /// the full history view below has the full duration column.
-    private var relativeLabel: String {
-        if record.isActive {
-            return "active"
-        }
-        return RelativeTime.short(from: record.startedAt, to: now)
     }
 }
 

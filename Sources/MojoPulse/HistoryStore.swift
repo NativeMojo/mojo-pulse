@@ -18,8 +18,8 @@ final class HistoryStore: ObservableObject {
     @Published private(set) var recent: [IncidentRecord] = []
     @Published private(set) var all: [IncidentRecord] = []
 
-    /// How many items to show in the popover's inline section.
-    private let popoverLimit = 5
+    /// How many items to show in the popover's Recent activity screen.
+    private let popoverLimit = 10
 
     /// How many items to materialize in the full history window. Beyond a
     /// few hundred we'd want a paginated query; at MVP rates (a handful of
