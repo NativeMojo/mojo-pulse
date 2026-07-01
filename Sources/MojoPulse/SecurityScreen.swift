@@ -31,11 +31,12 @@ struct SecurityScreen: View {
             }
 
             section("Exposure") {
+                if !s.suspectProcesses.isEmpty { suspectRow }
                 countRow("antenna.radiowaves.left.and.right", "Sharing services exposed", s.exposedServices.count)
                 breakoutRow("network", "Open ports", action: onShowPorts)
-                if !s.unsignedApps.isEmpty { countRow("app.badge", "Unsigned apps running", s.unsignedApps.count) }
                 if !s.unexpectedListeners.isEmpty { countRow("dot.radiowaves.left.and.right", "Unexpected listeners", s.unexpectedListeners.count) }
                 if !s.newPersistenceItems.isEmpty { countRow("clock.arrow.circlepath", "New startup items", s.newPersistenceItems.count) }
+                if !s.unrecognizedProcesses.isEmpty { unrecognizedGroup }
             }
 
             section("Malware (XProtect)") {
@@ -62,11 +63,14 @@ struct SecurityScreen: View {
         .cardSurface()
     }
 
+    /// Suspects count as review items; the unrecognized tier deliberately
+    /// does NOT — it's the quiet "listed for reference" shelf, and counting
+    /// it would put a permanent warning badge on every dev Mac.
     private var problemCount: Int {
         guard s.scanned else { return 0 }
         var n = 0
         for st in [s.fileVault, s.sip, s.gatekeeper, s.firewall, s.autoLogin, s.guestAccount] where st == .problem { n += 1 }
-        n += s.exposedServices.count + s.unsignedApps.count + s.unexpectedListeners.count + s.newPersistenceItems.count
+        n += s.exposedServices.count + s.suspectProcesses.count + s.unexpectedListeners.count + s.newPersistenceItems.count
         return n
     }
 
@@ -126,6 +130,54 @@ struct SecurityScreen: View {
             Image(systemName: statusIcon).font(.caption).foregroundStyle(statusColor)
             Text(statusText).font(.caption).foregroundStyle(statusColor)
         }
+    }
+
+    /// Trust Engine escalations — red, because these carry an incident card.
+    private var suspectRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.callout)
+                .foregroundStyle(SeverityColors.issue).frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Suspect processes").font(.callout)
+                Text(s.suspectProcesses.map(\.name).joined(separator: ", "))
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Text("\(s.suspectProcesses.count)").font(.caption).foregroundStyle(SeverityColors.issue)
+        }
+    }
+
+    /// The passive trust tier: code with no developer identity but nothing
+    /// else suspicious. Listed quietly for reference — never counted, never
+    /// alerted on. Common on dev Macs (Homebrew, hand-built tools).
+    private var unrecognizedGroup: some View {
+        DisclosureGroup {
+            VStack(spacing: 5) {
+                ForEach(s.unrecognizedProcesses) { f in
+                    HStack(spacing: 8) {
+                        Text(f.name).font(.caption).lineLimit(1)
+                        if f.firstSeen != nil {
+                            Text("new").font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Capsule().fill(SeverityColors.info.opacity(0.15)))
+                                .foregroundStyle(SeverityColors.info)
+                        }
+                        Spacer(minLength: 8)
+                        Text(f.signerShort).font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .padding(.leading, 30)
+            .padding(.top, 4)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "questionmark.app").font(.callout).foregroundStyle(.secondary).frame(width: 20)
+                Text("Unrecognized apps").font(.callout)
+                Spacer(minLength: 8)
+                Text("\(s.unrecognizedProcesses.count)").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .help("No developer identity, but nothing else suspicious. Pulse lists these quietly and never alerts on them.")
     }
 
     private func countRow(_ icon: String, _ name: String, _ count: Int) -> some View {

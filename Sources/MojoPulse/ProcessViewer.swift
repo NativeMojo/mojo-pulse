@@ -80,6 +80,52 @@ final class ProcessViewerModel: ObservableObject {
     /// this drives the two-phase "show rows now, fill trust next" UX).
     private var knownTrust: [String: TrustInfo] = [:]
 
+    /// App Store seller verification (user-initiated, cached): the signature
+    /// of a Store app only says "Mac App Store", so on request we resolve each
+    /// one's bundle ID → seller via Apple's public catalog and show the real
+    /// developer in the Signed-by column, same as Developer ID rows.
+    @Published private(set) var verifyingSellers = false
+    @Published private(set) var didVerifySellers = false
+    @Published private(set) var sellers: [String: String] = [:]     // bundleID → seller
+    private var bundleIDByPath: [String: String?] = [:]             // path → bundleID (nil = none)
+
+    var appStoreCount: Int { rows.filter { $0.trust?.label == .macAppStore }.count }
+
+    func seller(for row: ProcViewerRow) -> String? {
+        guard row.trust?.label == .macAppStore,
+              let bid = bundleIDByPath[row.path] ?? nil else { return nil }
+        return sellers[bid]
+    }
+
+    func verifySellers() async {
+        guard !verifyingSellers else { return }
+        verifyingSellers = true
+        defer { verifyingSellers = false }
+
+        // Resolve bundle IDs for App Store rows we haven't mapped yet
+        // (plist reads — off-main).
+        let masPaths = rows.filter { $0.trust?.label == .macAppStore }.map(\.path)
+        let unresolved = masPaths.filter { bundleIDByPath[$0] == nil }
+        if !unresolved.isEmpty {
+            let resolved = await Task.detached(priority: .utility) {
+                var m: [String: String?] = [:]
+                for p in unresolved { m[p] = AppBundle.bundleID(forExecutable: p) }
+                return m
+            }.value
+            for (p, b) in resolved { bundleIDByPath[p] = b }
+        }
+
+        // One catalog lookup per distinct app; AppStoreLookup caches across
+        // the session, so re-runs and the detail sheet share results.
+        let ids = Set(masPaths.compactMap { bundleIDByPath[$0] ?? nil })
+        for id in ids where sellers[id] == nil {
+            if case .found(_, let seller) = await AppStoreLookup.verify(bundleID: id) {
+                sellers[id] = seller
+            }
+        }
+        didVerifySellers = true
+    }
+
     func refresh() async {
         let raw = await Task.detached(priority: .userInitiated) { ProcessViewerSampler.sample() }.value
         rows = raw.map { r in
@@ -210,7 +256,7 @@ struct ProcessViewerView: View {
 
     private func rowView(_ row: ProcViewerRow) -> some View {
         HStack(spacing: 10) {
-            trustBadge(row.trust).frame(width: 150, alignment: .leading)
+            trustBadge(row).frame(width: 150, alignment: .leading)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 4) {
                     Text(row.name).font(.callout).lineLimit(1).truncationMode(.middle)
@@ -236,14 +282,22 @@ struct ProcessViewerView: View {
     }
 
     @ViewBuilder
-    private func trustBadge(_ info: TrustInfo?) -> some View {
-        if let info {
+    private func trustBadge(_ row: ProcViewerRow) -> some View {
+        if let info = row.trust {
+            let seller = model.seller(for: row)
             HStack(spacing: 6) {
                 Circle().fill(trustColor(info.label)).frame(width: 7, height: 7)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(trustPrimary(info)).font(.caption).foregroundStyle(.primary)
-                        .lineLimit(1).truncationMode(.tail)
-                    if let sub = trustSecondary(info) {
+                    HStack(spacing: 3) {
+                        Text(seller ?? trustPrimary(info)).font(.caption).foregroundStyle(.primary)
+                            .lineLimit(1).truncationMode(.tail)
+                        if seller != nil {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 8)).foregroundStyle(SeverityColors.good)
+                                .help("Seller confirmed from Apple's App Store catalog")
+                        }
+                    }
+                    if let sub = trustSecondary(info, verified: seller != nil) {
                         Text(sub).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
@@ -258,7 +312,8 @@ struct ProcessViewerView: View {
 
     /// The real signer when we have it: the org name for Developer ID, the
     /// signing class otherwise. (App Store apps are signed by Apple, so the
-    /// developer's name isn't in the signature — only the Team ID, shown below.)
+    /// developer's name isn't in the signature — only the Team ID; "Verify
+    /// sellers" upgrades those rows to the catalog-confirmed seller name.)
     private func trustPrimary(_ info: TrustInfo) -> String {
         switch info.label {
         case .developerID(let who):
@@ -272,10 +327,12 @@ struct ProcessViewerView: View {
         }
     }
 
-    private func trustSecondary(_ info: TrustInfo) -> String? {
+    private func trustSecondary(_ info: TrustInfo, verified: Bool = false) -> String? {
         switch info.label {
         case .developerID: return "Developer ID"
-        case .macAppStore: return info.teamID.map { "Team \($0)" }
+        case .macAppStore:
+            if verified { return "App Store" }
+            return info.teamID.map { "Team \($0)" }
         default: return nil
         }
     }
@@ -304,12 +361,24 @@ struct ProcessViewerView: View {
                 }
             }
             Spacer()
+            if model.appStoreCount > 0 {
+                Button {
+                    Task { await model.verifySellers() }
+                } label: {
+                    if model.verifyingSellers {
+                        Label("Verifying…", systemImage: "hourglass")
+                    } else if model.didVerifySellers {
+                        Label("Sellers verified", systemImage: "checkmark.seal")
+                    } else {
+                        Label("Verify App Store sellers", systemImage: "checkmark.seal")
+                    }
+                }
+                .controlSize(.small)
+                .disabled(model.verifyingSellers)
+                .help("Confirm who sells each App Store app, from Apple's public catalog.")
+            }
             Button("Top Processes") { onShowTopProcesses() }
                 .controlSize(.small)
-            Button("Activity Monitor") {
-                NSWorkspace.shared.open(IncidentTemplates.activityMonitorURL)
-            }
-            .controlSize(.small)
         }
     }
 

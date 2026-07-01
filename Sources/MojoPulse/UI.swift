@@ -1142,7 +1142,9 @@ struct PopoverView: View {
         }
     }
 
-    /// Count of posture concerns across the checks Pulse performs.
+    /// Count of posture concerns across the checks Pulse performs. Suspect
+    /// processes count; the quiet "unrecognized" trust tier deliberately
+    /// doesn't (it never alerts anywhere).
     private var postureProblemCount: Int {
         let s = security.current
         guard s.scanned else { return 0 }
@@ -1150,7 +1152,7 @@ struct PopoverView: View {
         for state in [s.fileVault, s.sip, s.gatekeeper, s.firewall, s.autoLogin, s.guestAccount] where state == .problem {
             n += 1
         }
-        n += s.exposedServices.count + s.unsignedApps.count
+        n += s.exposedServices.count + s.suspectProcesses.count
         n += s.unexpectedListeners.count + s.newPersistenceItems.count
         return n
     }
@@ -1625,11 +1627,6 @@ struct ProcessesView: View {
                 Button("All processes") { onShowAllProcesses() }
                     .controlSize(.small)
                     .fixedSize()
-                Button("Activity Monitor") {
-                    NSWorkspace.shared.open(IncidentTemplates.activityMonitorURL)
-                }
-                .controlSize(.small)
-                .fixedSize()
             }
         }
         .padding(20)
@@ -1771,6 +1768,18 @@ struct ProcessDetailView: View {
     @State private var posture: [PostureFlag] = []
     @State private var verifying = false
     @State private var verifyResult: (ok: Bool, message: String)?
+    // Trust Engine reputation: structured signing info, when this identity
+    // first appeared on the Mac, and the user's explicit trust marking.
+    @State private var trust: TrustInfo?
+    @State private var trustKey: String?
+    @State private var firstSeen: Date?
+    @State private var firstSeenKnown = false
+    @State private var trustedByUser = false
+    @State private var showQuitConfirm = false
+    @State private var quitFailed = false
+    @State private var bundleID: String?
+    @State private var storeVerifying = false
+    @State private var storeOutcome: AppStoreLookup.Outcome?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1792,6 +1801,9 @@ struct ProcessDetailView: View {
                         infoRow("Launched by", launchedBy(d))
                         infoRow("Started", d.started)
                         infoRow("Signed by", d.signature)
+                        infoRow("Notarized", notarizedText)
+                        infoRow("First seen", firstSeenText)
+                        if trust?.label == .macAppStore, bundleID != nil { appStoreRow }
                         integrityRow
                         if !posture.isEmpty { postureSection }
                         connectionsSection
@@ -1864,23 +1876,143 @@ struct ProcessDetailView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
+            // Explicit trust marking for code with no developer identity —
+            // moves it to the recognized tier so the Trust Engine stays quiet
+            // about it. Only offered where it means something (elevated
+            // signing states), never shown for Apple/App Store/Developer ID.
+            if let key = trustKey, (trust?.label.isElevated ?? false) || trustedByUser {
+                Button(trustedByUser ? "Untrust" : "Trust this app") {
+                    TrustBaselineStore().setTrusted(key, !trustedByUser)
+                    trustedByUser.toggle()
+                }
+                .controlSize(.small)
+                .help(trustedByUser
+                    ? "Stop treating this app as known-good."
+                    : "Mark this app as known-good so Pulse doesn't flag it.")
+            }
+            Button("Quit App") { showQuitConfirm = true }
+                .controlSize(.small)
             Spacer()
             Button("Reveal in Finder") { revealInFinder() }
                 .controlSize(.small)
                 .disabled((detail?.path ?? "").isEmpty || !(detail?.path ?? "").hasPrefix("/"))
-            Button("Activity Monitor") {
-                NSWorkspace.shared.open(IncidentTemplates.activityMonitorURL)
-            }
-            .controlSize(.small)
             Button("Done") { dismiss() }
                 .controlSize(.small)
                 .keyboardShortcut(.defaultAction)
+        }
+        .confirmationDialog("Quit \(proc.name)?", isPresented: $showQuitConfirm) {
+            Button("Quit \(proc.name)", role: .destructive) { quitProcess() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Unsaved changes in it may be lost.")
+        }
+        .alert("Couldn't quit \(proc.name)", isPresented: $quitFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("It likely belongs to another user or the system, which Pulse can't quit without elevated privileges.")
+        }
+    }
+
+    /// Polite first: NSRunningApplication.terminate() gives GUI apps their
+    /// normal quit path (save prompts and all). CLI/background processes get
+    /// SIGTERM. Never SIGKILL — Pulse guides, it doesn't strong-arm.
+    private func quitProcess() {
+        if let app = NSRunningApplication(processIdentifier: pid_t(proc.pid)),
+           app.terminate() {
+            dismiss()
+            return
+        }
+        if kill(pid_t(proc.pid), SIGTERM) == 0 {
+            dismiss()
+        } else {
+            quitFailed = true
         }
     }
 
     private func launchedBy(_ d: ProcessDetail) -> String {
         guard d.parentPID > 0, d.parentName != "—" else { return "—" }
         return "\(d.parentName)  ·  PID \(d.parentPID)"
+    }
+
+    // MARK: Reputation (Trust Engine)
+
+    /// Honest about what codesign can see: only a *stapled* ticket is
+    /// detectable offline, so absence isn't an accusation.
+    private var notarizedText: String {
+        guard let t = trust else { return "—" }
+        switch t.label {
+        case .apple: return "Apple system software"
+        case .macAppStore: return "App Store review"
+        case .developerID, .adhoc, .unsigned, .unknown:
+            return t.notarized ? "Yes — stapled ticket" : "No stapled ticket"
+        }
+    }
+
+    private static let firstSeenFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    private var firstSeenText: String {
+        guard firstSeenKnown, let date = firstSeen else { return "—" }
+        // Epoch 0 marks the install-time baseline (see TrustBaselineStore).
+        if date <= Date(timeIntervalSince1970: 1) { return "Before Mojo Pulse was installed" }
+        var text = Self.firstSeenFormatter.string(from: date)
+        if trustedByUser { text += "  ·  trusted by you" }
+        return text
+    }
+
+    // MARK: App Store listing
+
+    /// The App Store re-signs every app, so "Mac App Store" alone doesn't say
+    /// WHO made it. This confirms the seller from Apple's public catalog —
+    /// "WhatsApp Messenger — sold by WhatsApp Inc." — on demand.
+    private var appStoreRow: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("App Store listing").font(.caption2).foregroundStyle(.secondary)
+                .textCase(.uppercase).tracking(0.3)
+            HStack(alignment: .top, spacing: 8) {
+                if storeVerifying {
+                    ProgressView().controlSize(.small)
+                    Text("Checking Apple's catalog…").font(.callout).foregroundStyle(.secondary)
+                } else if let outcome = storeOutcome {
+                    switch outcome {
+                    case .found(let name, let seller):
+                        Image(systemName: "checkmark.seal.fill").foregroundStyle(SeverityColors.good)
+                        Text("\(name) — sold by \(seller)").font(.caption)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case .notFound:
+                        Image(systemName: "questionmark.circle.fill").foregroundStyle(SeverityColors.watch)
+                        Text("No App Store listing matches this bundle ID — unusual for an App Store-signed app.")
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case .failed:
+                        Image(systemName: "wifi.slash").foregroundStyle(.secondary)
+                        Text("Couldn't reach the App Store.").font(.caption).foregroundStyle(.secondary)
+                        Button("Retry") { runStoreVerify() }.controlSize(.small)
+                    }
+                } else {
+                    Button("Verify seller") { runStoreVerify() }.controlSize(.small)
+                    Text("Confirm who sells this app, from Apple's public catalog.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func runStoreVerify() {
+        guard let bid = bundleID else { return }
+        storeVerifying = true
+        storeOutcome = nil
+        Task {
+            let outcome = await AppStoreLookup.verify(bundleID: bid)
+            storeVerifying = false
+            storeOutcome = outcome
+        }
     }
 
     // MARK: Integrity
@@ -1996,9 +2128,31 @@ struct ProcessDetailView: View {
         let conns = await Task.detached(priority: .utility) {
             ProcessConnections.fetch(pid: p.pid)
         }.value
+        let resolvedPath = d.path
+        let t = await Task.detached(priority: .userInitiated) {
+            ProcessTrust.evaluate(path: resolvedPath)
+        }.value
         detail = d
         connections = conns
         posture = ProcessPosture.fullFlags(path: p.path, name: p.name)
+        trust = t
+
+        // Identity key mirrors the trust scan: helpers aggregate under the
+        // top-level GUI app whose bundle contains the executable; everything
+        // else keys on its path. NSWorkspace is main-actor — we're on it.
+        let bundleID = NSWorkspace.shared.runningApplications
+            .first { app in
+                guard app.activationPolicy == .regular, let url = app.bundleURL else { return false }
+                return resolvedPath.hasPrefix(url.path + "/")
+            }?
+            .bundleIdentifier
+        self.bundleID = bundleID
+        let key = TrustEvaluator.identityKey(bundleID: bundleID, path: resolvedPath)
+        trustKey = key
+        let store = TrustBaselineStore()
+        firstSeen = store.all()[key]
+        firstSeenKnown = true
+        trustedByUser = store.isTrusted(key)
         loading = false
     }
 
@@ -2163,7 +2317,7 @@ struct SecurityPostureView: View {
         for state in [s.fileVault, s.sip, s.gatekeeper, s.firewall, s.autoLogin, s.guestAccount] where state == .problem {
             n += 1
         }
-        n += s.exposedServices.count + s.unsignedApps.count
+        n += s.exposedServices.count + s.suspectProcesses.count
         n += s.unexpectedListeners.count + s.newPersistenceItems.count
         return n
     }
@@ -2200,7 +2354,7 @@ struct SecurityPostureView: View {
 
             VStack(spacing: 8) {
                 countItem("network", "Remote sharing exposed", s.exposedServices.count)
-                countItem("app.badge", "Unsigned apps running", s.unsignedApps.count)
+                countItem("exclamationmark.triangle", "Suspect processes", s.suspectProcesses.count)
                 countItem("dot.radiowaves.left.and.right", "Unexpected listeners",
                           s.unexpectedListeners.count, action: onShowPorts)
                 countItem("clock.arrow.circlepath", "New startup items", s.newPersistenceItems.count)
@@ -2534,6 +2688,14 @@ struct IncidentCard: View {
 /// We deliberately don't show the glyph in the no-URL case because that
 /// would imply the panel is interactive. The visual difference between
 /// "advice" and "shortcut" should be clear at a glance.
+/// Internal card-action routes. `mojopulse://` action URLs never leave the
+/// app — ActionBox posts the matching notification and MenuBarController
+/// opens the right Pulse window. Pulse's own viewers beat bouncing the user
+/// to Activity Monitor (they show signer, posture, connections, trust).
+extension Notification.Name {
+    static let pulseShowProcessViewer = Notification.Name("mojopulse.showProcessViewer")
+}
+
 struct ActionBox: View {
     let text: String
     let tint: Color
@@ -2544,7 +2706,11 @@ struct ActionBox: View {
     var body: some View {
         if let url {
             Button {
-                NSWorkspace.shared.open(url)
+                if url.scheme == "mojopulse" {
+                    NotificationCenter.default.post(name: .pulseShowProcessViewer, object: nil)
+                } else {
+                    NSWorkspace.shared.open(url)
+                }
             } label: {
                 content(showLauncher: true)
             }
@@ -2588,7 +2754,7 @@ struct ActionBox: View {
     /// a Settings pane snapping open out of nowhere.
     private func launcherTooltip(for url: URL) -> String {
         let s = url.absoluteString
-        if s.contains("Activity Monitor.app") { return "Click to open Activity Monitor" }
+        if s.hasPrefix("mojopulse://processes") { return "Click to open All Processes" }
         if s.contains("battery") { return "Click to open Battery Settings" }
         if s.contains("Storage") { return "Click to open Storage Settings" }
         if s.contains("wifi-settings") { return "Click to open Wi-Fi Settings" }

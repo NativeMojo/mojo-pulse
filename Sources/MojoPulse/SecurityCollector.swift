@@ -1,7 +1,6 @@
 import Foundation
 import Combine
 import AppKit
-import Security
 
 // MARK: - Snapshot types
 
@@ -27,15 +26,6 @@ struct ExposedService: Sendable, Equatable, Hashable {
 struct ListenerItem: Sendable, Equatable, Hashable {
     let process: String
     let port: Int
-}
-
-/// A currently-running GUI app with no code signature at all. We flag only the
-/// truly-unsigned case (cheap to determine, unambiguous) rather than doing the
-/// expensive deep validity hash on every signed app each scan.
-struct UnsignedApp: Sendable, Equatable, Hashable {
-    let name: String
-    let bundleID: String
-    let path: String
 }
 
 /// Lightweight, Sendable reference to a running app, captured on the main
@@ -101,7 +91,11 @@ struct SecuritySnapshot: Sendable, Equatable {
     var guestAccount: PostureState  // problem == guest account is enabled
     var exposedServices: [ExposedService]
     var unexpectedListeners: [ListenerItem]
-    var unsignedApps: [UnsignedApp]
+    /// Trust Engine output. Suspects escalate (SuspectProcessDetector turns
+    /// each into an incident); unrecognized is the passive "listed, never
+    /// alerts" tier shown only in the Security screen.
+    var suspectProcesses: [TrustFinding]
+    var unrecognizedProcesses: [TrustFinding]
     var newPersistenceItems: [PersistenceItem]
     var xprotect: XProtectStatus
     var scanned: Bool
@@ -115,7 +109,8 @@ struct SecuritySnapshot: Sendable, Equatable {
         guestAccount: .unknown,
         exposedServices: [],
         unexpectedListeners: [],
-        unsignedApps: [],
+        suspectProcesses: [],
+        unrecognizedProcesses: [],
         newPersistenceItems: [],
         xprotect: .unknown,
         scanned: false
@@ -134,11 +129,24 @@ struct RawSecurityScan: Sendable {
     var guestAccount: PostureState
     var exposedServices: [ExposedService]
     var unexpectedListeners: [ListenerItem]
-    var unsignedApps: [UnsignedApp]
+    var suspectProcesses: [TrustFinding]
+    var unrecognizedProcesses: [TrustFinding]
+    /// Every identity the trust scan evaluated this pass (all tiers) — the
+    /// collector stamps these into the first-seen baseline.
+    var trustKeysSeen: [String]
     var persistenceItems: [PersistenceItem]
     /// nil when this scan skipped the (expensive, throttled) XProtect log
     /// query — the collector then keeps its cached XProtect status.
     var xprotect: XProtectStatus?
+}
+
+/// Sendable snapshot of the trust baseline, read on the main actor before the
+/// detached scan so the evaluator can score first-seen/trusted without
+/// touching main-bound state.
+struct TrustScanContext: Sendable {
+    let firstSeen: [String: Date]
+    let trusted: Set<String>
+    let seeded: Bool
 }
 
 // MARK: - SecurityCollector
@@ -169,6 +177,9 @@ final class SecurityCollector: ObservableObject {
 
     private let settings: Settings
     private let baseline: SecurityBaselineStore
+    /// First-seen dates + the user's explicit trust list for the Trust Engine.
+    /// Exposed so the UI (process detail, Security screen) can read/mutate it.
+    let trustBaseline: TrustBaselineStore
     private let interval: TimeInterval
 
     private var task: Task<Void, Never>?
@@ -181,9 +192,15 @@ final class SecurityCollector: ObservableObject {
     private var lastXProtectAt: Date?
     private let xprotectInterval: TimeInterval = 6 * 3600  // 6 hours
 
-    init(settings: Settings, baseline: SecurityBaselineStore = SecurityBaselineStore(), interval: TimeInterval = 60) {
+    init(
+        settings: Settings,
+        baseline: SecurityBaselineStore = SecurityBaselineStore(),
+        trustBaseline: TrustBaselineStore = TrustBaselineStore(),
+        interval: TimeInterval = 60
+    ) {
         self.settings = settings
         self.baseline = baseline
+        self.trustBaseline = trustBaseline
         self.interval = interval
     }
 
@@ -241,6 +258,12 @@ final class SecurityCollector: ObservableObject {
         // NSWorkspace is main-actor-bound, so snapshot the running GUI apps
         // here and hand the scanner Sendable refs to check off-main.
         let runningApps = Self.runningGUIApps()
+        // Same deal for the trust baseline: read it here, score off-main.
+        let trustContext = TrustScanContext(
+            firstSeen: trustBaseline.all(),
+            trusted: trustBaseline.trustedKeys(),
+            seeded: trustBaseline.isSeeded
+        )
 
         // Decide here (not in the detached task) whether this scan also does
         // the throttled XProtect log query, and stamp the time up front so a
@@ -250,7 +273,11 @@ final class SecurityCollector: ObservableObject {
         if includeXProtect { lastXProtectAt = now }
 
         Task.detached(priority: .utility) {
-            let raw = SecurityScanner.scan(runningApps: runningApps, includeXProtect: includeXProtect)
+            let raw = SecurityScanner.scan(
+                runningApps: runningApps,
+                includeXProtect: includeXProtect,
+                trust: trustContext
+            )
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.apply(raw, baselineKeys: known, baselineSeeded: seeded)
@@ -276,6 +303,11 @@ final class SecurityCollector: ObservableObject {
         // carry the cached one forward (it changes at most every 6 hours).
         if let xp = raw.xprotect { cachedXProtect = xp }
 
+        // Stamp every identity the trust scan saw. First call ever adopts the
+        // lot as the install-time baseline; afterwards, new arrivals get a
+        // real first-seen date.
+        trustBaseline.record(keys: raw.trustKeysSeen)
+
         let allKeys = Set(raw.persistenceItems.map(\.key))
 
         let newItems: [PersistenceItem]
@@ -300,7 +332,8 @@ final class SecurityCollector: ObservableObject {
             guestAccount: raw.guestAccount,
             exposedServices: raw.exposedServices.sorted { $0.port < $1.port },
             unexpectedListeners: raw.unexpectedListeners.sorted { $0.port < $1.port },
-            unsignedApps: raw.unsignedApps.sorted { $0.bundleID < $1.bundleID },
+            suspectProcesses: raw.suspectProcesses.sorted { $0.name.lowercased() < $1.name.lowercased() },
+            unrecognizedProcesses: raw.unrecognizedProcesses.sorted { $0.name.lowercased() < $1.name.lowercased() },
             newPersistenceItems: newItems,
             xprotect: cachedXProtect,
             scanned: true
@@ -346,8 +379,9 @@ final class SecurityBaselineStore {
 /// Pure, nonisolated scanning logic. Everything here is blocking I/O, so it's
 /// only ever called from a detached task — never on the main actor.
 enum SecurityScanner {
-    static func scan(runningApps: [RunningAppRef], includeXProtect: Bool) -> RawSecurityScan {
+    static func scan(runningApps: [RunningAppRef], includeXProtect: Bool, trust: TrustScanContext) -> RawSecurityScan {
         let listeners = listeners()
+        let trustResult = trustScan(runningApps: runningApps, context: trust)
         return RawSecurityScan(
             fileVault: fileVaultState(),
             sip: sipState(),
@@ -357,7 +391,9 @@ enum SecurityScanner {
             guestAccount: guestAccountState(),
             exposedServices: listeners.exposed,
             unexpectedListeners: listeners.unexpected,
-            unsignedApps: unsignedApps(runningApps),
+            suspectProcesses: trustResult.suspect,
+            unrecognizedProcesses: trustResult.unrecognized,
+            trustKeysSeen: trustResult.keysSeen,
             persistenceItems: persistenceItems(),
             xprotect: includeXProtect ? xprotectStatus() : nil
         )
@@ -472,37 +508,109 @@ enum SecurityScanner {
         return (Array(exposed.values), Array(unexpected.values))
     }
 
-    // MARK: Unsigned apps
+    // MARK: Trust scan (the Trust Engine's process sweep)
 
-    /// Flag running GUI apps that have *no* code signature. We deliberately
-    /// check only for the unsigned case via SecCodeCopySigningInformation
-    /// (cheap — no hash verification), rather than running the expensive deep
-    /// validity check on every signed app each scan. Ad-hoc-signed apps (like
-    /// Pulse itself) DO have a signature, so they're correctly not flagged.
-    private static func unsignedApps(_ apps: [RunningAppRef]) -> [UnsignedApp] {
-        apps.compactMap { app in
-            isUnsigned(path: app.path)
-                ? UnsignedApp(name: app.name, bundleID: app.bundleID, path: app.path)
-                : nil
+    /// Evaluate every running third-party executable through the Trust
+    /// Engine. "Third-party" = anything living outside SIP-protected paths;
+    /// binaries under /System, /usr (minus /usr/local), /bin, /sbin and
+    /// /Library/Apple can't be modified on a SIP-enabled Mac, so they're
+    /// Apple's by construction and skipping them keeps the sweep tiny
+    /// (typically a few dozen paths, each codesign-checked once and then
+    /// served from ProcessTrust's file-identity cache).
+    ///
+    /// This replaces the old unsigned-GUI-apps check: plain unsigned/ad-hoc
+    /// code now lands in the quiet "unrecognized" tier instead of alerting,
+    /// and only combination-scored suspects escalate. GUI apps additionally
+    /// get the impersonation check (famous name, wrong signer).
+    private static func trustScan(
+        runningApps: [RunningAppRef],
+        context: TrustScanContext
+    ) -> (suspect: [TrustFinding], unrecognized: [TrustFinding], keysSeen: [String]) {
+        let selfPID = Int(ProcessInfo.processInfo.processIdentifier)
+
+        // Universe: every running process's executable path (one `ps` call).
+        // `comm` is only the fallback — daemons like redis/nginx rewrite their
+        // process title ("redis-server 127.0.0.1:6379"), so the kernel's
+        // proc_pidpath is the authoritative source for the on-disk binary.
+        guard let out = Shell.run("/bin/ps", ["-axo", "pid=,comm="]) else {
+            return ([], [], [])
         }
+        var pidsByPath: [String: [Int]] = [:]
+        for line in out.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let space = trimmed.firstIndex(of: " "),
+                  let pid = Int(trimmed[..<space]) else { continue }
+            let fallback = String(trimmed[trimmed.index(after: space)...])
+                .trimmingCharacters(in: .whitespaces)
+            let path = ProcessPath.resolve(pid: pid, fallback: fallback)
+            guard pid != selfPID, path.hasPrefix("/"), !isSIPProtected(path) else { continue }
+            pidsByPath[path, default: []].append(pid)
+        }
+        guard !pidsByPath.isEmpty else { return ([], [], []) }
+
+        // Established connections per pid (own-user visibility — the same
+        // honest limitation as everywhere else unprivileged).
+        let connectedPIDs = establishedConnectionPIDs()
+
+        // GUI identity: map an executable back to its app bundle so helpers
+        // aggregate under the app and the display name (what the user sees,
+        // and what an impersonator forges) drives the brand check.
+        let bundles = runningApps.map { (prefix: $0.path + "/", ref: $0) }
+
+        var suspect: [TrustFinding] = []
+        var unrecognized: [TrustFinding] = []
+        var keysSeen: [String] = []
+        let now = Date()
+
+        for (path, pids) in pidsByPath {
+            let gui = bundles.first { path.hasPrefix($0.prefix) }?.ref
+            let candidate = TrustCandidate(
+                path: path,
+                name: gui?.name ?? (path as NSString).lastPathComponent,
+                bundleID: gui?.bundleID,
+                isGUIApp: gui != nil,
+                connections: pids.reduce(0) { $0 + (connectedPIDs[$1] ?? 0) }
+            )
+            let key = TrustEvaluator.identityKey(bundleID: candidate.bundleID, path: path)
+            let (tier, finding) = TrustEvaluator.evaluate(
+                candidate,
+                firstSeen: context.firstSeen[key],
+                baselineSeeded: context.seeded,
+                trusted: context.trusted.contains(key),
+                now: now
+            )
+            keysSeen.append(key)
+            switch tier {
+            case .suspect: suspect.append(finding)
+            case .unrecognized: unrecognized.append(finding)
+            case .recognized: break
+            }
+        }
+        return (suspect, unrecognized, keysSeen)
     }
 
-    private static func isUnsigned(path: String) -> Bool {
-        let url = URL(fileURLWithPath: path) as CFURL
-        var staticCode: SecStaticCode?
-        guard SecStaticCodeCreateWithPath(url, [], &staticCode) == errSecSuccess,
-              let code = staticCode else {
-            return false  // can't evaluate → don't flag (stay calm)
+    /// Paths SIP prevents anyone from modifying — Apple's by construction.
+    /// /usr/local is the deliberate carve-out (user-writable, Homebrew).
+    private static func isSIPProtected(_ path: String) -> Bool {
+        if path.hasPrefix("/usr/local/") { return false }
+        return path.hasPrefix("/System/") || path.hasPrefix("/usr/")
+            || path.hasPrefix("/bin/") || path.hasPrefix("/sbin/")
+            || path.hasPrefix("/Library/Apple/")
+    }
+
+    /// PIDs with at least one established TCP connection right now, from the
+    /// same lsof tooling the listener scan uses (COMMAND PID USER … NAME).
+    private static func establishedConnectionPIDs() -> [Int: Int] {
+        guard let out = Shell.run("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:ESTABLISHED"]) else {
+            return [:]
         }
-        var info: CFDictionary?
-        let status = SecCodeCopySigningInformation(code, SecCSFlags(rawValue: 0), &info)
-        if status == errSecCSUnsigned { return true }
-        guard status == errSecSuccess, let dict = info as? [String: Any] else {
-            return false  // unknown failure → don't flag
+        var counts: [Int: Int] = [:]
+        for line in out.split(separator: "\n").dropFirst() {
+            let tokens = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard tokens.count > 1, let pid = Int(tokens[1]) else { continue }
+            counts[pid, default: 0] += 1
         }
-        // A signed binary always carries an identifier; its absence means
-        // there's no signature.
-        return dict[kSecCodeInfoIdentifier as String] == nil
+        return counts
     }
 
     private static func listeningPort(from name: String) -> Int? {

@@ -258,6 +258,14 @@ final class MenuBarController: NSObject {
             .dropFirst()
             .sink { [weak self] _ in self?.handleNetworkJoin() }
             .store(in: &cancellables)
+
+        // Internal card actions (mojopulse:// action URLs): incident cards
+        // deep in the view tree post a notification instead of threading a
+        // callback through every card site; we own the windows, so we route.
+        NotificationCenter.default.publisher(for: .pulseShowProcessViewer)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.showProcessViewerWindow() }
+            .store(in: &cancellables)
     }
 
     private func handleNetworkJoin() {

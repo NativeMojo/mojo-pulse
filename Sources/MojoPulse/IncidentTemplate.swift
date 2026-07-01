@@ -28,10 +28,14 @@ enum IncidentTemplates {
     //
     // Centralized so the same launcher URL is used everywhere — and so an
     // OS-version-specific URL change is a one-line patch. All targets are
-    // pure launchers: Activity Monitor and System Settings panes. Never
-    // anything destructive.
+    // pure launchers: Pulse's own windows (mojopulse:// scheme, routed
+    // internally by ActionBox) and System Settings panes. Never anything
+    // destructive.
 
-    static let activityMonitorURL = URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")
+    /// Pulse's own All Processes window — richer than Activity Monitor for
+    /// everything these cards ask (signer, posture, connections, trust), so
+    /// process-related actions stay in-app instead of bouncing to Apple's.
+    static let processViewerURL = URL(string: "mojopulse://processes")!
     static let batterySettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.battery")
     static let storageSettingsURL = URL(string: "x-apple.systempreferences:com.apple.settings.Storage")
     static let wifiSettingsURL = URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")
@@ -56,7 +60,7 @@ enum IncidentTemplates {
                 what: "Your Mac has entered a serious thermal state — the fans are ramping up and the system is starting to throttle.",
                 why: ctx["topProcess"].map { "\($0) is pushing the CPU hard right now." },
                 action: "Close heavy apps you're not using, or give it a minute to cool down.",
-                actionURL: activityMonitorURL
+                actionURL: processViewerURL
             )
 
         case "thermal.critical":
@@ -66,7 +70,7 @@ enum IncidentTemplates {
                 why: ctx["topProcess"].map { "\($0) is likely the main cause." }
                     ?? "Something is sustaining very high CPU or GPU load.",
                 action: "Quit heavy apps now, unplug any hot peripherals, and move somewhere cooler if you can.",
-                actionURL: activityMonitorURL
+                actionURL: processViewerURL
             )
 
         // MARK: Network
@@ -174,7 +178,30 @@ enum IncidentTemplates {
                 what: "\(name) is running but carries no code signature, so macOS can't verify who made it or that it hasn't been tampered with.",
                 why: "Most legitimate software is signed. Unsigned binaries are common for hand-built or older developer tools, but also how some malware ships.",
                 action: "If you trust this app, choose “Always ignore this”. Otherwise quit it and check where it came from.",
-                actionURL: activityMonitorURL
+                actionURL: processViewerURL
+            )
+
+        case "security.suspectProcess":
+            let name = ctx["name"] ?? "A process"
+            let reasons = ctx["reasons"] ?? "several suspicious traits"
+            return IncidentCopy(
+                title: "Suspect process running",
+                what: "\(name) combines traits that don't usually go together in legitimate software: \(reasons).",
+                why: "No single trait makes a program malicious — but this combination is how unwanted software commonly behaves, so Pulse only raises it when several line up.",
+                action: "Open All Processes and click it to see its signer, path, and connections. If you built or knowingly installed it, choose “Always ignore this”; otherwise quit it from there.",
+                actionURL: processViewerURL
+            )
+
+        case "security.impersonation":
+            let name = ctx["name"] ?? "An app"
+            let brand = (ctx["brand"]?.isEmpty == false ? ctx["brand"] : nil) ?? "a well-known app"
+            let signer = ctx["signer"] ?? "an unknown signer"
+            return IncidentCopy(
+                title: "App may be impersonating \(brand)",
+                what: "\(name) presents itself as \(brand), but its code signature (\(signer)) doesn't belong to \(brand)'s developer.",
+                why: "Malware often disguises itself as a familiar app. The real \(brand) is always signed by its developer's verified certificate — a mismatch means this copy isn't what it claims to be.",
+                action: "Quit it and delete the app unless you know exactly where it came from (a build you compiled yourself would trip this too — in that case choose “Always ignore this”).",
+                actionURL: processViewerURL
             )
 
         case "security.unexpectedListener":
@@ -184,8 +211,8 @@ enum IncidentTemplates {
                 title: "Unexpected network listener",
                 what: "\(process) is listening on port \(port) and accepting connections from your network.",
                 why: "This is often a local dev server, but an unrecognized listener can also be remote-access software you didn't intend to expose.",
-                action: "If it's yours, choose “Always ignore this”. Otherwise quit the process or check what it is in Activity Monitor.",
-                actionURL: activityMonitorURL
+                action: "If it's yours, choose “Always ignore this”. Otherwise open it in All Processes to see who signed it and quit it from there.",
+                actionURL: processViewerURL
             )
 
         case "security.xprotectDetection":
@@ -229,8 +256,8 @@ enum IncidentTemplates {
                 what: "System CPU has been at \(pct) for the last ~30 seconds.",
                 why: ctx["topProcess"].map { "\($0) is the heaviest right now." }
                     ?? "Something is keeping the cores busy — could be a runaway tab, a build, or a background indexer.",
-                action: "Open Activity Monitor → CPU tab to see which process is the heaviest.",
-                actionURL: activityMonitorURL
+                action: "Open All Processes to see which process is the heaviest.",
+                actionURL: processViewerURL
             )
 
         case "cpu.sustained.issue":
@@ -240,8 +267,8 @@ enum IncidentTemplates {
                 what: "System CPU has been at \(pct) for the last minute — the Mac is barely keeping up.",
                 why: ctx["topProcess"].map { "\($0) is monopolizing the cores, which is why everything feels sluggish." }
                     ?? "A process or runaway loop is monopolizing the cores, which is why everything feels sluggish.",
-                action: "Open Activity Monitor and quit the top CPU offender if you don't recognize it.",
-                actionURL: activityMonitorURL
+                action: "Open All Processes and quit the top CPU offender if you don't recognize it.",
+                actionURL: processViewerURL
             )
 
         case "cpu.runaway":
@@ -251,8 +278,8 @@ enum IncidentTemplates {
                 title: "Process running away",
                 what: "\(name) has been using \(pct) CPU on its own for over a minute.",
                 why: "A process stuck at full CPU usually means a hang or a runaway loop — it drains the battery and heats the Mac even when the system still feels responsive.",
-                action: "If this is expected (a build, an export, a render), choose “Always ignore this”. Otherwise quit it in Activity Monitor.",
-                actionURL: activityMonitorURL
+                action: "If this is expected (a build, an export, a render), choose “Always ignore this”. Otherwise open it in All Processes and quit it from there.",
+                actionURL: processViewerURL
             )
 
         // MARK: Memory
@@ -266,7 +293,7 @@ enum IncidentTemplates {
                 why: ctx["topProcess"].map { "\($0) is using the most memory." }
                     ?? "Too many apps or large working sets are competing for RAM.",
                 action: "Quit apps you're not actively using — browser tabs are usually the biggest hogs.",
-                actionURL: activityMonitorURL
+                actionURL: processViewerURL
             )
 
         case "memory.critical":
@@ -278,7 +305,7 @@ enum IncidentTemplates {
                 why: ctx["topProcess"].map { "\($0) is using the most — working set has exceeded what fits in RAM." }
                     ?? "Working set has exceeded what fits in RAM and the compressor is overworked.",
                 action: "Quit heavy apps now — Chrome, Xcode, video editors, or any LLM running locally.",
-                actionURL: activityMonitorURL
+                actionURL: processViewerURL
             )
 
         // MARK: Swap
@@ -290,7 +317,7 @@ enum IncidentTemplates {
                 what: "\(used) of swap has been in use for ~30 seconds.",
                 why: "RAM is the bottleneck — the OS is paging working memory to disk to keep apps alive.",
                 action: "Close apps you don't need. SSD swap is fast but not free; battery and responsiveness both pay the cost.",
-                actionURL: activityMonitorURL
+                actionURL: processViewerURL
             )
 
         case "swap.severe":
@@ -300,7 +327,7 @@ enum IncidentTemplates {
                 what: "\(used) of swap is in use — the system is leaning on disk as if it were RAM.",
                 why: "Significantly more memory is being asked for than physically exists. Performance and SSD wear are both taking a hit.",
                 action: "Quit your heaviest apps and consider rebooting if it persists.",
-                actionURL: activityMonitorURL
+                actionURL: processViewerURL
             )
 
         // MARK: Battery

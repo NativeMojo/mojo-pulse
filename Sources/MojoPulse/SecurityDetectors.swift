@@ -179,27 +179,42 @@ final class ExposedServiceDetector: MultiDetector {
     }
 }
 
-// MARK: - Unsigned running apps
+// MARK: - Suspect processes (Trust Engine)
 
-/// Fires for each running GUI app with no code signature at all. Noisier than
-/// the posture checks (some legitimate hand-built / older tools are unsigned),
-/// which is exactly why it emits one card per app with a per-app signature:
-/// "Always ignore this" permanently whitelists that specific app. Ad-hoc and
-/// Developer-ID signed apps are NOT flagged — only the truly unsigned.
+/// Fires for each process the Trust Engine escalated to `suspect` — never for
+/// merely-unsigned code (that's the quiet "unrecognized" tier in the Security
+/// screen). Escalation takes a strong signal (impersonating a known brand,
+/// hidden characters in the name) or a combination (no developer identity AND
+/// a suspicious location, or brand-new AND actively on the network), so this
+/// is deliberately rare. This replaces the old UnsignedAppDetector, whose
+/// one-card-per-unsigned-app behavior was exactly the alert fatigue the Trust
+/// Engine exists to kill.
+///
+/// One incident per identity with a stable per-item signature, so "Always
+/// ignore this" whitelists that one binary and nothing else. Impersonation
+/// gets its own template (and red severity) because "this app is lying about
+/// who made it" is a different conversation than "this combination looks off".
 @MainActor
-final class UnsignedAppDetector: MultiDetector {
-    let id = "security.unsignedApp"
+final class SuspectProcessDetector: MultiDetector {
+    let id = "security.suspectProcess"
 
     func evaluateAll(signals: Signals) -> [Incident] {
         guard signals.security.scanned else { return [] }
-        return signals.security.unsignedApps.map { app in
-            Incident(
+        return signals.security.suspectProcesses.map { f in
+            var context = [
+                "name": f.name,
+                "path": f.path,
+                "signer": f.signer,
+                "reasons": f.reasonsText
+            ]
+            if let brand = f.impersonatedBrand { context["brand"] = brand }
+            return Incident(
                 category: .security,
-                severity: .watch,
+                severity: f.isStrong ? .issue : .watch,
                 detectorID: id,
-                templateKey: "security.unsignedApp",
-                context: ["name": app.name, "path": app.path],
-                signature: "security:unsigned:\(djb2(app.bundleID))",
+                templateKey: f.impersonatedBrand != nil ? "security.impersonation" : "security.suspectProcess",
+                context: context,
+                signature: "security:suspect:\(djb2(f.key))",
                 startedAt: signals.timestamp
             )
         }

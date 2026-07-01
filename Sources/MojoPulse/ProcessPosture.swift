@@ -75,22 +75,32 @@ enum ProcessPosture {
     }
 
     private static func hasHiddenChars(_ s: String) -> Bool {
-        for u in s.unicodeScalars {
-            let v = u.value
-            switch v {
-            case 0x200B, 0x200C, 0x200D, 0xFEFF:   // zero-width / BOM
-                return true
-            case 0x200E, 0x200F:                    // LRM / RLM
-                return true
-            case 0x202A...0x202E:                   // bidi embeddings + overrides
-                return true
-            case 0x2066...0x2069:                   // bidi isolates
-                return true
-            default:
-                continue
-            }
+        s.unicodeScalars.contains { isHiddenScalar($0.value) }
+    }
+
+    /// Zero-width and bidi-control scalars — invisible when rendered, so a
+    /// name/path can *look* like something it isn't ("‎WhatsApp.app" ships
+    /// with a real U+200E prefix; a fake "Zoom​" can hide a U+200B).
+    static func isHiddenScalar(_ v: UInt32) -> Bool {
+        switch v {
+        case 0x200B, 0x200C, 0x200D, 0xFEFF:   // zero-width / BOM
+            return true
+        case 0x200E, 0x200F:                    // LRM / RLM
+            return true
+        case 0x202A...0x202E:                   // bidi embeddings + overrides
+            return true
+        case 0x2066...0x2069:                   // bidi isolates
+            return true
+        default:
+            return false
         }
-        return false
+    }
+
+    /// The string as the user *sees* it — hidden scalars removed. Used before
+    /// brand comparison so invisible padding can't dodge an exact-name match.
+    static func strippingHiddenChars(_ s: String) -> String {
+        guard s.unicodeScalars.contains(where: { isHiddenScalar($0.value) }) else { return s }
+        return String(String.UnicodeScalarView(s.unicodeScalars.filter { !isHiddenScalar($0.value) }))
     }
 
     private static func recentlyModified(_ path: String) -> String? {

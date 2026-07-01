@@ -21,6 +21,68 @@ struct ProcessDetail: Sendable, Equatable {
     let signature: String
 }
 
+// MARK: - App Store listing verification
+
+/// Confirms who actually sells an App Store app, via Apple's public iTunes
+/// Lookup API (keyless, no account). The App Store re-signs every app, so the
+/// signature's leaf only says "Mac App Store" — but the bundle ID maps to a
+/// seller in Apple's catalog, and that's the "is this really Meta's WhatsApp?"
+/// answer. On-demand only (user clicks Verify), cached per bundle ID.
+enum AppStoreLookup {
+    enum Outcome: Equatable {
+        case found(name: String, seller: String)
+        case notFound
+        case failed
+    }
+
+    @MainActor private static var cache: [String: Outcome] = [:]
+
+    @MainActor
+    static func verify(bundleID: String) async -> Outcome {
+        if let hit = cache[bundleID] { return hit }
+        var comps = URLComponents(string: "https://itunes.apple.com/lookup")!
+        comps.queryItems = [URLQueryItem(name: "bundleId", value: bundleID)]
+        guard let url = comps.url else { return .failed }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let results = obj["results"] as? [[String: Any]] else {
+                return .failed   // malformed — transient, don't cache
+            }
+            let outcome: Outcome
+            if let first = results.first {
+                outcome = .found(
+                    name: (first["trackName"] as? String) ?? bundleID,
+                    seller: (first["sellerName"] as? String)
+                        ?? (first["artistName"] as? String)
+                        ?? "Unknown seller"
+                )
+            } else {
+                outcome = .notFound
+            }
+            cache[bundleID] = outcome
+            return outcome
+        } catch {
+            return .failed   // network error — transient, don't cache
+        }
+    }
+}
+
+/// Bundle identity from an executable path alone — no NSWorkspace, so it works
+/// off-main and for processes that aren't running GUI apps.
+enum AppBundle {
+    /// The OUTERMOST .app bundle's identifier for an executable inside it
+    /// (helpers and .appex extensions aggregate under the app that ships
+    /// them — same identity rule as the trust scan). nil for non-bundle
+    /// executables (CLI tools, daemons).
+    static func bundleID(forExecutable path: String) -> String? {
+        let comps = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard let idx = comps.firstIndex(where: { $0.hasSuffix(".app") }) else { return nil }
+        let bundleRoot = "/" + comps[0...idx].joined(separator: "/")
+        return Bundle(path: bundleRoot)?.bundleIdentifier
+    }
+}
+
 enum ProcessDetailFetcher {
     /// Runs off the main actor (shells out to `ps`/`codesign`). Cheap enough for
     /// a click: a handful of one-shot `ps` reads plus one `codesign` lookup.

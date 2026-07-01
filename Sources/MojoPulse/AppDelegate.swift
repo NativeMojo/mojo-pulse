@@ -167,13 +167,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             + PostureDetector.defaults()
 
         // Per-item security detectors: each can surface several independent
-        // cards at once (one per new startup item / exposed service / unsigned
-        // app / unexpected listener), so the user can "Always ignore this" a
-        // single item without muting the whole category.
+        // cards at once (one per new startup item / exposed service / suspect
+        // process / unexpected listener), so the user can "Always ignore this"
+        // a single item without muting the whole category.
         let multiDetectors: [MultiDetector] = [
             PersistenceChangeDetector(),
             ExposedServiceDetector(),
-            UnsignedAppDetector(),
+            SuspectProcessDetector(),
             UnexpectedListenerDetector(),
             XProtectDetectionDetector(),
             RunawayProcessDetector(settings: settings),

@@ -1,0 +1,370 @@
+import Foundation
+
+// The Trust Engine: decides how much attention a running process deserves.
+//
+// Thesis (the anti-Little-Snitch design): default-SILENT, allowlist the world
+// by *identity* (signer class + Team ID), never by name, and escalate only on
+// a COMBINATION of suspect signals. One weird trait is a curiosity; several
+// together are how unwanted software actually behaves. Output feeds the
+// existing surfaces — suspect findings become incidents through the normal
+// MultiDetector pipeline, unrecognized ones sit quietly in the Security
+// screen's review list, and nothing new interrupts the user.
+//
+// Everything here is unprivileged and on-device. A future mojoverify
+// prevalence lookup ("seen on N Macs, flagged/clean") slots in as one more
+// signal without changing this shape.
+
+// MARK: - Tiers
+
+/// How much attention a process deserves. `recognized` is the silent default
+/// for anything with a verifiable identity; `unrecognized` is the passive
+/// "listed, never alerts" tier; `suspect` is the rare escalation that becomes
+/// an incident.
+enum TrustTier: Sendable, Equatable {
+    case recognized
+    case unrecognized
+    case suspect
+}
+
+// MARK: - Signals
+
+/// One observable trait feeding the combination score. Strong signals escalate
+/// alone; everything else only escalates in combination.
+enum TrustSignal: Sendable, Equatable, Hashable, Identifiable {
+    case impersonation(String)     // claims a well-known brand, wrong signer
+    case hiddenCharacters          // invisible/bidi Unicode in the name or path
+    case unsigned                  // no code signature at all
+    case adhoc                     // signed, but by nobody (no identity)
+    case unknownSignature          // has a signature we can't classify
+    case suspiciousPath(String)    // /tmp, ~/Downloads, translocated, hidden dir
+    case firstSeenRecently         // identity appeared < 24h ago (post-baseline)
+    case activeNetwork             // established connections right now
+
+    var id: String { reason }
+
+    /// Alone-is-enough signals. Impersonating a known brand or hiding
+    /// characters in a name has no innocent explanation.
+    var isStrong: Bool {
+        switch self {
+        case .impersonation, .hiddenCharacters: return true
+        default: return false
+        }
+    }
+
+    /// Short phrase for joining into a sentence ("unsigned, running from
+    /// Downloads, first seen today").
+    var reason: String {
+        switch self {
+        case .impersonation(let brand): return "presents itself as \(brand)"
+        case .hiddenCharacters: return "invisible characters in its name or path"
+        case .unsigned: return "unsigned"
+        case .adhoc: return "no developer identity (ad-hoc signature)"
+        case .unknownSignature: return "unverifiable signature"
+        case .suspiciousPath(let r): return r.hasSuffix(".") ? String(r.dropLast()).lowercasedFirst : r.lowercasedFirst
+        case .firstSeenRecently: return "first seen in the last day"
+        case .activeNetwork: return "actively using the network"
+        }
+    }
+}
+
+private extension String {
+    var lowercasedFirst: String {
+        guard let f = first else { return self }
+        return f.lowercased() + dropFirst()
+    }
+}
+
+// MARK: - Finding
+
+/// One process identity the trust scan looked at, with its verdict. `key` is
+/// the stable identity (bundle ID when there is one, else the executable
+/// path) used for the first-seen baseline, the user's trust list, and the
+/// incident signature.
+struct TrustFinding: Sendable, Equatable, Hashable, Identifiable {
+    let key: String
+    let name: String
+    let path: String
+    let bundleID: String?
+    let signer: String          // TrustLabel.display, precomputed for the UI
+    let signerShort: String     // TrustLabel.short, for list badges
+    let teamID: String?
+    let notarized: Bool
+    let signals: [TrustSignal]
+    /// Established connections existed at scan time. A Bool (not a count) so
+    /// routine fluctuation doesn't churn snapshot equality or incident context.
+    let hasNetwork: Bool
+    /// nil = part of the install-time baseline ("before Mojo Pulse").
+    let firstSeen: Date?
+
+    var id: String { key }
+
+    /// Whether a strong (alone-is-enough) signal drove the escalation —
+    /// decides incident severity and template.
+    var isStrong: Bool { signals.contains { $0.isStrong } }
+
+    /// The impersonated brand, when that's the story.
+    var impersonatedBrand: String? {
+        for s in signals { if case .impersonation(let b) = s { return b } }
+        return nil
+    }
+
+    /// "unsigned, running from your Downloads folder, first seen in the last day"
+    var reasonsText: String {
+        signals.map(\.reason).joined(separator: ", ")
+    }
+}
+
+// MARK: - Candidate (scanner → evaluator input)
+
+/// What the scanner hands the evaluator for each distinct running executable.
+struct TrustCandidate: Sendable {
+    let path: String
+    let name: String
+    let bundleID: String?
+    let isGUIApp: Bool
+    let connections: Int
+}
+
+// MARK: - Evaluator
+
+/// Pure scoring: candidate traits in, tier + finding out. Called from the
+/// detached security scan (ProcessTrust shells out to codesign, cached by
+/// file identity, so steady-state cost is near zero).
+enum TrustEvaluator {
+
+    /// Well-known brand names → the Team ID that legitimately signs them.
+    /// Deliberately short and high-confidence: a miss here just means "no
+    /// impersonation check for that app", while a wrong entry would produce a
+    /// false accusation. Names match GUI display names exactly (or as a
+    /// "Brand …" prefix), so CLI tools like `chromedriver` never trip it.
+    static let brandTeams: [(brand: String, teamID: String)] = [
+        ("Google Chrome", "EQHXZ8M8AV"),
+        ("Firefox", "43AQ936H96"),
+        ("zoom.us", "BJ4HAAB9B3"),
+        ("Zoom", "BJ4HAAB9B3"),
+        ("Slack", "BQR82RBBHL"),
+        ("Dropbox", "G7HH3F8CAK"),
+        ("1Password", "2BUA8C4S2C"),
+        ("Microsoft Word", "UBF8T346G9"),
+        ("Microsoft Excel", "UBF8T346G9"),
+        ("Microsoft PowerPoint", "UBF8T346G9"),
+        ("Microsoft Outlook", "UBF8T346G9"),
+        ("Microsoft Teams", "UBF8T346G9"),
+        ("Microsoft Edge", "UBF8T346G9"),
+        ("OneDrive", "UBF8T346G9"),
+        ("Spotify", "2FNC3A47ZF"),
+        ("TeamViewer", "H7UGFBUGV6")
+    ]
+
+    /// Apple-branded app names that must be signed by Apple itself (system
+    /// "Software Signing") or the Mac App Store. A GUI app wearing one of
+    /// these names with any other signature is impersonating it.
+    static let appleBrands: Set<String> = [
+        "Safari", "Finder", "Mail", "Messages", "FaceTime", "Photos",
+        "Notes", "Calendar", "Reminders", "Music", "App Store",
+        "System Settings", "Terminal", "Activity Monitor", "Keychain Access"
+    ]
+
+    /// Evaluate one candidate. `firstSeen` is the stored date for this
+    /// identity (nil = never recorded before this scan), `baselineSeeded`
+    /// gates the first-seen signal so a fresh install never lights up its
+    /// whole process table, and `trusted` is the user's explicit allow list.
+    static func evaluate(
+        _ c: TrustCandidate,
+        firstSeen: Date?,
+        baselineSeeded: Bool,
+        trusted: Bool,
+        now: Date = Date()
+    ) -> (tier: TrustTier, finding: TrustFinding) {
+        let info = ProcessTrust.evaluate(path: c.path)
+        let key = identityKey(bundleID: c.bundleID, path: c.path)
+
+        var signals: [TrustSignal] = []
+
+        // Identity class. Elevated = "nobody vouches for this code".
+        switch info.label {
+        case .unsigned: signals.append(.unsigned)
+        case .adhoc: signals.append(.adhoc)
+        case .unknown: signals.append(.unknownSignature)
+        case .apple, .developerID, .macAppStore: break
+        }
+        let elevated = info.label.isElevated
+
+        // Impersonation: a GUI app wearing a famous name without that
+        // brand's signature. Checked before anything else because it's the
+        // one signal where "signed by a real Developer ID" makes it WORSE
+        // (a signed fake), not better.
+        if c.isGUIApp, let brand = impersonatedBrand(name: c.name, info: info) {
+            signals.append(.impersonation(brand))
+        }
+
+        // Path + name hygiene (reuses the Process Viewer's posture checks).
+        let flags = ProcessPosture.quickFlags(path: c.path, name: c.name)
+        for flag in flags {
+            switch flag {
+            case .suspiciousLocation(let reason): signals.append(.suspiciousPath(reason))
+            case .invisibleUnicode: signals.append(.hiddenCharacters)
+            case .recentlyModified: break   // quickFlags never emits this
+            }
+        }
+
+        // First seen: only meaningful once the baseline exists, and only for
+        // identities that appeared after it was taken.
+        let effectiveFirstSeen = firstSeen ?? now
+        let isBaseline = firstSeen.map { $0 <= Date(timeIntervalSince1970: 1) } ?? false
+        let recent = baselineSeeded && !isBaseline
+            && now.timeIntervalSince(effectiveFirstSeen) < 24 * 3600
+        if recent { signals.append(.firstSeenRecently) }
+
+        if c.connections > 0 { signals.append(.activeNetwork) }
+
+        // The combination rule. Strong alone escalates; otherwise it takes an
+        // unvouched identity AND corroboration (a suspicious location, or
+        // being brand new while actively talking to the network).
+        //
+        // Hidden characters only count as strong for UNVOUCHED code: the real
+        // WhatsApp ships as "‎WhatsApp.app" (a genuine U+200E prefix) — App
+        // Store review vouches for it, so a name quirk alone isn't an alarm.
+        // The trick still can't dodge the brand check, because impersonation
+        // matching strips hidden scalars first and stays strong regardless of
+        // who signed it.
+        let strong = signals.contains { s in
+            switch s {
+            case .impersonation: return true
+            case .hiddenCharacters: return elevated
+            default: return false
+            }
+        }
+        let suspiciousPath = signals.contains { if case .suspiciousPath = $0 { return true } else { return false } }
+        let combo = elevated && (suspiciousPath || (recent && c.connections > 0))
+
+        let tier: TrustTier
+        if trusted {
+            tier = .recognized
+        } else if strong || combo {
+            tier = .suspect
+        } else if elevated {
+            tier = .unrecognized
+        } else {
+            tier = .recognized
+        }
+
+        // For App Store apps the display label alone ("Mac App Store") hides
+        // the developer — the Team ID is the actual identity Apple re-signed
+        // for, so carry it into the display string.
+        let signerDisplay: String
+        if case .macAppStore = info.label, let team = info.teamID {
+            signerDisplay = "Mac App Store · Team \(team)"
+        } else {
+            signerDisplay = info.label.display
+        }
+
+        let finding = TrustFinding(
+            key: key,
+            name: c.name,
+            path: c.path,
+            bundleID: c.bundleID,
+            signer: signerDisplay,
+            signerShort: info.label.short,
+            teamID: info.teamID,
+            notarized: info.notarized,
+            signals: signals,
+            hasNetwork: c.connections > 0,
+            firstSeen: isBaseline ? nil : effectiveFirstSeen
+        )
+        return (tier, finding)
+    }
+
+    /// Stable identity for the baseline + trust list: prefer the bundle ID
+    /// (survives app updates moving the binary), fall back to the path.
+    static func identityKey(bundleID: String?, path: String) -> String {
+        if let b = bundleID, !b.isEmpty { return b }
+        return path
+    }
+
+    private static func impersonatedBrand(name: String, info: TrustInfo) -> String? {
+        // Compare what the user SEES: strip zero-width/bidi scalars first so
+        // "Zoom​" (hidden U+200B) still matches the "Zoom" table entry.
+        let trimmed = ProcessPosture.strippingHiddenChars(name)
+            .trimmingCharacters(in: .whitespaces)
+
+        // Apple-branded names: anything not signed by Apple/App Store is fake.
+        if appleBrands.contains(trimmed) {
+            switch info.label {
+            case .apple, .macAppStore: return nil
+            default: return trimmed
+            }
+        }
+
+        // Third-party brands: exact name (or "Brand …" prefix) with a Team ID
+        // that isn't the brand's. No Team ID at all (unsigned/ad-hoc) is the
+        // classic fake; a *different* team is a signed fake.
+        for entry in brandTeams {
+            let matches = trimmed == entry.brand || trimmed.hasPrefix(entry.brand + " ")
+            guard matches else { continue }
+            if info.teamID == entry.teamID { return nil }
+            return entry.brand
+        }
+        return nil
+    }
+}
+
+// MARK: - Baseline + trust store
+
+/// Remembers when each process identity was first seen, and which ones the
+/// user has explicitly trusted. Mirrors SecurityBaselineStore's seed-silently
+/// semantics: the first scan adopts everything already running as "before
+/// Mojo Pulse" (epoch 0) so a fresh install never flags the user's whole Mac
+/// as newly-arrived. UserDefaults-backed — a few hundred short strings.
+@MainActor
+final class TrustBaselineStore {
+    private let defaults: UserDefaults
+    private let firstSeenKey = "trust.firstSeen"
+    private let seededKey = "trust.seeded"
+    private let trustedKey = "trust.trusted"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    var isSeeded: Bool { defaults.bool(forKey: seededKey) }
+
+    /// identity key → first-seen date. Epoch 0 marks baseline members.
+    func all() -> [String: Date] {
+        guard let raw = defaults.dictionary(forKey: firstSeenKey) as? [String: Double] else { return [:] }
+        return raw.mapValues { Date(timeIntervalSince1970: $0) }
+    }
+
+    func trustedKeys() -> Set<String> {
+        Set(defaults.stringArray(forKey: trustedKey) ?? [])
+    }
+
+    /// Record this scan's identities. First call ever seeds them all as
+    /// baseline (epoch 0); afterwards, unknown keys are stamped with now.
+    func record(keys: [String], now: Date = Date()) {
+        var raw = (defaults.dictionary(forKey: firstSeenKey) as? [String: Double]) ?? [:]
+        if isSeeded {
+            var changed = false
+            for key in keys where raw[key] == nil {
+                raw[key] = now.timeIntervalSince1970
+                changed = true
+            }
+            if changed { defaults.set(raw, forKey: firstSeenKey) }
+        } else {
+            for key in keys where raw[key] == nil { raw[key] = 0 }
+            defaults.set(raw, forKey: firstSeenKey)
+            defaults.set(true, forKey: seededKey)
+        }
+    }
+
+    /// The user's explicit "I know this one" — never set automatically.
+    func setTrusted(_ key: String, _ trusted: Bool) {
+        var keys = trustedKeys()
+        if trusted { keys.insert(key) } else { keys.remove(key) }
+        defaults.set(Array(keys).sorted(), forKey: trustedKey)
+    }
+
+    func isTrusted(_ key: String) -> Bool {
+        trustedKeys().contains(key)
+    }
+}

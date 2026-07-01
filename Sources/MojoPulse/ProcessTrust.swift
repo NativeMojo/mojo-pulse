@@ -119,7 +119,10 @@ enum ProcessTrust {
             // not Apple. Genuine Apple system code signs as "Software Signing".
             if leaf.hasPrefix("Developer ID Application: ") {
                 label = .developerID(String(leaf.dropFirst("Developer ID Application: ".count)))
-            } else if leaf == "Apple Mac OS Application Signing" {
+            } else if leaf == "Apple Mac OS Application Signing"
+                        || leaf == "Apple iPhone OS Application Signing" {
+                // The second leaf is an iOS/iPadOS app running on Apple
+                // silicon — still App Store-vouched code (WhatsApp et al).
                 label = .macAppStore
             } else if leaf == "Software Signing" {
                 label = .apple
