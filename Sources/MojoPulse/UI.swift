@@ -165,6 +165,12 @@ struct PopoverView: View {
     /// broadcasts + exposes to others). Window plumbing in MenuBarController.
     var onShowNetworkVisibility: () -> Void = {}
 
+    /// Called when the user opens the Domain Lookup tool from the Network screen.
+    var onShowDomain: () -> Void = {}
+
+    /// Called when the user opens the IP Lookup tool from the Network screen.
+    var onShowIP: () -> Void = {}
+
     /// Called when the user taps the Disk tile. Opens the Disk Usage tool.
     var onShowDisk: () -> Void = {}
 
@@ -228,7 +234,9 @@ struct PopoverView: View {
                             onShowActivity: onShowNetwork,
                             onShowDevices: onShowDevices,
                             onShowPorts: onShowPorts,
-                            onShowBroadcast: onShowNetworkVisibility
+                            onShowBroadcast: onShowNetworkVisibility,
+                            onShowDomain: onShowDomain,
+                            onShowIP: onShowIP
                         )
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                     case .security:

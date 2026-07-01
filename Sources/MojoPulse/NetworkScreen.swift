@@ -14,6 +14,8 @@ struct NetworkScreen: View {
     var onShowDevices: () -> Void = {}
     var onShowPorts: () -> Void = {}
     var onShowBroadcast: () -> Void = {}
+    var onShowDomain: () -> Void = {}
+    var onShowIP: () -> Void = {}
 
     @StateObject private var model = NetworkVisibilityModel()
     @State private var showRename = false
@@ -28,6 +30,8 @@ struct NetworkScreen: View {
                 row("rectangle.connected.to.line.below", "Devices on network", breakout: true, action: onShowDevices)
                 row("network", "Open ports", breakout: true, action: onShowPorts)
                 row("antenna.radiowaves.left.and.right", "What you broadcast", breakout: true, action: onShowBroadcast)
+                row("magnifyingglass", "Domain lookup", breakout: true, action: onShowDomain)
+                row("mappin.and.ellipse", "IP lookup", breakout: true, action: onShowIP)
             }
         }
         .onAppear { model.refresh(includeBluetooth: false) }

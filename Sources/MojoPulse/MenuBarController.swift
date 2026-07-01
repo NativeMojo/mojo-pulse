@@ -98,10 +98,12 @@ final class MenuBarController: NSObject {
     /// broadcasts + exposes to others). Reads on open, so no fast tick.
     private var networkVisibilityWindow: NSWindow?
 
-    /// Retained references to the Disk Usage and Battery Health windows
-    /// (placeholders for now; opened from their vitals tiles).
+    /// Retained references to the Disk Usage, Battery Health, and Domain Lookup
+    /// windows (opened from their vitals tiles / the Network screen).
     private var diskWindow: NSWindow?
     private var batteryWindow: NSWindow?
+    private var domainWindow: NSWindow?
+    private var ipLookupWindow: NSWindow?
     /// Owned here (not by the view) so the scanned disk tree survives window
     /// close/reopen within a session — reopening reuses it instead of rescanning.
     private let diskModel = DiskUsageModel()
@@ -199,6 +201,8 @@ final class MenuBarController: NSObject {
                 onShowDevices: { [weak self] in self?.showLANDevicesWindow() },
                 onShowThermal: { [weak self] in self?.showThermalWindow() },
                 onShowNetworkVisibility: { [weak self] in self?.showNetworkVisibilityWindow() },
+                onShowDomain: { [weak self] in self?.showDomainLookupWindow() },
+                onShowIP: { [weak self] in self?.showIPLookupWindow() },
                 onShowDisk: { [weak self] in self?.showDiskWindow() },
                 onShowBattery: { [weak self] in self?.showBatteryWindow() }
             )
@@ -968,7 +972,53 @@ final class MenuBarController: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
-    /// Disk Usage tool (placeholder for now), opened from the Disk tile.
+    /// Domain Lookup tool — DNS / WHOIS / SSL + email-security scorecard for any
+    /// domain, via mojoverify. Opened from the Network screen.
+    private func showDomainLookupWindow() {
+        popover.performClose(nil)
+        if let existing = domainWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: DialogChrome { DomainLookupView() })
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Domain Lookup"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 560, height: 520))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        domainWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// IP Lookup tool — geo + threat/routing intelligence for any public IP,
+    /// reusing the connections map's GeoIP client. Opened from the Network screen.
+    private func showIPLookupWindow() {
+        popover.performClose(nil)
+        if let existing = ipLookupWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: DialogChrome { IPLookupView(networkInfo: networkInfo) })
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "IP Lookup"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 540, height: 560))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        ipLookupWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Disk Usage tool, opened from the Disk tile.
     private func showDiskWindow() {
         popover.performClose(nil)
         if let existing = diskWindow {
@@ -1128,6 +1178,10 @@ extension MenuBarController: NSWindowDelegate {
             thermalWindow = nil
         } else if closing === networkVisibilityWindow {
             networkVisibilityWindow = nil
+        } else if closing === domainWindow {
+            domainWindow = nil
+        } else if closing === ipLookupWindow {
+            ipLookupWindow = nil
         } else if closing === diskWindow {
             diskWindow = nil
         } else if closing === batteryWindow {
