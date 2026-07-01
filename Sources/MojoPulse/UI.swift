@@ -105,6 +105,8 @@ struct PopoverView: View {
     @ObservedObject var wifi: WiFiCollector
     @ObservedObject var system: SystemCollector
     @ObservedObject var security: SecurityCollector
+    /// Shared network-safety verdict for the top-of-popover strip.
+    @ObservedObject var networkSafety: NetworkSafetyModel
     @ObservedObject var processes: ProcessCollector
     @ObservedObject var arp: ARPCollector
     @ObservedObject var settings: Settings
@@ -171,6 +173,9 @@ struct PopoverView: View {
     /// Called when the user opens the IP Lookup tool from the Network screen.
     var onShowIP: () -> Void = {}
 
+    /// Called when the user opens the Wi-Fi / Network Safety check.
+    var onShowSafety: () -> Void = {}
+
     /// Called when the user taps the Disk tile. Opens the Disk Usage tool.
     var onShowDisk: () -> Void = {}
 
@@ -236,7 +241,8 @@ struct PopoverView: View {
                             onShowPorts: onShowPorts,
                             onShowBroadcast: onShowNetworkVisibility,
                             onShowDomain: onShowDomain,
-                            onShowIP: onShowIP
+                            onShowIP: onShowIP,
+                            onShowSafety: onShowSafety
                         )
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                     case .security:
@@ -288,6 +294,41 @@ struct PopoverView: View {
         .onChange(of: engine.activeIncidents.map(\.category)) { _, _ in
             autoExpandForIncident()
         }
+    }
+
+    // MARK: - Network safety in the status header
+
+    private var netVerdict: SafetyVerdict? { networkSafety.report?.verdict }
+    private var networkLoud: Bool { netVerdict == .caution || netVerdict == .risky }
+
+    /// The shield glyph is monochrome when Safe (color earns its place only on
+    /// trouble) and turns amber on Caution / red on Risky.
+    private var headerShieldIcon: String {
+        switch netVerdict {
+        case .caution: return "exclamationmark.shield.fill"
+        case .risky: return "xmark.shield.fill"
+        case .safe: return "checkmark.shield.fill"
+        case nil: return "shield"
+        }
+    }
+    private var headerShieldTint: Color {
+        switch netVerdict {
+        case .caution: return SeverityColors.watch
+        case .risky: return SeverityColors.issue
+        default: return .secondary
+        }
+    }
+
+    /// Title: a system incident wins it; otherwise the network name when calm,
+    /// escalating to an action phrase on Caution/Risky.
+    private var headerTitle: String {
+        if !engine.activeIncidents.isEmpty { return headline }
+        if netVerdict == .risky { return "Leave this network" }
+        if netVerdict == .caution { return "Review this Wi-Fi" }
+        return wifi.current.ssid ?? (wifi.current.hasWiFiLink ? "Wi-Fi" : headline)
+    }
+    private var headerTitleColor: Color {
+        (engine.activeIncidents.isEmpty && networkLoud) ? headerShieldTint : .primary
     }
 
     /// The home dashboard: active incident cards (when loud), the vitals grid,
@@ -428,40 +469,48 @@ struct PopoverView: View {
     /// Top of popover. Aggregate dot + a headline that maps directly to
     /// what the user needs to know. The count badge on the right mirrors
     /// the menu-bar label and is suppressed when there's nothing firing.
+    /// The home status header — now the network-safety surface: a shield (quiet
+    /// when Safe), the network name (escalating to an action phrase on trouble),
+    /// and a chevron. The whole bar taps through to the Network Safety detail.
     private var statusLine: some View {
-        HStack(alignment: .top, spacing: 9) {
-            Circle()
-                .fill(aggregateDotColor)
-                .frame(width: 10, height: 10)
-                .padding(.top, 3)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(headline)
-                    .font(.headline)
-                if !statusSubline.isEmpty {
-                    Text(statusSubline)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        Button { onShowSafety() } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: headerShieldIcon)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(headerShieldTint)
+                    .frame(width: 19)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(headerTitle)
+                        .font(.headline)
+                        .foregroundStyle(headerTitleColor)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                    if !statusSubline.isEmpty {
+                        Text(statusSubline)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
+                Spacer(minLength: 8)
+                if !engine.activeIncidents.isEmpty {
+                    Text("\(engine.activeIncidents.count)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.primary.opacity(0.08)))
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 3)
             }
-            Spacer(minLength: 8)
-            if !engine.activeIncidents.isEmpty {
-                Text("\(engine.activeIncidents.count)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.primary.opacity(0.08)))
-            }
-            Button { onShowSettings() } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Settings")
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     /// Context line under the headline. When something's firing it names the
@@ -471,14 +520,20 @@ struct PopoverView: View {
         if let top = engine.activeIncidents.first {
             return IncidentTemplates.render(top).title
         }
-        var parts: [String] = []
         let w = wifi.current
-        if w.hasWiFiLink { parts.append("Wi-Fi") }
-        parts.append(w.vpnActive ? "VPN on" : "VPN off")
-        if settings.securityMonitoringEnabled, let last = security.current.xprotect.lastScan {
-            parts.append("scanned " + Self.relativeFormatter.localizedString(for: last, relativeTo: Date()))
+        let vpn = w.vpnActive ? "VPN on" : "VPN off"
+        // When calm the title is the network name, so the subline states the
+        // verdict; when loud the title carries the alert, so keep the name here.
+        if networkLoud {
+            return "\(w.ssid ?? "This network") · \(vpn)"
         }
-        return parts.joined(separator: " · ")
+        let word: String
+        switch netVerdict {
+        case .safe: word = "Safe"
+        case nil: word = w.hasWiFiLink ? "Checking…" : "Connected"
+        default: word = "Safe"
+        }
+        return "\(word) · \(vpn)"
     }
 
     private var aggregateDotColor: Color {
@@ -1070,10 +1125,17 @@ struct PopoverView: View {
 
     /// Footer: primary actions inline, full settings behind the gear.
     private var footerBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Button("About") { onShowAbout() }
                 .controlSize(.small)
             Spacer()
+            Button { onShowSettings() } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
             Button("Quit") { NSApp.terminate(nil) }
                 .keyboardShortcut("q", modifiers: .command)
                 .controlSize(.small)

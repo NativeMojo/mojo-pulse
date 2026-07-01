@@ -36,6 +36,12 @@ final class MenuBarController: NSObject {
     private let settings: Settings
     private let updater: Updater
     private let database: Database?
+    private let notifications: NotificationManager
+
+    /// Per-network trust + join-notification state for Wi-Fi Safety.
+    private let networkTrust = NetworkTrustStore()
+    private var joinPending = false
+    private var recordedThisSession: Set<String> = []
 
     /// Combine subscriptions held for the controller's lifetime (e.g. redrawing
     /// the menu-bar mark when the user changes its style in Settings).
@@ -104,9 +110,15 @@ final class MenuBarController: NSObject {
     private var batteryWindow: NSWindow?
     private var domainWindow: NSWindow?
     private var ipLookupWindow: NSWindow?
+    private var safetyWindow: NSWindow?
     /// Owned here (not by the view) so the scanned disk tree survives window
     /// close/reopen within a session — reopening reuses it instead of rescanning.
     private let diskModel = DiskUsageModel()
+    /// Shared network-safety verdict — drives the top-of-popover strip and the
+    /// detail window; refreshed (throttled) when the popover opens.
+    private lazy var networkSafety = NetworkSafetyModel(wifi: wifi, security: security)
+    /// Unlocks the Wi-Fi network name (Location permission) on explicit opt-in.
+    private let locationAuth = LocationAuthorizer()
 
     /// Retained reference to the single event-detail window (content replaced
     /// per click rather than spawning one window per event).
@@ -149,7 +161,8 @@ final class MenuBarController: NSObject {
         aggregator: SignalAggregator,
         settings: Settings,
         updater: Updater,
-        database: Database?
+        database: Database?,
+        notifications: NotificationManager
     ) {
         self.engine = engine
         self.networkInfo = networkInfo
@@ -165,6 +178,7 @@ final class MenuBarController: NSObject {
         self.settings = settings
         self.updater = updater
         self.database = database
+        self.notifications = notifications
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
         super.init()
@@ -182,6 +196,7 @@ final class MenuBarController: NSObject {
                 wifi: wifi,
                 system: system,
                 security: security,
+                networkSafety: networkSafety,
                 processes: processes,
                 arp: arp,
                 settings: settings,
@@ -203,6 +218,7 @@ final class MenuBarController: NSObject {
                 onShowNetworkVisibility: { [weak self] in self?.showNetworkVisibilityWindow() },
                 onShowDomain: { [weak self] in self?.showDomainLookupWindow() },
                 onShowIP: { [weak self] in self?.showIPLookupWindow() },
+                onShowSafety: { [weak self] in self?.showNetworkSafetyWindow() },
                 onShowDisk: { [weak self] in self?.showDiskWindow() },
                 onShowBattery: { [weak self] in self?.showBatteryWindow() }
             )
@@ -232,6 +248,42 @@ final class MenuBarController: NSObject {
             .removeDuplicates()
             .sink { [weak self] _ in self?.render() }
             .store(in: &cancellables)
+
+        // Wi-Fi Safety: record network visits, and re-check + alert on a join
+        // (SSID change) to a Caution/Risky network you haven't trusted.
+        networkSafety.onReport = { [weak self] report in self?.onSafetyReport(report) }
+        wifi.$current
+            .map { $0.ssid }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in self?.handleNetworkJoin() }
+            .store(in: &cancellables)
+    }
+
+    private func handleNetworkJoin() {
+        joinPending = true
+        networkSafety.run()
+    }
+
+    /// Records the visit; if this evaluation came from a join to a Caution/Risky
+    /// network the user hasn't trusted, posts a one-off alert.
+    private func onSafetyReport(_ report: NetworkSafetyReport) {
+        if let ssid = report.ssid, !recordedThisSession.contains(ssid) {
+            recordedThisSession.insert(ssid)
+            networkTrust.recordVisit(ssid)
+        }
+        guard joinPending else { return }
+        joinPending = false
+        // Only the Risky (active-interception) verdict notifies here — open /
+        // no-VPN "Caution" joins are already covered by the insecure-Wi-Fi
+        // incident, so we'd otherwise double-notify.
+        guard report.verdict == .risky else { return }
+        if let ssid = report.ssid, networkTrust.isTrusted(ssid) { return }
+        notifications.postAlert(
+            title: report.ssid.map { "\($0) — Risky network" } ?? "Risky Wi-Fi network",
+            body: report.headline,
+            identifier: "network.safety.\(report.ssid ?? "current")"
+        )
     }
 
     /// Rebuild the status item title from the engine's current state.
@@ -441,6 +493,7 @@ final class MenuBarController: NSObject {
             closeMenuBarGapIfNeeded(button: button)
             installPopoverResizeObserver(button: button)
             beginPopoverFastTick()
+            networkSafety.refreshIfStale()
         }
     }
 
@@ -995,6 +1048,29 @@ final class MenuBarController: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Wi-Fi / Network Safety — composes encryption / VPN / DNS / ARP / TLS /
+    /// exposure / captive-portal checks into one verdict. From the Network screen.
+    private func showNetworkSafetyWindow() {
+        popover.performClose(nil)
+        if let existing = safetyWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: DialogChrome { NetworkSafetyView(model: networkSafety, location: locationAuth, trust: networkTrust) })
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Network Safety"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 500, height: 500))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        safetyWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
     /// IP Lookup tool — geo + threat/routing intelligence for any public IP,
     /// reusing the connections map's GeoIP client. Opened from the Network screen.
     private func showIPLookupWindow() {
@@ -1182,6 +1258,8 @@ extension MenuBarController: NSWindowDelegate {
             domainWindow = nil
         } else if closing === ipLookupWindow {
             ipLookupWindow = nil
+        } else if closing === safetyWindow {
+            safetyWindow = nil
         } else if closing === diskWindow {
             diskWindow = nil
         } else if closing === batteryWindow {

@@ -256,7 +256,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             aggregator: aggregator,
             settings: settings,
             updater: updater,
-            database: db
+            database: db,
+            notifications: notifications
         )
 
         // Single composite reachability handler. ReachabilityMonitor has

@@ -68,4 +68,20 @@ final class NotificationManager {
             }
         }
     }
+
+    /// A one-off alert not tied to the incident pipeline (e.g. joining a
+    /// Caution/Risky Wi-Fi network). Same calm gating as everything else; the
+    /// identifier coalesces repeats for the same network.
+    func postAlert(title: String, body: String, identifier: String) {
+        guard let center, settings.notificationsEnabled else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.interruptionLevel = .active
+        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
+            if let error {
+                NSLog("MojoPulse: failed to post alert: \(error.localizedDescription)")
+            }
+        }
+    }
 }

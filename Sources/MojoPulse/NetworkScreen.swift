@@ -16,6 +16,7 @@ struct NetworkScreen: View {
     var onShowBroadcast: () -> Void = {}
     var onShowDomain: () -> Void = {}
     var onShowIP: () -> Void = {}
+    var onShowSafety: () -> Void = {}
 
     @StateObject private var model = NetworkVisibilityModel()
     @State private var showRename = false
@@ -26,6 +27,7 @@ struct NetworkScreen: View {
         VStack(alignment: .leading, spacing: 12) {
             identityCard
             VStack(spacing: 0) {
+                row("checkmark.shield", "Network safety", breakout: true, action: onShowSafety)
                 row("globe", "Activity map", breakout: true, action: onShowActivity)
                 row("rectangle.connected.to.line.below", "Devices on network", breakout: true, action: onShowDevices)
                 row("network", "Open ports", breakout: true, action: onShowPorts)
