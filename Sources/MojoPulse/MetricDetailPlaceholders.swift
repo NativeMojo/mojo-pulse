@@ -1,18 +1,5 @@
 import SwiftUI
 
-/// Placeholder for the planned Battery Health tool. Stubbed for now so the
-/// Battery tile has a real destination; the full view (max capacity, cycle
-/// count, condition, charge history) lands later.
-struct BatteryHealthView: View {
-    var body: some View {
-        ComingSoonDetail(
-            icon: "battery.100",
-            title: "Battery Health",
-            blurb: "Maximum capacity, cycle count, condition, and charge history — a clear read on how your battery is aging."
-        )
-    }
-}
-
 /// Placeholder for the planned Disk Usage tool. Stubbed for now so the Disk
 /// tile has a real destination; the full visual space map lands later.
 struct DiskUsageView: View {

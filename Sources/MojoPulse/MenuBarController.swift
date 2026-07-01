@@ -996,11 +996,12 @@ final class MenuBarController: NSObject {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let hosting = NSHostingController(rootView: DialogChrome { BatteryHealthView() })
+        let view = BatteryHealthView(system: system, metricHistory: metricHistory)
+        let hosting = NSHostingController(rootView: DialogChrome { view })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Battery Health"
-        window.styleMask = [.titled, .closable]
-        window.setContentSize(hosting.view.fittingSize)
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 520, height: 640))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self

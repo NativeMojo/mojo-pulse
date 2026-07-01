@@ -112,6 +112,9 @@ final class MetricHistoryStore: ObservableObject {
     /// DB metric keys (stable identifiers for the rollup table).
     enum Key {
         static let cpu = "cpu", mem = "mem", netIn = "netIn", netOut = "netOut"
+        /// Battery charge level (%). Persisted for the Battery Health charge
+        /// history; only accumulated on Macs that actually have a battery.
+        static let batt = "batt"
     }
 
     private let database: Database?
@@ -124,6 +127,7 @@ final class MetricHistoryStore: ObservableObject {
         mutating func add(_ v: Double) { sum += v; n += 1; lo = Swift.min(lo, v); hi = Swift.max(hi, v) }
     }
     private var accCPU = Acc(), accMem = Acc(), accIn = Acc(), accOut = Acc()
+    private var accBatt = Acc()
     private var currentMinute: Int?
     private var lastPruneAt: Date?
 
@@ -147,7 +151,7 @@ final class MetricHistoryStore: ObservableObject {
         let minute = Int(timestamp.timeIntervalSince1970 / 60) * 60
         if let cm = currentMinute, cm != minute {
             flush(minute: cm)
-            accCPU = Acc(); accMem = Acc(); accIn = Acc(); accOut = Acc()
+            accCPU = Acc(); accMem = Acc(); accIn = Acc(); accOut = Acc(); accBatt = Acc()
             currentMinute = minute
             pruneIfNeeded(now: timestamp)
         } else if currentMinute == nil {
@@ -157,6 +161,11 @@ final class MetricHistoryStore: ObservableObject {
         accMem.add(Double(snapshot.memoryUsedBytes))
         accIn.add(Double(snapshot.netBytesInPerSec))
         accOut.add(Double(snapshot.netBytesOutPerSec))
+        // Battery is optional — skip on desktops so we never write a phantom
+        // 0% series for Macs without a battery.
+        if let b = snapshot.battery {
+            accBatt.add(Double(b.percent))
+        }
     }
 
     private func flush(minute: Int) {
@@ -170,6 +179,7 @@ final class MetricHistoryStore: ObservableObject {
         write(Key.mem, accMem)
         write(Key.netIn, accIn)
         write(Key.netOut, accOut)
+        write(Key.batt, accBatt)
     }
 
     private func pruneIfNeeded(now: Date) {

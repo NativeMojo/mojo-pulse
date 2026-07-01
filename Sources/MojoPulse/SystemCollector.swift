@@ -245,7 +245,8 @@ final class SystemCollector: ObservableObject {
             let timeToFull = (dict[kIOPSTimeToFullChargeKey as String] as? Int).flatMap { $0 > 0 ? $0 : nil }
             let timeToEmpty = (dict[kIOPSTimeToEmptyKey as String] as? Int).flatMap { $0 > 0 ? $0 : nil }
 
-            let rawHealth = batteryHealth()
+            let raw = batteryHealth()
+            let adapter = Self.readAdapter(isPluggedIn: isPluggedIn)
 
             return BatterySnapshot(
                 percent: percent,
@@ -255,20 +256,37 @@ final class SystemCollector: ObservableObject {
                 healthCondition: healthCondition,
                 timeToFullMinutes: timeToFull,
                 timeToEmptyMinutes: timeToEmpty,
-                healthPercent: rawHealth.health,
-                cycleCount: rawHealth.cycles
+                healthPercent: raw.health,
+                cycleCount: raw.cycles,
+                designCapacitymAh: raw.designmAh,
+                fullChargeCapacitymAh: raw.fullChargemAh,
+                temperatureC: raw.temperatureC,
+                voltageV: raw.voltageV,
+                adapterWatts: adapter.watts,
+                adapterName: adapter.name
             )
         }
         return nil
     }
 
-    private var batteryHealthCache: (health: Int?, cycles: Int?) = (nil, nil)
+    /// Slow-changing battery facts derived from ioreg AppleSmartBattery. Every
+    /// field is optional — a given model may not surface a given key.
+    struct BatteryRaw {
+        var health: Int?
+        var cycles: Int?
+        var designmAh: Int?
+        var fullChargemAh: Int?
+        var temperatureC: Double?
+        var voltageV: Double?
+    }
+
+    private var batteryHealthCache = BatteryRaw()
     private var batteryHealthAt: Date?
 
-    /// Capacity health (max vs design) + cycle count from `ioreg`. Throttled to
-    /// once every 10 minutes — these change glacially and we don't want to spawn
-    /// a process on every 5s sample. Fully unprivileged.
-    private func batteryHealth() -> (health: Int?, cycles: Int?) {
+    /// Capacity health, cycles, mAh capacities, pack temperature and voltage
+    /// from `ioreg`. Throttled to once every 10 minutes — these change glacially
+    /// and we don't want to spawn a process on every 5s sample. Unprivileged.
+    private func batteryHealth() -> BatteryRaw {
         if let at = batteryHealthAt, Date().timeIntervalSince(at) < 600 {
             return batteryHealthCache
         }
@@ -278,9 +296,9 @@ final class SystemCollector: ObservableObject {
         return value
     }
 
-    private static func readBatteryRawHealth() -> (health: Int?, cycles: Int?) {
+    private static func readBatteryRawHealth() -> BatteryRaw {
         guard let out = Shell.run("/usr/sbin/ioreg", ["-r", "-c", "AppleSmartBattery"]) else {
-            return (nil, nil)
+            return BatteryRaw()
         }
         func intValue(_ key: String) -> Int? {
             for line in out.split(separator: "\n") {
@@ -290,15 +308,44 @@ final class SystemCollector: ObservableObject {
             }
             return nil
         }
-        let cycles = intValue("CycleCount")
-        let rawMax = intValue("AppleRawMaxCapacity")
-        let design = intValue("DesignCapacity")
-        // Only trust the ratio when both look like real mAh (design is a large
-        // number); on some models MaxCapacity is normalized to 100 and would
-        // give a meaningless result.
-        guard let rawMax, let design, design > 100 else { return (nil, cycles) }
-        let pct = Int((Double(rawMax) / Double(design) * 100).rounded())
-        return (min(pct, 100), cycles)
+        var raw = BatteryRaw()
+        raw.cycles = intValue("CycleCount")
+        // Only trust the mAh capacities / health ratio when design looks like
+        // real mAh (a large number); on some models MaxCapacity is normalized
+        // to 100 and the numbers would be meaningless.
+        if let design = intValue("DesignCapacity"), design > 100 {
+            raw.designmAh = design
+            let rawMax = intValue("AppleRawMaxCapacity")
+            raw.fullChargemAh = rawMax
+            if let rawMax {
+                raw.health = min(Int((Double(rawMax) / Double(design) * 100).rounded()), 100)
+            }
+        }
+        // Temperature is reported in hundredths of a degree Celsius, Voltage in
+        // millivolts. Guard against zero/sentinel values.
+        if let t = intValue("Temperature"), t > 0, t < 10_000 {
+            raw.temperatureC = Double(t) / 100
+        }
+        if let mv = intValue("Voltage"), mv > 0 {
+            raw.voltageV = Double(mv) / 1000
+        }
+        return raw
+    }
+
+    /// Connected power-adapter wattage + name via IOKit. Cheap (no process
+    /// spawn), so it's read every sample rather than throttled. All nils when
+    /// running on battery.
+    private static func readAdapter(isPluggedIn: Bool) -> (watts: Int?, name: String?) {
+        guard isPluggedIn,
+              let details = IOPSCopyExternalPowerAdapterDetails()?.takeRetainedValue() as? [String: Any]
+        else { return (nil, nil) }
+        // IOPSKeys.h external-adapter-details keys, by their stable string
+        // values — the named `kIOPSPowerAdapter*Key` constants aren't surfaced
+        // in every SDK, so reference the underlying dictionary keys directly.
+        let watts = details["Watts"] as? Int
+        let name = (details["Name"] as? String)
+            .flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+        return (watts, name)
     }
 
     /// Treat empty / whitespace-only strings as nil. IOKit string values
@@ -483,6 +530,24 @@ struct BatterySnapshot: Sendable, Equatable {
     let healthPercent: Int?
     /// Charge cycles the battery has been through; nil if unknown.
     let cycleCount: Int?
+
+    /// Original design capacity in mAh (ioreg `DesignCapacity`); nil when the
+    /// model reports a normalized value instead of real mAh.
+    let designCapacitymAh: Int?
+    /// Present full-charge capacity in mAh (ioreg `AppleRawMaxCapacity`); nil
+    /// when unavailable. The ratio to `designCapacitymAh` is `healthPercent`.
+    let fullChargeCapacitymAh: Int?
+    /// Battery-pack temperature in °C (ioreg `Temperature`, hundredths of a
+    /// degree); nil if unavailable.
+    let temperatureC: Double?
+    /// Battery-pack voltage in volts (ioreg `Voltage`, millivolts); nil if
+    /// unknown.
+    let voltageV: Double?
+    /// Connected power-adapter wattage (IOKit adapter details); nil on battery
+    /// or when the adapter doesn't report it.
+    let adapterWatts: Int?
+    /// Human-readable adapter name when the system provides one; often nil.
+    let adapterName: String?
 
     /// True only when IOKit has set an explicit problem condition. We
     /// deliberately do NOT fire on `healthLabel` alone — a battery in
