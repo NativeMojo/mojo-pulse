@@ -102,6 +102,9 @@ final class MenuBarController: NSObject {
     /// (placeholders for now; opened from their vitals tiles).
     private var diskWindow: NSWindow?
     private var batteryWindow: NSWindow?
+    /// Owned here (not by the view) so the scanned disk tree survives window
+    /// close/reopen within a session — reopening reuses it instead of rescanning.
+    private let diskModel = DiskUsageModel()
 
     /// Retained reference to the single event-detail window (content replaced
     /// per click rather than spawning one window per event).
@@ -973,11 +976,12 @@ final class MenuBarController: NSObject {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let hosting = NSHostingController(rootView: DialogChrome { DiskUsageView() })
+        let view = DiskUsageView(system: system, model: diskModel)
+        let hosting = NSHostingController(rootView: DialogChrome { view })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Disk Usage"
-        window.styleMask = [.titled, .closable]
-        window.setContentSize(hosting.view.fittingSize)
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 780, height: 620))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
