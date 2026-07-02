@@ -37,8 +37,9 @@ enum BluetoothRange: Int, Sendable, Comparable, CaseIterable {
 
 // MARK: - Kind
 
-enum BluetoothKind: String, Sendable {
-    case tracker      // Find My network / tracker tags
+enum BluetoothKind: String, Sendable, CaseIterable {
+    case tracker      // a SEPARATED Find My device (AirTag-class) — worth a look
+    case findMy       // a Find My NETWORK relay (usually a passing phone) — benign
     case audio        // headphones, earbuds, speakers
     case wearable     // watches, bands, heart-rate straps
     case input        // keyboards, mice, pencils
@@ -49,6 +50,7 @@ enum BluetoothKind: String, Sendable {
     var systemImage: String {
         switch self {
         case .tracker: return "tag.fill"
+        case .findMy: return "point.3.connected.trianglepath.dotted"
         case .audio: return "headphones"
         case .wearable: return "applewatch"
         case .input: return "keyboard"
@@ -57,6 +59,30 @@ enum BluetoothKind: String, Sendable {
         case .other: return "dot.radiowaves.left.and.right"
         }
     }
+
+    /// Label for filter chips + legend.
+    var plural: String {
+        switch self {
+        case .tracker: return "Trackers"
+        case .findMy: return "Find My net"
+        case .audio: return "Audio"
+        case .wearable: return "Wearables"
+        case .input: return "Input"
+        case .tv: return "TVs"
+        case .apple: return "Apple"
+        case .other: return "Other"
+        }
+    }
+}
+
+/// A device's role in Apple's Find My system, distinguished by the advertised
+/// offline-finding frame length (verified live: short len-6 "nearby" frames
+/// come from passing phones relaying the mesh; full len-25+ frames carry a
+/// rotating location key and mark a SEPARATED, findable device — AirTag-class).
+enum FindMyRole: Sendable, Equatable {
+    case none
+    case networkRelay      // short frame — a nearby device helping the mesh
+    case separatedTracker  // full offline-finding frame — findable/lost item
 }
 
 // MARK: - Device
@@ -70,7 +96,7 @@ struct NearbyBluetoothDevice: Identifiable, Equatable {
     var name: String?
     var companyID: UInt16?
     var kind: BluetoothKind = .other
-    var isFindMy = false
+    var findMyRole: FindMyRole = .none
     var isPairedToThisMac = false
     var connectable = false
     var rssi: Double = -100          // EWMA-smoothed
@@ -86,9 +112,18 @@ struct NearbyBluetoothDevice: Identifiable, Equatable {
 
     var band: BluetoothRange { BluetoothRange.from(rssi: rssi) }
 
+    /// A separated, findable Find My device (AirTag-class) — the concerning
+    /// one. Distinct from a mesh relay (a passing phone), which is benign.
+    var isTracker: Bool { findMyRole == .separatedTracker }
+    var isFindMy: Bool { findMyRole != .none }
+
     var displayName: String {
         if let name, !name.isEmpty { return name }
-        if isFindMy { return "Find My tracker" }
+        switch findMyRole {
+        case .separatedTracker: return "Find My tracker"
+        case .networkRelay: return "Find My device"
+        case .none: break
+        }
         if companyID == 0x004C { return "Apple device" }
         if let companyID { return "\(BluetoothCompanies.name(companyID)) device" }
         return "Unnamed device"
@@ -199,15 +234,16 @@ final class BluetoothScanManager: NSObject, ObservableObject {
     private var probeTimeout: Task<Void, Never>?
     private var probeReadsPending = 0
 
-    /// Sorted for the list: trackers first, then by signal strength.
+    /// Sorted for the list: separated trackers first, then by signal strength.
     var sorted: [NearbyBluetoothDevice] {
         devices.values.sorted {
-            if $0.isFindMy != $1.isFindMy { return $0.isFindMy }
+            if $0.isTracker != $1.isTracker { return $0.isTracker }
             return $0.rssi > $1.rssi
         }
     }
 
-    var trackerCount: Int { devices.values.filter(\.isFindMy).count }
+    /// Only SEPARATED trackers (AirTag-class) — not the mesh-relay chatter.
+    var trackerCount: Int { devices.values.filter(\.isTracker).count }
 
     // MARK: Scan lifecycle
 
@@ -319,7 +355,13 @@ final class BluetoothScanManager: NSObject, ObservableObject {
             d.companyID = UInt16(mfr[0]) | (UInt16(mfr[1]) << 8)
             if d.companyID == 0x004C, mfr.count >= 3 {
                 d.appleFrameType = mfr[2]
-                if mfr[2] == 0x12 { d.isFindMy = true }
+                if mfr[2] == 0x12 {
+                    // Frame length is the tell (verified live): the full
+                    // offline-finding frame carries a rotating location key
+                    // (separated/findable tracker); a short frame is a nearby
+                    // device just relaying the Find My mesh (usually a phone).
+                    d.findMyRole = mfr.count >= 20 ? .separatedTracker : .networkRelay
+                }
             }
         }
         if let name = d.name { d.isPairedToThisMac = pairedNames.contains(name.lowercased()) }
@@ -328,7 +370,8 @@ final class BluetoothScanManager: NSObject, ObservableObject {
     }
 
     private static func inferKind(_ d: NearbyBluetoothDevice) -> BluetoothKind {
-        if d.isFindMy { return .tracker }
+        if d.findMyRole == .separatedTracker { return .tracker }
+        if d.findMyRole == .networkRelay { return .findMy }
         if d.appleFrameType == 0x07 { return .audio }   // proximity pairing = AirPods family
         let n = (d.name ?? "").lowercased()
         if !n.isEmpty {

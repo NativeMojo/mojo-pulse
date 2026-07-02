@@ -10,8 +10,20 @@ struct NearbyBluetoothView: View {
     @StateObject private var manager = BluetoothScanManager()
     @State private var mode: Mode = .sonar
     @State private var selectedID: UUID?
+    @State private var hiddenKinds: Set<BluetoothKind> = []
 
     enum Mode: String { case sonar = "Sonar", list = "List" }
+
+    /// Devices after the kind filters — the single source both views draw from.
+    private var visible: [NearbyBluetoothDevice] {
+        manager.sorted.filter { !hiddenKinds.contains($0.kind) }
+    }
+
+    /// Kinds actually present, in a stable display order, for the filter chips.
+    private var presentKinds: [BluetoothKind] {
+        let present = Set(manager.devices.values.map(\.kind))
+        return BluetoothKind.allCases.filter(present.contains)
+    }
 
     // Instrument palette — fixed, not appearance-adaptive (it's a device face).
     private let faceColor = Color(red: 0.055, green: 0.082, blue: 0.071)
@@ -20,6 +32,7 @@ struct NearbyBluetoothView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            if !presentKinds.isEmpty { filterBar }
             Divider()
             if manager.denied {
                 deniedView
@@ -78,6 +91,39 @@ struct NearbyBluetoothView: View {
         .padding(.horizontal, 12).padding(.vertical, 9)
     }
 
+    // MARK: Filters
+
+    /// One toggle chip per kind actually present — tap to hide/show that kind.
+    /// The scan keeps hearing everything; this only filters the display, so a
+    /// hidden tracker still counts in the footer's "trackers nearby".
+    private var filterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(presentKinds, id: \.self) { kind in
+                    let on = !hiddenKinds.contains(kind)
+                    let count = manager.devices.values.filter { $0.kind == kind }.count
+                    Button {
+                        if on { hiddenKinds.insert(kind) } else { hiddenKinds.remove(kind) }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: kind.systemImage).font(.system(size: 9))
+                            Text("\(kind.plural) \(count)").font(.caption2)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Capsule().fill(on ? kindColor(kind).opacity(0.20) : Color.primary.opacity(0.05)))
+                        .overlay(Capsule().stroke(on ? kindColor(kind).opacity(0.55) : Color.primary.opacity(0.10), lineWidth: 0.5))
+                        .foregroundStyle(on ? .primary : .tertiary)
+                        .opacity(on ? 1 : 0.6)
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help(on ? "Hide \(kind.plural)" : "Show \(kind.plural)")
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+        }
+    }
+
     // MARK: Content
 
     @ViewBuilder
@@ -86,7 +132,7 @@ struct NearbyBluetoothView: View {
             VStack(spacing: 8) {
                 // The face takes all the space the window gives it (square,
                 // centered) — resize the window, the sonar grows with it.
-                SonarFace(manager: manager, face: faceColor, ring: ringColor) { selectedID = $0 }
+                SonarFace(manager: manager, devices: visible, face: faceColor, ring: ringColor) { selectedID = $0 }
                     .aspectRatio(1, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 20)
@@ -104,9 +150,10 @@ struct NearbyBluetoothView: View {
 
     private var legend: some View {
         HStack(spacing: 12) {
-            legendDot(SeverityColors.watch, "tracker")
-            legendDot(Color(red: 0.30, green: 0.62, blue: 0.92), "audio")
-            legendDot(Color(red: 0.24, green: 0.81, blue: 0.60), "wearable")
+            legendDot(kindColor(.tracker), "tracker")
+            legendDot(kindColor(.findMy), "Find My net")
+            legendDot(kindColor(.audio), "audio")
+            legendDot(kindColor(.wearable), "wearable")
             legendDot(Color(white: 0.85), "other")
         }
     }
@@ -121,19 +168,26 @@ struct NearbyBluetoothView: View {
     private var list: some View {
         ScrollView {
             LazyVStack(spacing: 5) {
-                if manager.devices.isEmpty {
-                    Text(manager.scanning ? "Listening for advertisements…" : "Press Scan to sweep for nearby Bluetooth devices.")
+                if visible.isEmpty {
+                    Text(emptyMessage)
                         .font(.callout).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.vertical, 40)
                 } else {
-                    ForEach(manager.sorted) { d in
+                    ForEach(visible) { d in
                         deviceRow(d)
                     }
                 }
             }
             .padding(12)
         }
+    }
+
+    private var emptyMessage: String {
+        if manager.devices.isEmpty {
+            return manager.scanning ? "Listening for advertisements…" : "Press Scan to sweep for nearby Bluetooth devices."
+        }
+        return "Everything here is filtered out — tap a chip above to show it."
     }
 
     private func deviceRow(_ d: NearbyBluetoothDevice) -> some View {
@@ -146,7 +200,7 @@ struct NearbyBluetoothView: View {
                         .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(d.displayName).font(.callout.weight(.medium)).lineLimit(1)
-                    Text(subtitle(d)).font(.caption).foregroundStyle(d.isFindMy ? SeverityColors.watch : .secondary)
+                    Text(subtitle(d)).font(.caption).foregroundStyle(d.isTracker ? SeverityColors.watch : .secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
@@ -160,9 +214,9 @@ struct NearbyBluetoothView: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(RoundedRectangle(cornerRadius: 9)
-                .fill(d.isFindMy ? SeverityColors.watch.opacity(0.10) : Color.primary.opacity(0.04)))
+                .fill(d.isTracker ? SeverityColors.watch.opacity(0.10) : Color.primary.opacity(0.04)))
             .overlay(RoundedRectangle(cornerRadius: 9)
-                .stroke(d.isFindMy ? SeverityColors.watch.opacity(0.30) : Color.primary.opacity(0.06), lineWidth: 0.5))
+                .stroke(d.isTracker ? SeverityColors.watch.opacity(0.30) : Color.primary.opacity(0.06), lineWidth: 0.5))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -172,7 +226,8 @@ struct NearbyBluetoothView: View {
         var parts: [String] = []
         if let c = d.companyName { parts.append(c) }
         if d.isPairedToThisMac { parts.append("yours (paired)") }
-        else if d.isFindMy { parts.append("not paired to you") }
+        else if d.isTracker { parts.append("separated · not paired to you") }
+        else if d.findMyRole == .networkRelay { parts.append("mesh relay") }
         if d.kind == .apple { parts.append("rotating address") }
         return parts.isEmpty ? "—" : parts.joined(separator: " · ")
     }
@@ -212,9 +267,12 @@ struct NearbyBluetoothView: View {
 }
 
 /// Kind → blip/tile color, shared by sonar and list.
-private func kindColor(_ d: NearbyBluetoothDevice) -> Color {
-    switch d.kind {
+private func kindColor(_ d: NearbyBluetoothDevice) -> Color { kindColor(d.kind) }
+
+private func kindColor(_ kind: BluetoothKind) -> Color {
+    switch kind {
     case .tracker: return SeverityColors.watch
+    case .findMy: return Color(red: 0.42, green: 0.55, blue: 0.75)
     case .audio: return Color(red: 0.30, green: 0.62, blue: 0.92)
     case .wearable: return Color(red: 0.24, green: 0.81, blue: 0.60)
     case .input: return Color(red: 0.55, green: 0.48, blue: 0.87)
@@ -227,6 +285,7 @@ private func kindColor(_ d: NearbyBluetoothDevice) -> Color {
 
 private struct SonarFace: View {
     @ObservedObject var manager: BluetoothScanManager
+    let devices: [NearbyBluetoothDevice]
     let face: Color
     let ring: Color
     let onSelect: (UUID) -> Void
@@ -281,22 +340,24 @@ private struct SonarFace: View {
                     .overlay(centerGlyph(scale))
                     .position(x: c, y: c)
 
-                if manager.devices.isEmpty && !manager.scanning {
+                if devices.isEmpty && !manager.scanning {
                     Text("Press Scan")
                         .font(.system(size: 12 * scale)).foregroundStyle(ring.opacity(0.6))
                         .position(x: c, y: c + 30 * scale)
                 }
 
                 // Blips.
-                ForEach(manager.sorted) { d in
+                ForEach(devices) { d in
                     let p = position(for: d, size: size)
                     Blip(device: d, scale: scale)
                         .position(p)
                         .onTapGesture { onSelect(d.id) }
-                    if d.name != nil || d.isFindMy {
+                    // Only named devices and real (separated) trackers get a
+                    // label — labeling every anonymous mesh relay is clutter.
+                    if d.name != nil || d.isTracker {
                         Text(d.displayName)
                             .font(.system(size: labelSize))
-                            .foregroundStyle(d.isFindMy ? SeverityColors.watch : Color(white: 0.75))
+                            .foregroundStyle(d.isTracker ? SeverityColors.watch : Color(white: 0.75))
                             .lineLimit(1)
                             .frame(maxWidth: 110 * scale)
                             .position(x: min(max(p.x, 55 * scale), size - 55 * scale), y: p.y + 14 * scale)
@@ -351,7 +412,7 @@ private struct Blip: View {
 
     var body: some View {
         let color = kindColor(device)
-        let d: CGFloat = (device.isFindMy ? 11 : (device.kind == .apple ? 7 : 9)) * scale
+        let d: CGFloat = (device.isTracker ? 11 : (device.kind == .apple || device.kind == .findMy ? 7 : 9)) * scale
         Circle()
             .fill(color)
             .frame(width: d, height: d)
@@ -361,7 +422,7 @@ private struct Blip: View {
                     .opacity(pulse ? 0 : 0.7)
             )
             .onAppear {
-                guard device.isFindMy else { return }
+                guard device.isTracker else { return }   // only real trackers ping
                 withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) {
                     pulse = true
                 }
@@ -454,7 +515,11 @@ struct BluetoothDeviceDetail: View {
         var parts: [String] = []
         if let c = d.companyName { parts.append(c) }
         if d.isPairedToThisMac { parts.append("paired to this Mac") }
-        if d.isFindMy { parts.append("Find My network") }
+        switch d.findMyRole {
+        case .separatedTracker: parts.append("Find My tracker")
+        case .networkRelay: parts.append("Find My network")
+        case .none: break
+        }
         return parts.isEmpty ? "Bluetooth LE" : parts.joined(separator: " · ")
     }
 
@@ -502,6 +567,13 @@ struct BluetoothDeviceDetail: View {
                 row("Manufacturer", "\(BluetoothCompanies.name(c)) (0x\(String(format: "%04X", c)))")
             }
             if let frame = d.appleFrameLabel { row("Advertisement type", frame) }
+            if d.findMyRole != .none {
+                Text(d.isTracker
+                     ? "This is broadcasting a full offline-finding key — the signature of a separated Find My item (an AirTag-class tracker, or a device away from its owner). Worth a look if it isn't yours."
+                     : "This is a short Find My relay frame — a nearby device helping the Find My network locate other people's items. Almost always a passing phone, not a tracker.")
+                    .font(.caption2).foregroundStyle(d.isTracker ? SeverityColors.watch : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             row("Session identifier", d.id.uuidString)
             Text("The identifier is local to this Mac and changes when a privacy-conscious device rotates its address (~every 15 min).")
                 .font(.caption2).foregroundStyle(.tertiary)
