@@ -104,11 +104,15 @@ struct TrustFinding: Sendable, Equatable, Hashable, Identifiable {
     /// nil until enriched, or when unavailable.
     var command: String?
     /// The identity the user's "Always ignore" and incident dedup key on. For a
-    /// suspect CLI/interpreter process this is its exact command line — so
-    /// ignoring silences that one invocation, not every use of the binary — and
-    /// for everything else it's `key` (the bundle/executable identity). Set by
-    /// the scanner; the baseline/first-seen store keeps using `key` regardless.
+    /// suspect CLI/interpreter process this is the command line of its process
+    /// TREE's root — so ignoring silences that one invocation (and the workers
+    /// it spawns), not every use of the binary — and for everything else it's
+    /// `key` (the bundle/executable identity). Set by the scanner; the
+    /// baseline/first-seen store keeps using `key` regardless.
     var ignoreKey: String
+    /// How many running processes this finding covers (the tree root plus its
+    /// folded workers). 1 for standalone processes and GUI apps.
+    var processCount: Int = 1
 
     var id: String { ignoreKey }
 

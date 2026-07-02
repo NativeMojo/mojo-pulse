@@ -552,21 +552,21 @@ enum SecurityScanner {
         return out.isEmpty ? nil : out
     }
 
-    /// Command line → the PIDs running it, for a set of PIDs that share one
-    /// executable. One `ps` call (comma-separated PID list) regardless of how
-    /// many, so grouping a worker pool by command stays cheap.
-    private static func commandsByPID(_ pids: [Int]) -> [String: [Int]] {
+    /// PID → full command line, for a set of PIDs that share one executable.
+    /// One `ps` call (comma-separated PID list) regardless of how many, so
+    /// resolving a whole worker pool stays cheap.
+    private static func commandLinesByPID(_ pids: [Int]) -> [Int: String] {
         guard !pids.isEmpty else { return [:] }
         let list = pids.map(String.init).joined(separator: ",")
         guard let out = Shell.run("/bin/ps", ["-p", list, "-o", "pid=,command="]) else { return [:] }
-        var byCommand: [String: [Int]] = [:]
+        var byPID: [Int: String] = [:]
         for line in out.split(separator: "\n") {
             let t = line.trimmingCharacters(in: .whitespaces)
             guard let sp = t.firstIndex(of: " "), let pid = Int(t[..<sp]) else { continue }
             let cmd = String(t[t.index(after: sp)...]).trimmingCharacters(in: .whitespaces)
-            if !cmd.isEmpty { byCommand[cmd, default: []].append(pid) }
+            if !cmd.isEmpty { byPID[pid] = cmd }
         }
-        return byCommand
+        return byPID
     }
 
     // MARK: Trust scan (the Trust Engine's process sweep)
@@ -593,16 +593,16 @@ enum SecurityScanner {
         // `comm` is only the fallback — daemons like redis/nginx rewrite their
         // process title ("redis-server 127.0.0.1:6379"), so the kernel's
         // proc_pidpath is the authoritative source for the on-disk binary.
-        guard let out = Shell.run("/bin/ps", ["-axo", "pid=,comm="]) else {
+        guard let out = Shell.run("/bin/ps", ["-axo", "pid=,ppid=,comm="]) else {
             return ([], [], [])
         }
         var pidsByPath: [String: [Int]] = [:]
+        var ppidByPID: [Int: Int] = [:]   // for folding worker trees under their root
         for line in out.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard let space = trimmed.firstIndex(of: " "),
-                  let pid = Int(trimmed[..<space]) else { continue }
-            let fallback = String(trimmed[trimmed.index(after: space)...])
-                .trimmingCharacters(in: .whitespaces)
+            let t = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard t.count >= 3, let pid = Int(t[0]), let ppid = Int(t[1]) else { continue }
+            let fallback = String(t[2]).trimmingCharacters(in: .whitespaces)
+            ppidByPID[pid] = ppid
             let path = ProcessPath.resolve(pid: pid, fallback: fallback)
             guard pid != selfPID, path.hasPrefix("/"), !isSIPProtected(path) else { continue }
             pidsByPath[path, default: []].append(pid)
@@ -654,19 +654,45 @@ enum SecurityScanner {
                     if let repPID { finding.command = commandLine(pid: repPID) }
                     suspect.append(finding)
                 } else {
-                    // A CLI/interpreter binary can run many different things, so
-                    // emit one finding per distinct command line — that's what
-                    // "Always ignore" and dedup key on, so silencing one dev
-                    // server doesn't silence every use of the interpreter.
-                    let byCommand = commandsByPID(pids)
+                    // A CLI/interpreter binary can run many things at once, so
+                    // findings are per *invocation* — but per process TREE, not
+                    // per raw command line. Dev servers like `uvicorn --reload`
+                    // respawn helper workers whose command lines embed churning
+                    // fds; one card per worker meant three alerts for one
+                    // server, with ignores that never stuck. Fold every process
+                    // whose ancestor (same binary) is also running into that
+                    // root, and key the finding — and "Always ignore" — on the
+                    // root's stable, human-recognizable command line.
+                    let cmds = commandLinesByPID(pids)
+                    let group = Set(pids)
+                    func rootOf(_ pid: Int) -> Int {
+                        var cur = pid, hops = 0   // hop cap guards torn-snapshot pid-reuse cycles
+                        while hops < 64, let pp = ppidByPID[cur], group.contains(pp) { cur = pp; hops += 1 }
+                        return cur
+                    }
+                    var treeSizeByRoot: [Int: Int] = [:]
+                    for p in pids { treeSizeByRoot[rootOf(p), default: 0] += 1 }
+
+                    // Identical root commands (two copies of the same server)
+                    // merge into one finding; the lowest pid represents it.
+                    var byCommand: [String: (pid: Int, count: Int)] = [:]
+                    for (root, size) in treeSizeByRoot {
+                        guard let cmd = cmds[root] else { continue }   // root exited between ps calls
+                        if let cur = byCommand[cmd] {
+                            byCommand[cmd] = (min(cur.pid, root), cur.count + size)
+                        } else {
+                            byCommand[cmd] = (root, size)
+                        }
+                    }
                     if byCommand.isEmpty {
-                        suspect.append(finding)   // command not visible; fall back to the binary
+                        suspect.append(finding)   // no command visible; fall back to the binary
                     } else {
-                        for (cmd, cmdPIDs) in byCommand {
+                        for (cmd, info) in byCommand {
                             var f = finding
                             f.command = cmd
                             f.ignoreKey = cmd
-                            f.pid = cmdPIDs.min()
+                            f.pid = info.pid
+                            f.processCount = info.count
                             suspect.append(f)
                         }
                     }

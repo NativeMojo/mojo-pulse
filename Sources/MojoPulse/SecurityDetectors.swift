@@ -210,6 +210,7 @@ final class SuspectProcessDetector: MultiDetector {
             if let brand = f.impersonatedBrand { context["brand"] = brand }
             if let pid = f.pid { context["pid"] = String(pid) }
             if let cmd = f.command { context["cmd"] = cmd }
+            if f.processCount > 1 { context["procs"] = String(f.processCount) }
             return Incident(
                 category: .security,
                 severity: f.isStrong ? .issue : .watch,
