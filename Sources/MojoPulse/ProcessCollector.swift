@@ -175,7 +175,7 @@ enum ProcessSampler {
                   let cpu = Double(parts[2]),
                   let rssKB = UInt64(parts[3]) else { continue }
             let comm = parts[4...].joined(separator: " ")
-            let path = ProcessPath.resolve(pid: pid, fallback: comm)
+            let path = ProcessPath.resolveForDisplay(pid: pid, fallback: comm)
             let name = (path as NSString).lastPathComponent
             ppidByPID[pid] = ppid
             totalCPU += cpu

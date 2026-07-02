@@ -14,6 +14,23 @@ enum ProcessPath {
         return n > 0 ? String(cString: buf) : fallback
     }
 
+    /// Like `resolve`, but mapped back to the app's REAL bundle when the
+    /// kernel names a temp mirror. Chromium-family browsers run their main
+    /// binary from an APFS "code sign clone" (…/com.google.Chrome.code_sign_clone/
+    /// …/Google Chrome.app.bundle/…) and Gatekeeper translocates unmoved
+    /// downloads — both live under /private/var/folders, where no ".app/"
+    /// ancestor exists, so icons fell back to the generic executable and the
+    /// Path column showed a scary temp path. The running-app record knows the
+    /// real executable URL. (NSRunningApplication properties are snapshots —
+    /// safe to read off-main from the samplers.)
+    static func resolveForDisplay(pid: Int, fallback: String) -> String {
+        let raw = resolve(pid: pid, fallback: fallback)
+        guard raw.hasPrefix("/private/var/folders/") || raw.hasPrefix("/var/folders/"),
+              let app = NSRunningApplication(processIdentifier: pid_t(pid)),
+              let exe = app.executableURL?.path else { return raw }
+        return exe
+    }
+
     /// Thread count via `proc_pidinfo` — macOS `ps` has no thread column, and
     /// this is a cheap syscall (same libproc family as `proc_pidpath`, no
     /// subprocess). Returns 0 when the kernel denies it (other users' procs).
@@ -64,7 +81,7 @@ enum ProcessViewerSampler {
                   let rssKB = UInt64(parts[3]) else { continue }
             let user = String(parts[4])
             let comm = parts[5...].joined(separator: " ")
-            let path = ProcessPath.resolve(pid: pid, fallback: comm)
+            let path = ProcessPath.resolveForDisplay(pid: pid, fallback: comm)
             let name = (path as NSString).lastPathComponent
             rows.append(ProcViewerRow(
                 pid: pid,
@@ -176,7 +193,10 @@ final class ProcessViewerModel: ObservableObject {
     @Published var sortKey: SortKey = .cpu
     @Published var ascending = false
     @Published var viewMode: ViewMode = .tree
-    @Published var tab: ProcTab = .all
+    // Apps is the default lens — it's what a person opening "Processes" means
+    // first; All/Background/System are one click away. Event deep-links flip
+    // back to All so a filtered CLI/daemon target can't be hidden by the tab.
+    @Published var tab: ProcTab = .apps
     @Published var expandedPIDs: Set<Int> = []
 
     private var knownTrust: [String: TrustInfo] = [:]
@@ -471,12 +491,14 @@ struct ProcessViewerView: View {
     }
 
     /// Narrow the explorer to one process. List mode reads cleanly for a single
-    /// hit, and the filter matches path/name/PID so an executable path lands on
-    /// exactly that binary.
+    /// hit, the filter matches path/name/PID so an executable path lands on
+    /// exactly that binary, and the tab resets to All so a CLI/daemon target
+    /// isn't hidden behind the Apps default.
     private func applyFilter(_ filter: String?) {
         guard let filter, !filter.isEmpty else { return }
         model.query = filter
         model.viewMode = .list
+        model.tab = .all
     }
 
     // MARK: Toolbar
