@@ -415,6 +415,9 @@ struct ProcessViewerView: View {
     /// opens pre-filtered to this executable path or name, so the user lands on
     /// exactly the flagged process instead of scrolling a full table.
     var initialFilter: String? = nil
+    /// Live system load for the footer gauges (CPU % + memory pressure at a
+    /// glance while scanning the table).
+    @ObservedObject var system: SystemCollector
     var onShowTopProcesses: () -> Void = {}
     @StateObject private var model = ProcessViewerModel()
     @State private var selected: ProcViewerRow?
@@ -646,6 +649,11 @@ struct ProcessViewerView: View {
 
     private var footer: some View {
         HStack(spacing: 6) {
+            loadGauge("CPU", fraction: system.current.cpuPercent / 100,
+                      detail: String(format: "%.0f%%", system.current.cpuPercent))
+            loadGauge("Memory", fraction: memFraction, detail: memDetail)
+                .padding(.leading, 8)
+            Divider().frame(height: 14).padding(.horizontal, 6)
             Text("\(model.displayRows.count) shown · \(model.rows.count) total")
                 .font(.caption2).foregroundStyle(.secondary)
             if model.verifyingSellers {
@@ -655,6 +663,41 @@ struct ProcessViewerView: View {
             Button("Top Processes") { onShowTopProcesses() }.controlSize(.small)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+
+    /// A compact live-load ring: quiet gray while healthy, amber past 75%,
+    /// red past 90% — same severity language as the rest of the app.
+    private func loadGauge(_ label: String, fraction: Double, detail: String) -> some View {
+        let f = min(max(fraction, 0), 1)
+        let color: Color = f >= 0.9 ? SeverityColors.issue
+                         : f >= 0.75 ? SeverityColors.watch
+                         : SeverityColors.quiet
+        return HStack(spacing: 5) {
+            ZStack {
+                Circle().stroke(Color.primary.opacity(0.12), lineWidth: 3)
+                Circle().trim(from: 0, to: f)
+                    .stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 15, height: 15)
+            .animation(.easeInOut(duration: 0.4), value: f)
+            Text("\(label) \(detail)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .help("\(label) load right now")
+    }
+
+    private var memFraction: Double {
+        let total = system.current.memoryTotalBytes
+        guard total > 0 else { return 0 }
+        return Double(system.current.memoryUsedBytes) / Double(total)
+    }
+
+    private var memDetail: String {
+        let total = system.current.memoryTotalBytes
+        guard total > 0 else { return "—" }
+        return String(format: "%.0f%%", memFraction * 100)
     }
 
     private func memText(_ bytes: UInt64) -> String {

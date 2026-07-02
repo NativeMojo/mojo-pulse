@@ -1889,6 +1889,7 @@ struct ProcessDetailView: View {
     @State private var storeOutcome: AppStoreLookup.Outcome?
     // Tabs + their lazily-loaded data.
     @State private var tab: DetailTab = .overview
+    @State private var children: ChildSummary?
     @State private var openFiles: [OpenFile] = []
     @State private var modules: [String] = []
     @State private var filesLoaded = false
@@ -1960,8 +1961,52 @@ struct ProcessDetailView: View {
                 infoRow("Command", d.command, mono: true)
                 infoRow("Launched by", launchedBy(d))
                 infoRow("Started", d.started)
+                if let c = children { childrenSection(c) }
             }
         }
+    }
+
+    /// What this process's tree actually costs — the CPU/Memory up top are the
+    /// process's OWN numbers, so a parent like Chrome or a dev server also
+    /// shows its children summed, with the heaviest few broken out.
+    private func childrenSection(_ c: ChildSummary) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Divider().padding(.vertical, 2)
+            HStack {
+                Text("Child processes")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.primary.opacity(0.65))
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                Spacer()
+                Text("\(c.count) · combined \(String(format: "%.0f%%", c.cpuPercent)) CPU · \(memFmt(c.memoryBytes))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(c.top) { kid in
+                HStack(spacing: 8) {
+                    Image(nsImage: AppIconCache.icon(for: kid.path))
+                        .resizable().frame(width: 14, height: 14)
+                    Text(kid.name).font(.caption).lineLimit(1).truncationMode(.middle)
+                    Text(verbatim: "\(kid.pid)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                    Spacer(minLength: 6)
+                    Text(kid.cpuDisplay).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                    Text(kid.memoryDisplay).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .frame(width: 62, alignment: .trailing)
+                }
+            }
+            if c.count > c.top.count {
+                Text("and \(c.count - c.top.count) more — see All Processes for the full tree")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func memFmt(_ bytes: UInt64) -> String {
+        let gb = Double(bytes) / 1_073_741_824
+        if gb >= 1 { return String(format: "%.1f GB", gb) }
+        return String(format: "%.0f MB", Double(bytes) / 1_048_576)
     }
 
     private var securityTab: some View {
@@ -2399,6 +2444,9 @@ struct ProcessDetailView: View {
         }.value
         let conns = await Task.detached(priority: .utility) {
             ProcessConnections.fetch(pid: p.pid)
+        }.value
+        children = await Task.detached(priority: .utility) {
+            ProcessChildren.fetch(rootPID: p.pid)
         }.value
         let resolvedPath = d.path
         let t = await Task.detached(priority: .userInitiated) {

@@ -175,6 +175,52 @@ enum ProcessDetailFetcher {
     }
 }
 
+// MARK: - Child processes
+
+/// A process's live descendants, summed — so the detail for a parent (Chrome,
+/// a dev server) says what its whole tree costs instead of pretending it's
+/// alone. `top` is the heaviest few by memory, for the breakdown list.
+struct ChildSummary: Sendable, Equatable {
+    let count: Int
+    let cpuPercent: Double
+    let memoryBytes: UInt64
+    let top: [ProcInfo]
+}
+
+enum ProcessChildren {
+    static func fetch(rootPID: Int) -> ChildSummary? {
+        guard let out = Shell.run("/bin/ps", ["-axo", "pid=,ppid=,pcpu=,rss=,comm="]) else { return nil }
+        var kidsByPPID: [Int: [Int]] = [:]
+        var info: [Int: (cpu: Double, mem: UInt64, comm: String)] = [:]
+        for line in out.split(separator: "\n") {
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard parts.count >= 5, let pid = Int(parts[0]), let ppid = Int(parts[1]),
+                  let cpu = Double(parts[2]), let rssKB = UInt64(parts[3]) else { continue }
+            kidsByPPID[ppid, default: []].append(pid)
+            info[pid] = (cpu, rssKB * 1024, parts[4...].joined(separator: " "))
+        }
+        var found: [ProcInfo] = []
+        var queue = kidsByPPID[rootPID] ?? []
+        var seen = Set<Int>()
+        while !queue.isEmpty {
+            let pid = queue.removeFirst()
+            guard seen.insert(pid).inserted, let i = info[pid] else { continue }
+            let path = ProcessPath.resolve(pid: pid, fallback: i.comm)
+            let name = (path as NSString).lastPathComponent
+            found.append(ProcInfo(pid: pid, name: name.isEmpty ? path : name, path: path,
+                                  cpuPercent: i.cpu, memoryBytes: i.mem))
+            queue.append(contentsOf: kidsByPPID[pid] ?? [])
+        }
+        guard !found.isEmpty else { return nil }
+        return ChildSummary(
+            count: found.count,
+            cpuPercent: found.reduce(0) { $0 + $1.cpuPercent },
+            memoryBytes: found.reduce(0) { $0 + $1.memoryBytes },
+            top: Array(found.sorted { $0.memoryBytes > $1.memoryBytes }.prefix(5))
+        )
+    }
+}
+
 // MARK: - Detail-tab data (Open Files / Modules / Env / Info.plist)
 
 extension AppBundle {

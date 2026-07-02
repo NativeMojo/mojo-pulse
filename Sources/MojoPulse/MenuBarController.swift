@@ -944,11 +944,14 @@ final class MenuBarController: NSObject {
         }
         let hosting = NSHostingController(rootView: DialogChrome { ProcessViewerView(
             initialFilter: filter,
+            system: system,
             onShowTopProcesses: { [weak self] in self?.showProcessesWindow() }) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Processes"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 680, height: 586))
+        // Wider than the view's 780 minimum — at the old 680 the Process
+        // column got ~90pt and every name truncated to "Win…erver".
+        window.setContentSize(NSSize(width: 980, height: 640))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
