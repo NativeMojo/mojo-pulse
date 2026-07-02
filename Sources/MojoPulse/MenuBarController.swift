@@ -111,6 +111,10 @@ final class MenuBarController: NSObject {
     private var domainWindow: NSWindow?
     private var ipLookupWindow: NSWindow?
     private var bluetoothWindow: NSWindow?
+    // Owned here (not by the view) so windowWillClose can stop the radio even
+    // though the window is kept alive across closes. Creating it is cheap and
+    // does NOT touch the Bluetooth permission — that waits for the first Scan.
+    private let bluetoothScanner = BluetoothScanManager()
     private var safetyWindow: NSWindow?
     /// Owned here (not by the view) so the scanned disk tree survives window
     /// close/reopen within a session — reopening reuses it instead of rescanning.
@@ -1120,7 +1124,7 @@ final class MenuBarController: NSObject {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let hosting = NSHostingController(rootView: DialogChrome { NearbyBluetoothView() })
+        let hosting = NSHostingController(rootView: DialogChrome { NearbyBluetoothView(manager: bluetoothScanner) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Nearby Bluetooth"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -1304,6 +1308,11 @@ extension MenuBarController: NSWindowDelegate {
             domainWindow = nil
         } else if closing === ipLookupWindow {
             ipLookupWindow = nil
+        } else if closing === bluetoothWindow {
+            // Stop the radio for real — the reliable hook (the view's
+            // onDisappear doesn't fire because the window is kept alive).
+            bluetoothScanner.stopScan()
+            bluetoothWindow = nil
         } else if closing === safetyWindow {
             safetyWindow = nil
         } else if closing === diskWindow {

@@ -7,7 +7,8 @@ import CoreBluetooth
 /// because Bluetooth genuinely cannot sense direction. The List toggle shows
 /// the same data dense; clicking anything opens the full device detail.
 struct NearbyBluetoothView: View {
-    @StateObject private var manager = BluetoothScanManager()
+    // Owned by MenuBarController so the radio can be stopped on window close.
+    @ObservedObject var manager: BluetoothScanManager
     @State private var mode: Mode = .sonar
     @State private var selectedID: UUID?
     @State private var hiddenKinds: Set<BluetoothKind> = []
@@ -43,6 +44,7 @@ struct NearbyBluetoothView: View {
             footer
         }
         .frame(minWidth: 560, minHeight: 600)
+        .onAppear { manager.clearAutoStopFlag() }
         .onDisappear { manager.stopScan() }
         .sheet(item: $selectedID.animation(nil)) { id in
             BluetoothDeviceDetail(manager: manager, id: id)
@@ -78,6 +80,9 @@ struct NearbyBluetoothView: View {
             if manager.poweredOff {
                 Label("Bluetooth is off", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(SeverityColors.watch)
+            } else if manager.autoStopped {
+                Label("Paused to save power — Scan to resume", systemImage: "pause.circle")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Spacer()

@@ -224,14 +224,21 @@ final class BluetoothScanManager: NSObject, ObservableObject {
     @Published private(set) var scanning = false
     @Published private(set) var denied = false
     @Published private(set) var poweredOff = false
+    @Published private(set) var autoStopped = false
     @Published private(set) var probeResults: [UUID: BluetoothProbeResult] = [:]
     @Published private(set) var probing: UUID?
+
+    /// Idle safety net — the radio stops itself after this long even if the
+    /// window stays open. A passive sweep has a complete picture within
+    /// seconds; minutes of scanning just burns battery.
+    static let autoStopSeconds: UInt64 = 240
 
     private var central: CBCentralManager?
     private var peripherals: [UUID: CBPeripheral] = [:]   // retained for probing
     private var wantScan = false
     private var pairedNames: Set<String> = []
     private var probeTimeout: Task<Void, Never>?
+    private var autoStopTask: Task<Void, Never>?
     private var probeReadsPending = 0
 
     /// Sorted for the list: separated trackers first, then by signal strength.
@@ -253,6 +260,7 @@ final class BluetoothScanManager: NSObject, ObservableObject {
     func startScan() {
         wantScan = true
         denied = false
+        autoStopped = false
         // Cross-reference the paired registry so your own gear is labeled.
         pairedNames = Set(BluetoothInventory.pairedDevices().map { $0.name.lowercased() })
         if central == nil {
@@ -262,10 +270,20 @@ final class BluetoothScanManager: NSObject, ObservableObject {
         }
     }
 
-    func stopScan() {
+    /// User-driven stop (Scan toggle, window close). Cancels the idle timer.
+    func stopScan() { stop(auto: false) }
+
+    /// Clears the "paused" hint without touching results — for when the window
+    /// reopens after an earlier auto-stop.
+    func clearAutoStopFlag() { autoStopped = false }
+
+    private func stop(auto: Bool) {
+        autoStopTask?.cancel()
+        autoStopTask = nil
         wantScan = false
         scanning = false
         central?.stopScan()
+        autoStopped = auto
     }
 
     /// Clears results for a fresh sweep (kept separate from stop so closing
@@ -280,11 +298,17 @@ final class BluetoothScanManager: NSObject, ObservableObject {
         guard wantScan, let central, central.state == .poweredOn else { return }
         // Duplicates ON: every advertisement updates live RSSI — that's what
         // makes the sonar breathe. The window is the only consumer, and the
-        // radio stops when it closes.
+        // radio stops when it closes (or after the idle timeout below).
         central.scanForPeripherals(withServices: nil, options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: true
         ])
         scanning = true
+        autoStopTask?.cancel()
+        autoStopTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.autoStopSeconds * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.stop(auto: true)
+        }
     }
 
     // MARK: Probe (voluntary connect + public reads)
