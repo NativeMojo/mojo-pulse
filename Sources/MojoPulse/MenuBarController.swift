@@ -589,7 +589,7 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hosting = NSHostingController(rootView: DialogChrome { HistoryPanelView(history: history) })
+        let hosting = NSHostingController(rootView: DialogChrome { HistoryPanelView(history: history, engine: engine) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Mojo Pulse — Event History"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -1170,7 +1170,7 @@ final class MenuBarController: NSObject {
     private func showEventWindow(_ record: IncidentRecord) {
         popover.performClose(nil)
 
-        let hosting = NSHostingController(rootView: DialogChrome { IncidentDetailView(record: record) })
+        let hosting = NSHostingController(rootView: DialogChrome { IncidentDetailView(record: record, engine: engine) })
         if let window = eventWindow {
             window.contentViewController = hosting
             window.setContentSize(hosting.view.fittingSize)

@@ -488,22 +488,42 @@ enum SecurityScanner {
         }
         var exposed: [Int: ExposedService] = [:]
         var unexpected: [String: ListenerItem] = [:]
+        var pathByPID: [Int: String] = [:]
         for line in out.split(separator: "\n").dropFirst() {
             // lsof formats the NAME column as "<addr> (LISTEN)", e.g.
             // "*:22 (LISTEN)" or "127.0.0.1:5000 (LISTEN)". Tokenizing on
-            // whitespace, COMMAND is token 0 and the address is the token
-            // right before "(LISTEN)".
+            // whitespace, COMMAND is token 0, PID is token 1, and the address
+            // is the token right before "(LISTEN)".
             let tokens = line.split(separator: " ").map(String.init)
             guard let listenIdx = tokens.lastIndex(of: "(LISTEN)"), listenIdx > 0,
-                  let command = tokens.first else { continue }
+                  let command = tokens.first, tokens.count > 1, let pid = Int(tokens[1]) else { continue }
             let name = tokens[listenIdx - 1]
             guard let port = listeningPort(from: name), isExternalBind(name) else { continue }
 
             if let svc = sharingPorts[port] {
+                // Sharing services are matched by well-known PORT regardless of
+                // who runs them — the signal is "SSH/Screen Sharing is
+                // reachable", not the binary's trust — so no path filtering here.
                 exposed[port] = ExposedService(name: svc, port: port)
-            } else if !listenerAllowlist.contains(where: { command.hasPrefix($0) }) {
-                unexpected["\(command):\(port)"] = ListenerItem(process: command, port: port)
+                continue
             }
+
+            // Unexpected listeners: resolve the real executable and skip
+            // Apple's own code. lsof truncates COMMAND to ~9 chars, which is
+            // why the old string allowlist missed "UniversalControl" (→
+            // "Universal") and flagged a legit Continuity daemon. proc_pidpath
+            // gives the true path; SIP-protected paths are Apple by
+            // construction (same rule the Trust Engine's process sweep uses).
+            let path = pathByPID[pid] ?? {
+                let p = ProcessPath.resolve(pid: pid, fallback: "")
+                pathByPID[pid] = p
+                return p
+            }()
+            if path.hasPrefix("/"), isSIPProtected(path) { continue }
+            if listenerAllowlist.contains(where: { command.hasPrefix($0) }) { continue }
+            // Prefer the untruncated binary name for display + signature.
+            let display = path.isEmpty ? command : (path as NSString).lastPathComponent
+            unexpected["\(display):\(port)"] = ListenerItem(process: display, port: port)
         }
         return (Array(exposed.values), Array(unexpected.values))
     }

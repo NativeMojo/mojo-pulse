@@ -233,8 +233,8 @@ enum IncidentTemplates {
             let port = ctx["port"] ?? "?"
             return IncidentCopy(
                 title: "Unexpected network listener",
-                what: "\(process) is listening on port \(port) and accepting connections from your network.",
-                why: "This is often a local dev server, but an unrecognized listener can also be remote-access software you didn't intend to expose.",
+                what: "\(process) is listening on port \(port) — a network-facing port other devices could reach if your firewall allows it.",
+                why: "This is often a local dev server, but an unrecognized listener can also be remote-access software you didn't intend to expose. If your firewall is on, inbound connections are blocked unless you've allowed this app.",
                 action: "If it's yours, choose “Always ignore this”. Otherwise open it in All Processes to see who signed it and quit it from there.",
                 actionURL: processViewerURL
             )

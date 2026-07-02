@@ -266,6 +266,9 @@ final class SuspectConnectionDetector: MultiDetector {
                     startedAt: signals.timestamp
                 )
             case .newCountry:
+                // Signature is per-APP (not per-country): "Always ignore
+                // this" means "stop telling me where this app connects",
+                // which is what people actually want from the ignore.
                 return Incident(
                     category: .network,
                     severity: .watch,
@@ -276,7 +279,7 @@ final class SuspectConnectionDetector: MultiDetector {
                         "place": f.place,
                         "country": f.country
                     ],
-                    signature: "conn:newcountry:\(djb2("\(f.identityKey)|\(f.country)"))",
+                    signature: "conn:newcountry:\(djb2(f.identityKey))",
                     startedAt: signals.timestamp
                 )
             }

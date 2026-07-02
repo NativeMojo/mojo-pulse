@@ -245,6 +245,26 @@ final class DetectorEngine: ObservableObject {
         feedback.removeSuppression(signature: signature)
     }
 
+    /// Whether a signature currently has an active mute rule — lets the
+    /// history views show "you're already ignoring this" instead of offering
+    /// the same action twice.
+    func isSuppressed(signature: String, now: Date = Date()) -> Bool {
+        feedback.isSuppressed(signature: signature, now: now)
+    }
+
+    /// Permanently ignore a signature from anywhere — including a *historical*
+    /// record whose condition already ended (the live card was the only way to
+    /// set rules before, which left fast-closing events like connection notes
+    /// un-ignorable). If the same condition is active right now, its card
+    /// closes immediately, exactly like ignoring it there.
+    func muteForever(signature: String, now: Date = Date()) {
+        if let active = activeIncidents.first(where: { $0.signature == signature }) {
+            recordFeedback(.mutedForever, for: active, now: now)
+        } else {
+            feedback.record(.mutedForever, signature: signature, now: now)
+        }
+    }
+
     /// Record user feedback for a signature. Called by the UI when the user
     /// interacts with an incident card. Immediately removes the incident
     /// from the active list if it's a mute/dismiss action — instant

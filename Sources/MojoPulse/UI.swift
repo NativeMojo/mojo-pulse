@@ -1983,6 +1983,9 @@ struct ProcessDetailView: View {
             Button("Quit App") { showQuitConfirm = true }
                 .controlSize(.small)
             Spacer()
+            Button("Search web") { WebLookup.search("\(proc.name) mac app process") }
+                .controlSize(.small)
+                .help("Look up what this process is in your browser")
             Button("Reveal in Finder") { revealInFinder() }
                 .controlSize(.small)
                 .disabled((detail?.path ?? "").isEmpty || !(detail?.path ?? "").hasPrefix("/"))
@@ -2859,84 +2862,240 @@ struct ActionBox: View {
 /// is skimmable at a glance ("two yellows and a red today").
 // MARK: - Incident detail
 
-/// Full details for one event (live or historical). Renders the same
-/// What/Why/Action copy the live card shows — using the persisted context, so
-/// a past event still names the specific app/process — plus timing metadata
-/// and the raw captured details for investigation.
+/// Full details for one event (live or historical), redesigned around an
+/// identity header, folded detail chips, and an actions row. Renders the same
+/// What/Why copy the live card shows — from the persisted context, so a past
+/// event still names the specific app — and lets the user investigate (Search
+/// the web, Reveal, look up the App Store seller) and act (Quit, Ignore)
+/// straight from history, not just while the card is live.
 struct IncidentDetailView: View {
     let record: IncidentRecord
+    /// When present, unlocks the per-signature Ignore rule (the same one the
+    /// live card sets) for events that already resolved. nil hides it.
+    var engine: DetectorEngine?
     @State private var now = Date()
+    @State private var ignored = false
+    @State private var quitPID: Int?
+    @State private var seller: String?
+    @State private var showQuitConfirm = false
+    @State private var quitFailed = false
 
     private var copy: IncidentCopy { record.copy }
     private var tint: Color { SeverityColors.color(for: record.severity, fallbackQuiet: false) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 11) {
-                Image(systemName: record.category.systemImage)
-                    .font(.title2)
-                    .foregroundStyle(tint)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(copy.title).font(.title3.weight(.semibold))
-                    Text(statusLine).font(.caption).foregroundStyle(.secondary)
-                }
-            }
+        VStack(alignment: .leading, spacing: 13) {
+            header
+            chipRow
 
-            Text(copy.what)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-            if let why = copy.why {
-                Text(why)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(copy.what)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            if let action = copy.action {
-                ActionBox(text: action, tint: tint, url: copy.actionURL)
+                if let why = copy.why {
+                    Text(why)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let seller {
+                    HStack(spacing: 5) {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.caption2).foregroundStyle(SeverityColors.good)
+                        Text("Sold by \(seller) · App Store")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 1)
+                }
             }
 
             Divider()
+            actionsRow
+        }
+        .padding(18)
+        .frame(width: 390)
+        .task { await resolve() }
+        .confirmationDialog("Quit \(subjectName)?", isPresented: $showQuitConfirm) {
+            Button("Quit \(subjectName)", role: .destructive) { quit() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Unsaved changes in it may be lost.")
+        }
+        .alert("Couldn't quit \(subjectName)", isPresented: $quitFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("It likely belongs to another user or the system, which Pulse can't quit without elevated privileges.")
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 5) {
-                metaRow("Category", record.category.rawValue.capitalized)
-                metaRow("Severity", severityName)
-                metaRow("Started", fullDate(record.startedAt))
-                if let ended = record.endedAt { metaRow("Ended", fullDate(ended)) }
-                metaRow("Duration", RelativeTime.duration(seconds: Int(record.duration(now: now))))
+    // MARK: Header + chips
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 11)
+                .fill(tint.opacity(0.15))
+                .frame(width: 42, height: 42)
+                .overlay(
+                    Image(systemName: record.category.systemImage)
+                        .font(.system(size: 20))
+                        .foregroundStyle(tint)
+                )
+            VStack(alignment: .leading, spacing: 2) {
+                Text(copy.title).font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("\(record.category.rawValue.capitalized) · \(statusText)")
+                    .font(.caption).foregroundStyle(.secondary)
             }
+            Spacer(minLength: 8)
+            Text(statusChip)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(record.isActive ? tint : Color.secondary)
+                .padding(.horizontal, 9).padding(.vertical, 3)
+                .background(Capsule().fill(record.isActive ? tint.opacity(0.14) : Color.secondary.opacity(0.12)))
+        }
+    }
 
-            if !record.context.isEmpty {
-                Divider()
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Captured details")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                        .tracking(0.4)
-                    ForEach(record.context.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
-                        metaRow(key, value)
-                    }
+    private var chipRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(detailChips, id: \.self) { chip(text: $0, icon: nil) }
+                chip(text: timelineText, icon: "clock")
+            }
+        }
+    }
+
+    private func chip(text: String, icon: String?) -> some View {
+        HStack(spacing: 5) {
+            if let icon { Image(systemName: icon).font(.system(size: 10)) }
+            Text(text).font(.caption)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 9).padding(.vertical, 4)
+        .background(Capsule().fill(Color.primary.opacity(0.05)))
+        .overlay(Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
+        .lineLimit(1)
+    }
+
+    // MARK: Actions
+
+    private var actionsRow: some View {
+        HStack(spacing: 8) {
+            actionButton("magnifyingglass", "Search web") { WebLookup.search(searchQuery) }
+            if let path = subjectPath {
+                actionButton("folder", "Reveal") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                }
+            }
+            if quitPID != nil {
+                actionButton("stop.circle", "Quit") { showQuitConfirm = true }
+            }
+            if engine != nil {
+                actionButton(ignored ? "bell.slash.fill" : "bell.slash",
+                             ignored ? "Ignoring" : "Ignore",
+                             active: ignored) {
+                    if ignored { engine?.unmute(signature: record.signature); ignored = false }
+                    else { engine?.muteForever(signature: record.signature); ignored = true }
                 }
             }
         }
-        .padding(20)
-        .frame(width: 380)
     }
 
-    private func metaRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            Spacer(minLength: 12)
-            Text(value).font(.caption.monospacedDigit())
-                .multilineTextAlignment(.trailing)
-                .fixedSize(horizontal: false, vertical: true)
+    private func actionButton(_ icon: String, _ label: String, active: Bool = false,
+                              _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 16))
+                Text(label).font(.system(size: 11))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 10).fill(active ? tint.opacity(0.14) : Color.primary.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(active ? tint.opacity(0.4) : Color.primary.opacity(0.08), lineWidth: 0.5))
+            .foregroundStyle(active ? tint : Color.primary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(label == "Ignore" ? "Stop showing events like this" : label)
+    }
+
+    // MARK: Derived subject
+
+    private var subjectName: String {
+        record.context["name"] ?? record.context["process"] ?? copy.title
+    }
+    private var subjectPath: String? {
+        record.context["path"].flatMap { $0.hasPrefix("/") ? $0 : nil }
+    }
+
+    /// Context-seeded web query — lands the user on a real answer, not a bare
+    /// name search. Tuned per event kind.
+    private var searchQuery: String {
+        let name = subjectName
+        let q: String
+        switch record.templateKey {
+        case "security.unexpectedListener":
+            q = "\(name) mac listening port \(record.context["port"] ?? "")"
+        case "security.suspectProcess", "security.impersonation":
+            q = "\(name) mac app \(record.context["signer"] ?? "")"
+        case "network.connFlagged", "network.connNewCountry":
+            q = "\(name) mac app network connections"
+        default:
+            q = "\(name) macOS"
+        }
+        return q.trimmingCharacters(in: .whitespaces)
+    }
+
+    private var detailChips: [String] {
+        let c = record.context
+        var out: [String] = []
+        if let p = c["process"] { out.append(p) }
+        if let n = c["name"], n != c["process"] { out.append(n) }
+        if let port = c["port"] { out.append("port \(port)") }
+        if let ip = c["ip"] { out.append(ip) }
+        if let place = c["place"] { out.append(place) }
+        else if let country = c["country"] { out.append(country) }
+        if let signer = c["signer"], signer.count <= 22 { out.append(signer) }
+        if let tags = c["tags"], !tags.isEmpty, tags.count <= 26 { out.append(tags) }
+        return Array(out.prefix(5))
+    }
+
+    // MARK: Resolution (runs on appear)
+
+    private func resolve() async {
+        ignored = engine?.isSuppressed(signature: record.signature) ?? false
+
+        // Quit is only offered when the subject is still running. GUI match is
+        // instant; otherwise scan by path/name off the main actor.
+        let name = subjectName
+        if let app = NSWorkspace.shared.runningApplications.first(where: {
+            $0.activationPolicy == .regular && $0.localizedName == name
+        }) {
+            quitPID = Int(app.processIdentifier)
+        } else {
+            let path = subjectPath
+            quitPID = await Task.detached { RunningProcessLookup.pidByScan(name: name, path: path) }.value
+        }
+
+        // App Store seller, when the subject resolves to an App Store bundle.
+        if let path = subjectPath, let bid = AppBundle.bundleID(forExecutable: path) {
+            if case .found(_, let s) = await AppStoreLookup.verify(bundleID: bid) { seller = s }
         }
     }
 
-    private var statusLine: String {
-        if record.isActive { return "Active now" }
-        return "Resolved · \(RelativeTime.short(from: record.startedAt, to: now))"
+    // MARK: Quit
+
+    private func quit() {
+        guard let pid = quitPID else { return }
+        if let app = NSRunningApplication(processIdentifier: pid_t(pid)), app.terminate() { return }
+        if kill(pid_t(pid), SIGTERM) != 0 { quitFailed = true } else { quitPID = nil }
     }
+
+    // MARK: Formatting
+
+    private var statusText: String {
+        record.isActive ? "active now" : "resolved \(RelativeTime.short(from: record.startedAt, to: now))"
+    }
+    private var statusChip: String { record.isActive ? severityName : "Resolved" }
 
     private var severityName: String {
         switch record.severity {
@@ -2946,11 +3105,45 @@ struct IncidentDetailView: View {
         }
     }
 
-    private func fullDate(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .medium
+    private var timelineText: String {
+        let dur = RelativeTime.duration(seconds: Int(record.duration(now: now)))
+        if let ended = record.endedAt {
+            return "\(time(record.startedAt)) → \(time(ended)) · \(dur)"
+        }
+        return "since \(time(record.startedAt)) · \(dur)"
+    }
+
+    private func time(_ date: Date) -> String {
+        let f = DateFormatter(); f.dateStyle = .none; f.timeStyle = .short
         return f.string(from: date)
+    }
+}
+
+/// Opens the user's default browser to a web search — the "just tell me what
+/// this is" escape hatch for any process, including daemons the App Store
+/// catalog can't answer.
+enum WebLookup {
+    static func search(_ query: String) {
+        var c = URLComponents(string: "https://www.google.com/search")!
+        c.queryItems = [URLQueryItem(name: "q", value: query)]
+        if let url = c.url { NSWorkspace.shared.open(url) }
+    }
+}
+
+/// Best-effort "is the subject of this event still running?" by executable
+/// path or name. GUI-app matching (by display name) is done by the caller on
+/// the main actor; this is the off-main `ps` fallback for daemons/CLI tools.
+enum RunningProcessLookup {
+    nonisolated static func pidByScan(name: String, path: String?) -> Int? {
+        guard let out = Shell.run("/bin/ps", ["-axo", "pid=,comm="]) else { return nil }
+        for line in out.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard let sp = t.firstIndex(of: " "), let pid = Int(t[..<sp]) else { continue }
+            let comm = String(t[t.index(after: sp)...]).trimmingCharacters(in: .whitespaces)
+            if let path, comm == path { return pid }
+            if (comm as NSString).lastPathComponent == name { return pid }
+        }
+        return nil
     }
 }
 
@@ -2960,6 +3153,7 @@ struct IncidentDetailView: View {
 /// selection behavior.
 struct HistoryPanelView: View {
     @ObservedObject var history: HistoryStore
+    var engine: DetectorEngine?
     @State private var now = Date()
     @State private var detailRecord: IncidentRecord?
     @State private var filter: EventFilter = .all
@@ -3038,7 +3232,7 @@ struct HistoryPanelView: View {
         .onAppear { history.refresh() }
         .sheet(item: $detailRecord) { record in
             VStack(spacing: 0) {
-                IncidentDetailView(record: record)
+                IncidentDetailView(record: record, engine: engine)
                 Divider()
                 HStack {
                     Spacer()
