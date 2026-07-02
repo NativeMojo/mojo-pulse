@@ -110,6 +110,7 @@ final class MenuBarController: NSObject {
     private var batteryWindow: NSWindow?
     private var domainWindow: NSWindow?
     private var ipLookupWindow: NSWindow?
+    private var bluetoothWindow: NSWindow?
     private var safetyWindow: NSWindow?
     /// Owned here (not by the view) so the scanned disk tree survives window
     /// close/reopen within a session — reopening reuses it instead of rescanning.
@@ -219,6 +220,7 @@ final class MenuBarController: NSObject {
                 onShowDomain: { [weak self] in self?.showDomainLookupWindow() },
                 onShowIP: { [weak self] in self?.showIPLookupWindow() },
                 onShowSafety: { [weak self] in self?.showNetworkSafetyWindow() },
+                onShowBluetooth: { [weak self] in self?.showBluetoothWindow() },
                 onShowDisk: { [weak self] in self?.showDiskWindow() },
                 onShowBattery: { [weak self] in self?.showBatteryWindow() }
             )
@@ -1105,6 +1107,29 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         ipLookupWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Nearby Bluetooth sonar. Scanning is on-demand inside the view (the
+    /// window closing stops the radio via onDisappear).
+    private func showBluetoothWindow() {
+        popover.performClose(nil)
+        if let existing = bluetoothWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: DialogChrome { NearbyBluetoothView() })
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Nearby Bluetooth"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 580, height: 660))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        bluetoothWindow = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }

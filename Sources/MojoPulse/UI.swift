@@ -177,6 +177,9 @@ struct PopoverView: View {
     /// Called when the user opens the Wi-Fi / Network Safety check.
     var onShowSafety: () -> Void = {}
 
+    /// Called when the user opens the Nearby Bluetooth sonar.
+    var onShowBluetooth: () -> Void = {}
+
     /// Called when the user taps the Disk tile. Opens the Disk Usage tool.
     var onShowDisk: () -> Void = {}
 
@@ -243,7 +246,8 @@ struct PopoverView: View {
                             onShowBroadcast: onShowNetworkVisibility,
                             onShowDomain: onShowDomain,
                             onShowIP: onShowIP,
-                            onShowSafety: onShowSafety
+                            onShowSafety: onShowSafety,
+                            onShowBluetooth: onShowBluetooth
                         )
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                     case .security:
@@ -3481,7 +3485,7 @@ struct IncidentDetailView: View {
         let name = subjectName
         let q: String
         switch record.templateKey {
-        case "security.unexpectedListener":
+        case "security.unexpectedListener", "security.devServerExposed":
             q = "\(name) mac listening port \(record.context["port"] ?? "")"
         case "security.suspectProcess", "security.impersonation":
             q = "\(name) mac app \(record.context["signer"] ?? "")"

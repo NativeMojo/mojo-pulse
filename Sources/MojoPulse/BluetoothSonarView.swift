@@ -1,0 +1,573 @@
+import SwiftUI
+import CoreBluetooth
+
+/// Nearby Bluetooth — the sonar. A dark instrument face (same precedent as the
+/// Network Activity world map) with signal-derived range rings and one blip per
+/// advertiser; bearing is a stable per-device hash and labeled as illustrative,
+/// because Bluetooth genuinely cannot sense direction. The List toggle shows
+/// the same data dense; clicking anything opens the full device detail.
+struct NearbyBluetoothView: View {
+    @StateObject private var manager = BluetoothScanManager()
+    @State private var mode: Mode = .sonar
+    @State private var selectedID: UUID?
+
+    enum Mode: String { case sonar = "Sonar", list = "List" }
+
+    // Instrument palette — fixed, not appearance-adaptive (it's a device face).
+    private let faceColor = Color(red: 0.055, green: 0.082, blue: 0.071)
+    private let ringColor = Color(red: 0.35, green: 0.90, blue: 0.63)
+
+    var body: some View {
+        VStack(spacing: 0) {
+            toolbar
+            Divider()
+            if manager.denied {
+                deniedView
+            } else {
+                content
+            }
+            Divider()
+            footer
+        }
+        .frame(minWidth: 560, minHeight: 600)
+        .onDisappear { manager.stopScan() }
+        .sheet(item: $selectedID.animation(nil)) { id in
+            BluetoothDeviceDetail(manager: manager, id: id)
+        }
+    }
+
+    // MARK: Toolbar
+
+    private var toolbar: some View {
+        HStack(spacing: 10) {
+            Button {
+                if manager.scanning { manager.stopScan() }
+                else { manager.startScan() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: manager.scanning ? "stop.fill" : "dot.radiowaves.left.and.right")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(manager.scanning ? "Scanning…" : "Scan")
+                        .font(.callout.weight(.semibold))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor))
+                .foregroundStyle(.white)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(manager.scanning ? "Stop scanning" : "Start a Bluetooth sweep")
+
+            if !manager.devices.isEmpty {
+                Button("Clear") { manager.reset() }
+                    .controlSize(.small)
+            }
+            if manager.poweredOff {
+                Label("Bluetooth is off", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(SeverityColors.watch)
+            }
+
+            Spacer()
+
+            Picker("", selection: $mode) {
+                Text("Sonar").tag(Mode.sonar)
+                Text("List").tag(Mode.list)
+            }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+    }
+
+    // MARK: Content
+
+    @ViewBuilder
+    private var content: some View {
+        if mode == .sonar {
+            VStack(spacing: 8) {
+                Spacer(minLength: 6)
+                SonarFace(manager: manager, face: faceColor, ring: ringColor) { selectedID = $0 }
+                    .frame(width: 380, height: 380)
+                legend
+                Text("Ring = signal-based range band · bearing is illustrative (Bluetooth can't sense direction)")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                Spacer(minLength: 6)
+            }
+            .frame(maxWidth: .infinity)
+        } else {
+            list
+        }
+    }
+
+    private var legend: some View {
+        HStack(spacing: 12) {
+            legendDot(SeverityColors.watch, "tracker")
+            legendDot(Color(red: 0.30, green: 0.62, blue: 0.92), "audio")
+            legendDot(Color(red: 0.24, green: 0.81, blue: 0.60), "wearable")
+            legendDot(Color(white: 0.85), "other")
+        }
+    }
+
+    private func legendDot(_ color: Color, _ label: String) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private var list: some View {
+        ScrollView {
+            LazyVStack(spacing: 5) {
+                if manager.devices.isEmpty {
+                    Text(manager.scanning ? "Listening for advertisements…" : "Press Scan to sweep for nearby Bluetooth devices.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 40)
+                } else {
+                    ForEach(manager.sorted) { d in
+                        deviceRow(d)
+                    }
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    private func deviceRow(_ d: NearbyBluetoothDevice) -> some View {
+        Button { selectedID = d.id } label: {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(kindColor(d))
+                    .frame(width: 28, height: 28)
+                    .overlay(Image(systemName: d.kind.systemImage)
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(d.displayName).font(.callout.weight(.medium)).lineLimit(1)
+                    Text(subtitle(d)).font(.caption).foregroundStyle(d.isFindMy ? SeverityColors.watch : .secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(d.band.label).font(.caption)
+                    SignalBars(band: d.band)
+                }
+                .foregroundStyle(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 9)
+                .fill(d.isFindMy ? SeverityColors.watch.opacity(0.10) : Color.primary.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 9)
+                .stroke(d.isFindMy ? SeverityColors.watch.opacity(0.30) : Color.primary.opacity(0.06), lineWidth: 0.5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func subtitle(_ d: NearbyBluetoothDevice) -> String {
+        var parts: [String] = []
+        if let c = d.companyName { parts.append(c) }
+        if d.isPairedToThisMac { parts.append("yours (paired)") }
+        else if d.isFindMy { parts.append("not paired to you") }
+        if d.kind == .apple { parts.append("rotating address") }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+    }
+
+    // MARK: States + footer
+
+    private var deniedView: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "hand.raised.fill").font(.system(size: 28)).foregroundStyle(.secondary)
+            Text("Bluetooth access is off for Pulse")
+                .font(.headline)
+            Text("macOS blocks the scan until you allow Bluetooth for MojoPulse in Privacy & Security.")
+                .font(.callout).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center).frame(maxWidth: 360)
+            Button("Open Bluetooth Privacy Settings") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 6) {
+            let n = manager.devices.count
+            let t = manager.trackerCount
+            Text(n == 0 ? "No devices yet" : "\(n) device\(n == 1 ? "" : "s")\(t > 0 ? " · \(t) tracker\(t == 1 ? "" : "s") nearby" : "")")
+                .font(.caption2)
+                .foregroundStyle(t > 0 ? SeverityColors.watch : .secondary)
+            Spacer()
+            Text("On-demand only — scanning stops when this window closes")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+}
+
+/// Kind → blip/tile color, shared by sonar and list.
+private func kindColor(_ d: NearbyBluetoothDevice) -> Color {
+    switch d.kind {
+    case .tracker: return SeverityColors.watch
+    case .audio: return Color(red: 0.30, green: 0.62, blue: 0.92)
+    case .wearable: return Color(red: 0.24, green: 0.81, blue: 0.60)
+    case .input: return Color(red: 0.55, green: 0.48, blue: 0.87)
+    case .tv, .other: return Color(red: 0.45, green: 0.47, blue: 0.52)
+    case .apple: return Color(white: 0.62)
+    }
+}
+
+// MARK: - Sonar face
+
+private struct SonarFace: View {
+    @ObservedObject var manager: BluetoothScanManager
+    let face: Color
+    let ring: Color
+    let onSelect: (UUID) -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            let size = min(geo.size.width, geo.size.height)
+            let c = size / 2
+            ZStack {
+                Circle().fill(face)
+                Circle().stroke(ring.opacity(0.30), lineWidth: 0.5)
+
+                // Range rings + labels (band fractions of the radius).
+                ForEach(Array(bandRadii.enumerated()), id: \.offset) { i, f in
+                    Circle()
+                        .stroke(ring.opacity(0.20), lineWidth: 0.5)
+                        .frame(width: size * f, height: size * f)
+                    Text(BluetoothRange.allCases[i].label)
+                        .font(.system(size: 9))
+                        .foregroundStyle(ring.opacity(0.55))
+                        .position(x: c, y: c - size * f / 2 + 9)
+                }
+
+                // The sweep — only while actively scanning.
+                if manager.scanning {
+                    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { tl in
+                        let t = tl.date.timeIntervalSinceReferenceDate
+                        let angle = (t.truncatingRemainder(dividingBy: 3.6)) / 3.6 * 360
+                        Circle()
+                            .fill(AngularGradient(
+                                gradient: Gradient(stops: [
+                                    .init(color: ring.opacity(0.30), location: 0),
+                                    .init(color: ring.opacity(0.05), location: 0.16),
+                                    .init(color: .clear, location: 0.25),
+                                    .init(color: .clear, location: 1),
+                                ]),
+                                center: .center))
+                            .rotationEffect(.degrees(angle))
+                    }
+                    .clipShape(Circle())
+                }
+
+                // You, at the center.
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(Color.accentColor)
+                    .frame(width: 24, height: 24)
+                    .overlay(centerGlyph)
+                    .position(x: c, y: c)
+
+                if manager.devices.isEmpty && !manager.scanning {
+                    Text("Press Scan")
+                        .font(.caption).foregroundStyle(ring.opacity(0.6))
+                        .position(x: c, y: c + 30)
+                }
+
+                // Blips.
+                ForEach(manager.sorted) { d in
+                    let p = position(for: d, size: size)
+                    Blip(device: d)
+                        .position(p)
+                        .onTapGesture { onSelect(d.id) }
+                    if d.name != nil || d.isFindMy {
+                        Text(d.displayName)
+                            .font(.system(size: 9))
+                            .foregroundStyle(d.isFindMy ? SeverityColors.watch : Color(white: 0.75))
+                            .lineLimit(1)
+                            .frame(maxWidth: 90)
+                            .position(x: min(max(p.x, 48), size - 48), y: p.y + 13)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+        }
+        .aspectRatio(1, contentMode: .fit)
+    }
+
+    @ViewBuilder
+    private var centerGlyph: some View {
+        if let mark = PulseMark.image {
+            Image(nsImage: mark).renderingMode(.template)
+                .resizable().scaledToFit()
+                .frame(width: 14, height: 14).foregroundStyle(.white)
+        } else {
+            Image(systemName: "shield.fill").font(.system(size: 11)).foregroundStyle(.white)
+        }
+    }
+
+    /// Ring diameter as a fraction of the face size — each ring is the outer
+    /// boundary of a band, sitting just outside that band's blip orbit
+    /// (orbits at 0.17/0.34/0.55/0.80 of the face radius).
+    private var bandRadii: [CGFloat] { [0.25, 0.45, 0.68, 0.92] }
+
+    /// Stable placement: radius from the range band, angle from a hash of the
+    /// device identity — a device keeps its bearing across refreshes.
+    private func position(for d: NearbyBluetoothDevice, size: CGFloat) -> CGPoint {
+        let h = djb2(d.id.uuidString)
+        let bandFractions: [CGFloat] = [0.17, 0.34, 0.55, 0.80]
+        let jitter = CGFloat((h / 360) % 13 - 6) / 130
+        let r = (bandFractions[d.band.rawValue] + jitter) * size / 2 * 0.96
+        let theta = Double(h % 360) * .pi / 180
+        return CGPoint(x: size / 2 + r * cos(theta), y: size / 2 + r * sin(theta))
+    }
+
+    private func djb2(_ s: String) -> Int {
+        var h = 5381
+        for b in s.utf8 { h = ((h << 5) &+ h) &+ Int(b) }
+        return abs(h)
+    }
+}
+
+/// One device dot; Find My trackers pulse continuously.
+private struct Blip: View {
+    let device: NearbyBluetoothDevice
+    @State private var pulse = false
+
+    var body: some View {
+        let color = kindColor(device)
+        let d: CGFloat = device.isFindMy ? 11 : (device.kind == .apple ? 7 : 9)
+        Circle()
+            .fill(color)
+            .frame(width: d, height: d)
+            .background(
+                Circle().stroke(color, lineWidth: 1.5)
+                    .scaleEffect(pulse ? 2.8 : 1)
+                    .opacity(pulse ? 0 : 0.7)
+            )
+            .onAppear {
+                guard device.isFindMy else { return }
+                withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) {
+                    pulse = true
+                }
+            }
+            .contentShape(Circle().inset(by: -6))
+            .help(device.displayName)
+    }
+}
+
+/// Four-step strength meter from the range band.
+struct SignalBars: View {
+    let band: BluetoothRange
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(0..<4, id: \.self) { i in
+                Capsule()
+                    .fill(i < 4 - band.rawValue ? Color.primary.opacity(0.7) : Color.primary.opacity(0.15))
+                    .frame(width: 3, height: CGFloat(4 + i * 3))
+            }
+        }
+    }
+}
+
+// MARK: - Device detail
+
+extension UUID: @retroactive Identifiable {
+    public var id: UUID { self }
+}
+
+/// Everything we can honestly say about one advertiser — live signal, identity
+/// facts, the raw advertisement — plus a voluntary "Probe" that connects and
+/// reads the PUBLIC Device Information + Battery services (what any Bluetooth
+/// utility can read; many devices simply refuse, and that's shown too).
+struct BluetoothDeviceDetail: View {
+    @ObservedObject var manager: BluetoothScanManager
+    let id: UUID
+    @Environment(\.dismiss) private var dismiss
+    @State private var snapshot: NearbyBluetoothDevice?
+
+    private var device: NearbyBluetoothDevice? { manager.devices[id] ?? snapshot }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let d = device {
+                header(d).padding(.horizontal, 18).padding(.top, 16).padding(.bottom, 12)
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        signalSection(d)
+                        identitySection(d)
+                        advertisementSection(d)
+                        probeSection(d)
+                    }
+                    .padding(18)
+                }
+            }
+            Divider()
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.return, modifiers: [])
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+        }
+        .frame(width: 440, height: 560)
+        .onAppear { snapshot = manager.devices[id] }
+    }
+
+    private func header(_ d: NearbyBluetoothDevice) -> some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(kindColor(d))
+                .frame(width: 40, height: 40)
+                .overlay(Image(systemName: d.kind.systemImage)
+                    .font(.system(size: 18, weight: .semibold)).foregroundStyle(.white))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(d.displayName).font(.headline)
+                Text(headerSubtitle(d)).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(d.band.label)
+                .font(.caption2.weight(.medium))
+                .padding(.horizontal, 9).padding(.vertical, 3)
+                .background(Capsule().fill(Color.primary.opacity(0.07)))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func headerSubtitle(_ d: NearbyBluetoothDevice) -> String {
+        var parts: [String] = []
+        if let c = d.companyName { parts.append(c) }
+        if d.isPairedToThisMac { parts.append("paired to this Mac") }
+        if d.isFindMy { parts.append("Find My network") }
+        return parts.isEmpty ? "Bluetooth LE" : parts.joined(separator: " · ")
+    }
+
+    private func sectionLabel(_ t: String) -> some View {
+        Text(t).font(.caption2.weight(.semibold))
+            .foregroundStyle(Color.primary.opacity(0.65))
+            .textCase(.uppercase).tracking(0.5)
+    }
+
+    private func row(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.caption).multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+    }
+
+    // MARK: Sections
+
+    private func signalSection(_ d: NearbyBluetoothDevice) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("Signal")
+            HStack(spacing: 10) {
+                SignalBars(band: d.band)
+                Text("\(Int(d.rssi)) dBm").font(.title3.weight(.semibold).monospacedDigit())
+                Text("· \(d.band.label)").font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                if let m = d.roughMeters {
+                    Text(String(format: "~%.0f m (rough)", max(m, 1)))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            row("Range seen", "\(d.rssiMin) to \(d.rssiMax) dBm")
+            if let tx = d.txPower { row("Advertised power", "\(tx) dBm at 1 m") }
+        }
+        .padding(11)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.04)))
+    }
+
+    private func identitySection(_ d: NearbyBluetoothDevice) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("Identity")
+            if let c = d.companyID {
+                row("Manufacturer", "\(BluetoothCompanies.name(c)) (0x\(String(format: "%04X", c)))")
+            }
+            if let frame = d.appleFrameLabel { row("Advertisement type", frame) }
+            row("Session identifier", d.id.uuidString)
+            Text("The identifier is local to this Mac and changes when a privacy-conscious device rotates its address (~every 15 min).")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(11)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.04)))
+    }
+
+    private func advertisementSection(_ d: NearbyBluetoothDevice) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("Advertisement")
+            row("First seen", RelativeTime.short(from: d.firstSeen, to: Date()))
+            row("Last heard", RelativeTime.short(from: d.lastSeen, to: Date()))
+            row("Packets", "\(d.advertCount)")
+            row("Accepts connections", d.connectable ? "Yes" : "No")
+            if !d.serviceUUIDs.isEmpty {
+                row("Services", d.serviceUUIDs.map { BluetoothServices.name($0) }.joined(separator: ", "))
+            }
+            if let mfr = d.manufacturerData {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("Raw manufacturer data").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    Text(mfr.map { String(format: "%02X", $0) }.joined(separator: " "))
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(11)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.04)))
+    }
+
+    @ViewBuilder
+    private func probeSection(_ d: NearbyBluetoothDevice) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Deep probe")
+            if let r = manager.probeResults[id], !(r.isEmpty && !r.failed) {
+                if r.failed && r.isEmpty {
+                    Text("The device didn't respond — many advertisers refuse connections or expose nothing publicly.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    if let v = r.manufacturer { row("Manufacturer", v) }
+                    if let v = r.model { row("Model", v) }
+                    if let v = r.serial { row("Serial", v) }
+                    if let v = r.firmware { row("Firmware", v) }
+                    if let v = r.hardware { row("Hardware rev.", v) }
+                    if let b = r.batteryPercent { row("Battery", "\(b)%") }
+                }
+            } else if manager.probing == id {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Connecting and reading public info…").font(.caption).foregroundStyle(.secondary)
+                }
+            } else if d.connectable {
+                Button {
+                    manager.probe(id)
+                } label: {
+                    Label("Probe device", systemImage: "waveform.badge.magnifyingglass")
+                        .font(.callout)
+                }
+                .disabled(manager.probing != nil)
+                Text("Connects briefly and reads the public Device Information and Battery services — the same info any Bluetooth utility can read. Nothing is written.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("This device doesn't accept connections, so only its advertisement is readable.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(11)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.04)))
+    }
+}
