@@ -2871,13 +2871,16 @@ struct IncidentCard: View {
     /// at a glance" that invites the click.
     var body: some View {
         HStack(spacing: 11) {
+            // Solid severity tile + white category glyph — the same confident
+            // notification-icon language as the event detail header (popover
+            // mockup pick: alerts own the color; the nav rows stay quiet).
             RoundedRectangle(cornerRadius: 8)
-                .fill(tint.opacity(0.16))
+                .fill(tint)
                 .frame(width: 30, height: 30)
                 .overlay(
                     Image(systemName: incident.category.systemImage)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(tint)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
                 )
 
             VStack(alignment: .leading, spacing: 1) {
