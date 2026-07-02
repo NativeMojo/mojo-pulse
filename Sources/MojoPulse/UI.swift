@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import UserNotifications
 
 // MARK: - PopoverView
 
@@ -1300,9 +1301,15 @@ struct SettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject var loginItem: LoginItem
     @ObservedObject var security: SecurityCollector
+    var notifications: NotificationManager?
     var ignoredCount: Int = 0
     var onCheckForUpdates: () -> Void = {}
     var onManageIgnored: () -> Void = {}
+
+    /// macOS-side notification permission, so the row below the toggle can
+    /// say "off in System Settings" instead of letting posts fail silently.
+    @State private var notifAuthStatus: UNAuthorizationStatus?
+    @State private var testSent = false
 
     private static let relative: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter(); f.unitsStyle = .full; return f
@@ -1419,6 +1426,13 @@ struct SettingsView: View {
             toggleRow("Notifications",
                       "Alert you — and your Apple Watch — about red and security events.",
                       $settings.notificationsEnabled)
+            notificationStatusRow
+        }
+        .task { await refreshNotifAuth() }
+        // Re-query when Pulse regains focus — the user coming back from
+        // System Settings should see the row flip to healthy immediately.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await refreshNotifAuth() }
         }
 
         group("Performance") {
@@ -1442,6 +1456,76 @@ struct SettingsView: View {
                     .fixedSize()
             }
         }
+    }
+
+    /// Delivery health for the Notifications toggle above. macOS decides once
+    /// and never re-asks, so when it's off we name the exact toggle to flip
+    /// (guided recovery — same pattern as Location for the Wi-Fi name), and
+    /// when it's on we offer a one-click end-to-end test.
+    @ViewBuilder
+    private var notificationStatusRow: some View {
+        if let notifications {
+            if notifAuthStatus == .denied {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "bell.slash.fill")
+                                .font(.caption)
+                                .foregroundStyle(SeverityColors.watch)
+                            Text("Notifications are off for Mojo Pulse in System Settings.")
+                                .font(.callout)
+                        }
+                        Text("macOS only asks once. Switch on “Allow notifications” under Notifications → Mojo Pulse — alerts start working immediately.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Button("Open Notification Settings") { NotificationManager.openNotificationSettings() }
+                        .controlSize(.small)
+                        .fixedSize()
+                }
+            } else if notifAuthStatus == .notDetermined {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("macOS hasn't asked for permission yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button("Enable notifications") {
+                        notifications.requestAuthorization()
+                        Task {
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            await refreshNotifAuth()
+                        }
+                    }
+                    .controlSize(.small)
+                    .fixedSize()
+                }
+            } else {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Check the whole delivery path — the test should appear as a banner.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button(testSent ? "Sent ✓" : "Send test notification") {
+                        notifications.postTest()
+                        testSent = true
+                        Task {
+                            try? await Task.sleep(nanoseconds: 2_500_000_000)
+                            testSent = false
+                        }
+                    }
+                    .controlSize(.small)
+                    .fixedSize()
+                    .disabled(testSent)
+                }
+            }
+        }
+    }
+
+    private func refreshNotifAuth() async {
+        guard let notifications else { return }
+        notifAuthStatus = await notifications.authorizationStatus()
     }
 
     @ViewBuilder

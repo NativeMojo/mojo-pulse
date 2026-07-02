@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import UserNotifications
 
 /// Delivers incidents as system notifications, which macOS mirrors to a paired
@@ -11,7 +12,7 @@ import UserNotifications
 /// items, exposed services), but stay silent for routine yellow vitals like a
 /// brief CPU/RAM blip — those live quietly in the menu bar where they belong.
 @MainActor
-final class NotificationManager {
+final class NotificationManager: NSObject {
     private let settings: Settings
 
     /// UNUserNotificationCenter requires a real bundle identifier; calling
@@ -25,6 +26,11 @@ final class NotificationManager {
         self.center = Bundle.main.bundleIdentifier != nil
             ? UNUserNotificationCenter.current()
             : nil
+        super.init()
+        // Without a delegate, macOS suppresses banners while the app is
+        // frontmost — and a menu-bar app IS frontmost whenever the popover or
+        // a window is open, which is exactly when incidents tend to surface.
+        center?.delegate = self
     }
 
     /// Ask once at launch. If the user declines, posts simply no-op; the
@@ -83,5 +89,58 @@ final class NotificationManager {
                 NSLog("MojoPulse: failed to post alert: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// The macOS-side permission, so Settings can say "off in System
+    /// Settings" instead of failing silently. nil = no center (swift run).
+    func authorizationStatus() async -> UNAuthorizationStatus? {
+        guard let center else { return nil }
+        return await withCheckedContinuation { cont in
+            center.getNotificationSettings { cont.resume(returning: $0.authorizationStatus) }
+        }
+    }
+
+    /// User-initiated delivery check from Settings. Deliberately skips the
+    /// in-app toggle (pressing the button IS intent) but not the macOS
+    /// permission — that's the thing being tested. Unique id per click so a
+    /// repeat test banners again instead of coalescing into the previous one.
+    func postTest() {
+        guard let center else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Test notification"
+        content.body = "This is what a Mojo Pulse alert looks like. You're all set."
+        content.sound = .default
+        content.interruptionLevel = .active
+        center.add(UNNotificationRequest(identifier: "test-\(UUID().uuidString)", content: content, trigger: nil)) { error in
+            if let error {
+                NSLog("MojoPulse: failed to post test notification: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Open System Settings → Notifications. macOS never re-prompts once the
+    /// user has decided, so guided recovery is the only path back — same
+    /// lesson as Location access for the Wi-Fi name.
+    static func openNotificationSettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
+            "x-apple.systempreferences:com.apple.preference.notifications"
+        ]
+        for c in candidates {
+            if let url = URL(string: c), NSWorkspace.shared.open(url) { return }
+        }
+    }
+}
+
+extension NotificationManager: UNUserNotificationCenterDelegate {
+    /// Present banners even while Pulse is the active app — the system
+    /// default is to swallow them, which reads as "notifications are broken"
+    /// exactly when the user is looking at the app.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
     }
 }

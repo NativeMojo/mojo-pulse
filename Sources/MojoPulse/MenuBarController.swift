@@ -761,6 +761,7 @@ final class MenuBarController: NSObject {
             settings: settings,
             loginItem: loginItem,
             security: security,
+            notifications: notifications,
             ignoredCount: engine.activeSuppressions().count,
             onCheckForUpdates: { [weak self] in self?.updater.checkForUpdates() },
             onManageIgnored: { [weak self] in self?.showMutedItemsWindow() }
