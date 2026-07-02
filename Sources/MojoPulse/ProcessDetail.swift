@@ -174,3 +174,98 @@ enum ProcessDetailFetcher {
         return String(data: data, encoding: .utf8)
     }
 }
+
+// MARK: - Detail-tab data (Open Files / Modules / Env / Info.plist)
+
+extension AppBundle {
+    /// The enclosing .app bundle URL for an executable inside one.
+    static func bundleURL(forExecutable path: String) -> URL? {
+        let comps = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard let idx = comps.firstIndex(where: { $0.hasSuffix(".app") }) else { return nil }
+        return URL(fileURLWithPath: "/" + comps[0...idx].joined(separator: "/"))
+    }
+}
+
+struct OpenFile: Identifiable, Sendable, Equatable {
+    let fd: String
+    let type: String
+    let name: String
+    var id: String { fd + "|" + name }
+}
+
+/// One `lsof` pass split into loaded modules (dylibs/frameworks) and open file
+/// handles (numeric fds). Own-user processes are complete; others are partial
+/// (only what's world-visible) — honest and unprivileged.
+enum ProcessFiles {
+    static func fetch(pid: Int) -> (openFiles: [OpenFile], modules: [String]) {
+        guard let out = Shell.run("/usr/sbin/lsof", ["-nP", "-p", "\(pid)"], timeout: 8) else { return ([], []) }
+        var files: [OpenFile] = []
+        var modules: [String] = []
+        var seenMod = Set<String>()
+        var seenFile = Set<String>()
+        for line in out.split(separator: "\n").dropFirst() {
+            let t = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            guard t.count >= 9 else { continue }
+            let fd = t[3], type = t[4]
+            let name = t[8...].joined(separator: " ")
+            guard name.hasPrefix("/") else { continue }
+            if name.hasSuffix(".dylib") || name.contains(".framework/") {
+                if seenMod.insert(name).inserted { modules.append(name) }
+            } else if fd.first?.isNumber == true, type == "REG" || type == "DIR" {
+                if seenFile.insert(fd + name).inserted { files.append(OpenFile(fd: fd, type: type, name: name)) }
+            }
+        }
+        return (files.sorted { $0.name < $1.name }, modules.sorted())
+    }
+}
+
+/// Environment variables via `ps -Eww`. Own-user processes only — macOS
+/// restricts others' env (returns empty then). Uppercase keys only (the
+/// convention), so `--flag=x` style args aren't misread as vars; a value with
+/// spaces truncates at the first space (best-effort informational view).
+enum ProcessEnvironment {
+    static func fetch(pid: Int) -> [(key: String, value: String)] {
+        guard let out = Shell.run("/bin/ps", ["-Eww", "-p", "\(pid)", "-o", "command="]) else { return [] }
+        var vars: [(String, String)] = []
+        var seen = Set<String>()
+        for tok in out.split(separator: " ") {
+            guard let eq = tok.firstIndex(of: "="), let first = tok.first else { continue }
+            let key = String(tok[..<eq])
+            guard !key.isEmpty, first.isLetter || first == "_",
+                  key.allSatisfy({ $0.isUppercase || $0.isNumber || $0 == "_" }),
+                  seen.insert(key).inserted else { continue }
+            vars.append((key, String(tok[tok.index(after: eq)...])))
+        }
+        return vars.sorted { $0.0 < $1.0 }
+    }
+}
+
+/// Curated Info.plist facts for a bundled app (empty for non-bundle
+/// executables). Read straight from the bundle — unprivileged.
+enum ProcessInfoPlist {
+    static func read(executablePath: String) -> [(label: String, value: String)] {
+        guard let url = AppBundle.bundleURL(forExecutable: executablePath),
+              let info = Bundle(url: url)?.infoDictionary else { return [] }
+        func s(_ k: String) -> String? {
+            if let v = info[k] as? String, !v.isEmpty { return v }
+            if let v = info[k] as? Int { return String(v) }
+            if let v = info[k] as? Bool { return v ? "Yes" : "No" }
+            return nil
+        }
+        var out: [(String, String)] = []
+        func add(_ label: String, _ keys: [String]) {
+            for k in keys { if let v = s(k) { out.append((label, v)); return } }
+        }
+        add("Name", ["CFBundleDisplayName", "CFBundleName"])
+        add("Identifier", ["CFBundleIdentifier"])
+        add("Version", ["CFBundleShortVersionString"])
+        add("Build", ["CFBundleVersion"])
+        add("Executable", ["CFBundleExecutable"])
+        add("Minimum macOS", ["LSMinimumSystemVersion"])
+        add("Category", ["LSApplicationCategoryType"])
+        add("Background only", ["LSUIElement", "LSBackgroundOnly"])
+        add("Built with SDK", ["DTSDKName"])
+        add("Copyright", ["NSHumanReadableCopyright"])
+        return out
+    }
+}

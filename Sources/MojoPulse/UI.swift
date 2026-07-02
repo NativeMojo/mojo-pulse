@@ -1874,49 +1874,225 @@ struct ProcessDetailView: View {
     @State private var bundleID: String?
     @State private var storeVerifying = false
     @State private var storeOutcome: AppStoreLookup.Outcome?
+    // Tabs + their lazily-loaded data.
+    @State private var tab: DetailTab = .overview
+    @State private var openFiles: [OpenFile] = []
+    @State private var modules: [String] = []
+    @State private var filesLoaded = false
+    @State private var env: [(key: String, value: String)] = []
+    @State private var envLoaded = false
+    @State private var infoPlist: [(label: String, value: String)] = []
+    @State private var plistLoaded = false
+
+    enum DetailTab: Hashable { case overview, security, connections, files, modules, env, plist }
+
+    /// True when the executable lives in a .app bundle — gates the Info.plist tab.
+    private var hasBundle: Bool { proc.path.contains(".app/") }
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    header
-                    metrics
-                    Divider()
-                    if loading {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text("Gathering details…").font(.callout).foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 10)
-                    } else if let d = detail {
-                        infoRow("Running from", d.path, mono: true)
-                        infoRow("Command", d.command, mono: true)
-                        infoRow("Launched by", launchedBy(d))
-                        infoRow("Started", d.started)
-                        infoRow("Signed by", d.signature)
-                        infoRow("Notarized", notarizedText)
-                        infoRow("First seen", firstSeenText)
-                        if trust?.label == .macAppStore, bundleID != nil { appStoreRow }
-                        integrityRow
-                        if !posture.isEmpty { postureSection }
-                        connectionsSection
-                    }
-                }
-                .padding(20)
+            header.padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
+            Divider()
+            TabView(selection: $tab) {
+                overviewTab.tabItem { Text("Overview") }.tag(DetailTab.overview)
+                securityTab.tabItem { Text("Security") }.tag(DetailTab.security)
+                connectionsTab.tabItem { Text("Connections") }.tag(DetailTab.connections)
+                openFilesTab.tabItem { Text("Open Files") }.tag(DetailTab.files)
+                modulesTab.tabItem { Text("Modules") }.tag(DetailTab.modules)
+                envTab.tabItem { Text("Env") }.tag(DetailTab.env)
+                if hasBundle { infoPlistTab.tabItem { Text("Info.plist") }.tag(DetailTab.plist) }
             }
+            .padding(.horizontal, 8).padding(.top, 6)
             Divider()
             footer.padding(.horizontal, 20).padding(.vertical, 12)
         }
-        .frame(width: 480, height: 560)
+        .frame(width: 620, height: 600)
         .task { await load() }
+        .onChange(of: tab) { _, t in
+            switch t {
+            case .files, .modules: Task { await loadFiles() }
+            case .env: Task { await loadEnv() }
+            case .plist: Task { await loadPlist() }
+            default: break
+            }
+        }
+    }
+
+    // MARK: Tab content
+
+    private func tabScroll<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        ScrollView { VStack(alignment: .leading, spacing: 13) { content() }.padding(18) }
+    }
+
+    private var loadingRow: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Gathering details…").font(.callout).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 10)
+    }
+
+    private func emptyNote(_ text: String) -> some View {
+        Text(text).font(.callout).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true).padding(.vertical, 6)
+    }
+
+    private var overviewTab: some View {
+        tabScroll {
+            metrics
+            if loading { loadingRow }
+            else if let d = detail {
+                infoRow("Running from", d.path, mono: true)
+                infoRow("Command", d.command, mono: true)
+                infoRow("Launched by", launchedBy(d))
+                infoRow("Started", d.started)
+            }
+        }
+    }
+
+    private var securityTab: some View {
+        tabScroll {
+            if loading { loadingRow }
+            else if let d = detail {
+                infoRow("Signed by", d.signature)
+                infoRow("Notarized", notarizedText)
+                infoRow("First seen", firstSeenText)
+                if trust?.label == .macAppStore, bundleID != nil { appStoreRow }
+                integrityRow
+                if !posture.isEmpty { postureSection }
+                trustRow
+            }
+        }
+    }
+
+    private var connectionsTab: some View {
+        tabScroll {
+            if loading { loadingRow } else { connectionsSection }
+        }
+    }
+
+    private var openFilesTab: some View {
+        tabScroll {
+            if !filesLoaded { loadingRow }
+            else if openFiles.isEmpty {
+                emptyNote("No open file handles — or they aren't visible for this process without elevated privileges.")
+            } else {
+                Text("\(openFiles.count) open files").font(.caption2).foregroundStyle(.secondary)
+                ForEach(openFiles) { f in
+                    HStack(spacing: 8) {
+                        Image(systemName: f.type == "DIR" ? "folder" : "doc")
+                            .font(.caption).foregroundStyle(.secondary).frame(width: 16)
+                        Text(f.name).font(.caption.monospaced())
+                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(f.fd).font(.caption2.monospaced()).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var modulesTab: some View {
+        tabScroll {
+            if !filesLoaded { loadingRow }
+            else if modules.isEmpty {
+                emptyNote("No loaded libraries are visible for this process.")
+            } else {
+                Text("\(modules.count) loaded libraries").font(.caption2).foregroundStyle(.secondary)
+                ForEach(modules, id: \.self) { m in
+                    HStack(spacing: 8) {
+                        Image(systemName: m.contains(".framework/") ? "shippingbox" : "curlybraces")
+                            .font(.caption).foregroundStyle(.secondary).frame(width: 16)
+                        Text(m).font(.caption.monospaced())
+                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+    }
+
+    private var envTab: some View {
+        tabScroll {
+            if !envLoaded { loadingRow }
+            else if env.isEmpty {
+                emptyNote("Environment variables are only readable for your own processes — macOS restricts others'.")
+            } else {
+                ForEach(env, id: \.key) { kv in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(kv.key).font(.caption.monospaced().weight(.medium))
+                        Text(kv.value).font(.caption2.monospaced()).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private var infoPlistTab: some View {
+        tabScroll {
+            if !plistLoaded { loadingRow }
+            else if infoPlist.isEmpty {
+                emptyNote("No readable Info.plist for this app.")
+            } else {
+                ForEach(infoPlist, id: \.label) { row in
+                    HStack(alignment: .top) {
+                        Text(row.label).font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 12)
+                        Text(row.value).font(.caption).multilineTextAlignment(.trailing)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The trust affordance, now in the Security tab (was a footer button).
+    @ViewBuilder
+    private var trustRow: some View {
+        if let key = trustKey, (trust?.label.isElevated ?? false) || trustedByUser {
+            HStack(spacing: 8) {
+                Image(systemName: trustedByUser ? "checkmark.seal.fill" : "seal")
+                    .font(.caption).foregroundStyle(trustedByUser ? SeverityColors.good : .secondary)
+                Text(trustedByUser ? "You trust this app." : "Code with no verified developer identity.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button(trustedByUser ? "Untrust" : "Trust this app") {
+                    TrustBaselineStore().setTrusted(key, !trustedByUser)
+                    trustedByUser.toggle()
+                }
+                .controlSize(.small)
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private func loadFiles() async {
+        guard !filesLoaded else { return }
+        let pid = proc.pid
+        let r = await Task.detached(priority: .userInitiated) { ProcessFiles.fetch(pid: pid) }.value
+        openFiles = r.openFiles; modules = r.modules; filesLoaded = true
+    }
+    private func loadEnv() async {
+        guard !envLoaded else { return }
+        let pid = proc.pid
+        env = await Task.detached(priority: .userInitiated) { ProcessEnvironment.fetch(pid: pid) }.value
+        envLoaded = true
+    }
+    private func loadPlist() async {
+        guard !plistLoaded else { return }
+        let path = detail?.path ?? proc.path
+        infoPlist = await Task.detached(priority: .userInitiated) { ProcessInfoPlist.read(executablePath: path) }.value
+        plistLoaded = true
     }
 
     private var header: some View {
         HStack(spacing: 11) {
-            Image(systemName: "shippingbox")
-                .font(.title2)
-                .foregroundStyle(.secondary)
+            Image(nsImage: AppIconCache.icon(for: detail?.path ?? proc.path))
+                .resizable()
+                .frame(width: 36, height: 36)
             VStack(alignment: .leading, spacing: 1) {
                 Text(proc.name)
                     .font(.title3.weight(.semibold))
@@ -1970,20 +2146,6 @@ struct ProcessDetailView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            // Explicit trust marking for code with no developer identity —
-            // moves it to the recognized tier so the Trust Engine stays quiet
-            // about it. Only offered where it means something (elevated
-            // signing states), never shown for Apple/App Store/Developer ID.
-            if let key = trustKey, (trust?.label.isElevated ?? false) || trustedByUser {
-                Button(trustedByUser ? "Untrust" : "Trust this app") {
-                    TrustBaselineStore().setTrusted(key, !trustedByUser)
-                    trustedByUser.toggle()
-                }
-                .controlSize(.small)
-                .help(trustedByUser
-                    ? "Stop treating this app as known-good."
-                    : "Mark this app as known-good so Pulse doesn't flag it.")
-            }
             Button("Quit App") { showQuitConfirm = true }
                 .controlSize(.small)
             Spacer()
