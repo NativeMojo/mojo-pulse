@@ -264,7 +264,7 @@ final class MenuBarController: NSObject {
         // callback through every card site; we own the windows, so we route.
         NotificationCenter.default.publisher(for: .pulseShowProcessViewer)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.showProcessViewerWindow() }
+            .sink { [weak self] note in self?.showProcessViewerWindow(filter: note.object as? String) }
             .store(in: &cancellables)
     }
 
@@ -933,14 +933,17 @@ final class MenuBarController: NSObject {
     /// Pulse's own process viewer — a security-lens alternative to Activity
     /// Monitor (trust badges, owner, per-process detail). Standalone window with
     /// its own sampler + 2 s refresh, so it needs no aggregator fast tick.
-    private func showProcessViewerWindow() {
+    private func showProcessViewerWindow(filter: String? = nil) {
         popover.performClose(nil)
         if let existing = processViewerWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            // Re-target the already-open explorer to the requested process.
+            if let filter { NotificationCenter.default.post(name: .pulseSetProcessFilter, object: filter) }
             return
         }
         let hosting = NSHostingController(rootView: DialogChrome { ProcessViewerView(
+            initialFilter: filter,
             onShowTopProcesses: { [weak self] in self?.showProcessesWindow() }) })
         let window = NSWindow(contentViewController: hosting)
         window.title = "Processes"

@@ -138,7 +138,7 @@ enum IncidentTemplates {
                 title: "Firewall is off",
                 what: "The built-in application firewall isn't running, so incoming network connections to apps on this Mac aren't filtered.",
                 why: "macOS ships with it off, so this is common — but turning it on blocks unsolicited inbound connections, which is safer on shared or public networks.",
-                action: "Turn it on in Privacy & Security → Firewall. If you keep it off on purpose, choose “Always ignore this”.",
+                action: "Turn it on in Privacy & Security → Firewall. If you keep it off on purpose, choose “Always ignore”.",
                 actionURL: privacySecurityURL
             )
 
@@ -167,7 +167,7 @@ enum IncidentTemplates {
                 title: "New startup item",
                 what: "\(name) was added to \(location) and will now run automatically at login.",
                 why: "Software that runs at login is normal for apps you install — but it's also how unwanted software persists. Worth a glance if you didn't just install something.",
-                action: "Review it in Login Items & Extensions. If you recognize it, choose “Always ignore this”.",
+                action: "Review it in Login Items & Extensions. If you recognize it, choose “Always ignore”.",
                 actionURL: loginItemsURL
             )
 
@@ -177,7 +177,7 @@ enum IncidentTemplates {
                 title: "Unsigned app running",
                 what: "\(name) is running but carries no code signature, so macOS can't verify who made it or that it hasn't been tampered with.",
                 why: "Most legitimate software is signed. Unsigned binaries are common for hand-built or older developer tools, but also how some malware ships.",
-                action: "If you trust this app, choose “Always ignore this”. Otherwise quit it and check where it came from.",
+                action: "If you trust this app, choose “Always ignore”. Otherwise quit it and check where it came from.",
                 actionURL: processViewerURL
             )
 
@@ -188,7 +188,7 @@ enum IncidentTemplates {
                 title: "Suspect process running",
                 what: "\(name) combines traits that don't usually go together in legitimate software: \(reasons).",
                 why: "No single trait makes a program malicious — but this combination is how unwanted software commonly behaves, so Pulse only raises it when several line up.",
-                action: "Open All Processes and click it to see its signer, path, and connections. If you built or knowingly installed it, choose “Always ignore this”; otherwise quit it from there.",
+                action: "Check where it's running from and its command below, and open its full details for the signer and connections. If you built or installed it yourself, choose “Always ignore”; otherwise quit it.",
                 actionURL: processViewerURL
             )
 
@@ -200,7 +200,7 @@ enum IncidentTemplates {
                 title: "App may be impersonating \(brand)",
                 what: "\(name) presents itself as \(brand), but its code signature (\(signer)) doesn't belong to \(brand)'s developer.",
                 why: "Malware often disguises itself as a familiar app. The real \(brand) is always signed by its developer's verified certificate — a mismatch means this copy isn't what it claims to be.",
-                action: "Quit it and delete the app unless you know exactly where it came from (a build you compiled yourself would trip this too — in that case choose “Always ignore this”).",
+                action: "Quit it and delete the app unless you know exactly where it came from — a build you compiled yourself would trip this too, in which case choose “Always ignore”.",
                 actionURL: processViewerURL
             )
 
@@ -213,7 +213,7 @@ enum IncidentTemplates {
                 title: "App talking to a flagged server",
                 what: "\(name) has an ongoing connection to \(ip) (\(place)) — an address flagged as: \(tags).",
                 why: "Legitimate services occasionally share hosting with bad actors, but a sustained connection to an attack- or abuse-listed address is worth a look — especially from an app you don't recognize.",
-                action: "Open All Processes and click \(name) to see its signer and every connection. Quit it if you don't recognize it; choose “Always ignore this” if you know exactly what it is.",
+                action: "Open its full details to see the signer and every connection. Quit it if you don't recognize it; choose “Always ignore” if you know exactly what it is.",
                 actionURL: processViewerURL
             )
 
@@ -224,7 +224,7 @@ enum IncidentTemplates {
                 title: "New destination for an app",
                 what: "\(name) is connected to \(place) — a country it hasn't talked to before on this Mac.",
                 why: "Usually just a CDN, update server, or region change — that's why this is a quiet note, not an alert. It's recorded so a real pattern change is visible in your recent activity.",
-                action: "Curious? Open All Processes and click \(name) to see where it's connected.",
+                action: "Curious? Open \(name)'s full details to see where it's connected.",
                 actionURL: processViewerURL
             )
 
@@ -235,7 +235,7 @@ enum IncidentTemplates {
                 title: "Unexpected network listener",
                 what: "\(process) is listening on port \(port) — a network-facing port other devices could reach if your firewall allows it.",
                 why: "This is often a local dev server, but an unrecognized listener can also be remote-access software you didn't intend to expose. If your firewall is on, inbound connections are blocked unless you've allowed this app.",
-                action: "If it's yours, choose “Always ignore this”. Otherwise open it in All Processes to see who signed it and quit it from there.",
+                action: "If it's your own dev server, choose “Always ignore”. Otherwise check where it's running from below, open its details for the signer, and quit it if you don't recognize it.",
                 actionURL: processViewerURL
             )
 
@@ -247,7 +247,7 @@ enum IncidentTemplates {
                 title: "macOS flagged malware",
                 what: "Apple's built-in XProtect scanner (\(plugin)) reported “\(status)” on \(when).",
                 why: "macOS quietly scans for known malware in the background and usually removes it automatically — this is the record it doesn't normally show you.",
-                action: "It's typically already handled. Review details in Console if you're curious, or choose “Always ignore this”.",
+                action: "It's typically already handled. Review details in Console if you're curious, or choose “Always ignore”.",
                 actionURL: nil
             )
 
@@ -302,7 +302,7 @@ enum IncidentTemplates {
                 title: "Process running away",
                 what: "\(name) has been using \(pct) CPU on its own for over a minute.",
                 why: "A process stuck at full CPU usually means a hang or a runaway loop — it drains the battery and heats the Mac even when the system still feels responsive.",
-                action: "If this is expected (a build, an export, a render), choose “Always ignore this”. Otherwise open it in All Processes and quit it from there.",
+                action: "If this is expected (a build, an export, a render), choose “Always ignore”. Otherwise open its full details and quit it if you don't recognize it.",
                 actionURL: processViewerURL
             )
 
@@ -434,7 +434,7 @@ enum IncidentTemplates {
                 why: count > 1
                     ? "Repeated crashes usually mean a bad update, a corrupt preference, or a failing extension — worth looking into."
                     : "macOS logged a crash report for it. A one-off is usually harmless.",
-                action: "If it keeps happening, try updating or reinstalling the app. Choose “Always ignore this” to stop tracking it.",
+                action: "If it keeps happening, try updating or reinstalling the app. Choose “Always ignore” to stop tracking it.",
                 actionURL: nil
             )
 
@@ -479,7 +479,7 @@ enum IncidentTemplates {
                 title: "New device on \(ssid)",
                 what: "\(who) just appeared on \(ssid)\(at).",
                 why: "Knowing what's on your network helps you spot an intruder. Most new devices are harmless — a guest's phone, a new gadget, or one of yours reconnecting.",
-                action: "If you don't recognize it, check your router and consider changing your Wi-Fi password. Choose “Always ignore this” for devices you know.",
+                action: "If you don't recognize it, check your router and consider changing your Wi-Fi password. Choose “Always ignore” for devices you know.",
                 actionURL: nil
             )
 
@@ -503,6 +503,94 @@ enum IncidentTemplates {
                 why: nil,
                 action: nil
             )
+        }
+    }
+
+    // MARK: - Card essence
+    //
+    // The minimal home card shows only the title plus this one terse line: the
+    // subject and the single most salient fact — nothing more. The full
+    // What / Why / How-to-handle lives in the detail view the user opens by
+    // clicking the card. Returns nil for subject-less posture events (FileVault
+    // off, SIP off, firewall off, no internet, …) where the title alone already
+    // says everything, so the card stays a clean one-liner.
+
+    static func summary(templateKey key: String, context c: [String: String]) -> String? {
+        func v(_ k: String) -> String? {
+            guard let x = c[k]?.trimmingCharacters(in: .whitespaces), !x.isEmpty else { return nil }
+            return x
+        }
+        func join(_ parts: String?...) -> String? {
+            let kept = parts.compactMap { $0 }
+            return kept.isEmpty ? nil : kept.joined(separator: " · ")
+        }
+
+        switch key {
+        // Security — process, connection, listener
+        case "security.unexpectedListener":
+            return join(v("process"), v("port").map { "port \($0)" })
+        case "security.suspectProcess", "security.unsignedApp":
+            return v("name")
+        case "security.impersonation":
+            let brand = v("brand")
+            return join(v("name"), brand != v("name") ? brand.map { "looks like \($0)" } : nil)
+        case "security.connFlagged":
+            return join(v("name"), v("place") ?? v("ip"))
+        case "network.connNewCountry":
+            return join(v("name"), v("place"))
+        case "security.xprotectDetection":
+            return v("status") ?? v("plugin")
+        case "security.persistenceNew":
+            return join(v("name"), v("location"))
+        case "security.exposedService", "security.exposedServiceRisky":
+            return v("services")
+        case "security.insecureWifi":
+            return join(v("ssid"), v("security"))
+
+        // Load — CPU / memory / swap / thermal
+        case "cpu.sustained.watch", "cpu.sustained.issue":
+            return join(v("pct").map { "\($0)%" }, v("topProcess"))
+        case "cpu.runaway":
+            return join(v("name"), v("pct").map { "\($0)%" })
+        case "memory.warn", "memory.critical":
+            if let u = v("used"), let t = v("total") { return "\(u) of \(t) GB in use" }
+            return v("topProcess")
+        case "swap.heavy", "swap.severe":
+            return v("used").map { "\($0) swapped to disk" }
+        case "thermal.serious", "thermal.critical":
+            return v("topProcess")
+
+        // Battery / disk
+        case "battery.low", "battery.critical":
+            return join(v("pct").map { "\($0)%" }, v("timeRemaining").map { "~\($0) left" })
+        case "battery.serviceNeeded":
+            return v("condition")
+        case "battery.health":
+            return v("health").map { "\($0)% of original capacity" }
+        case "disk.low", "disk.critical":
+            return v("freeGB").map { "\($0) GB free" }
+
+        // System events
+        case "event.crash":
+            let n = v("count")
+            return join(v("app"), (n != nil && n != "1") ? "\(n!)×" : nil)
+        case "event.diskFailing":
+            return v("disk")
+        case "event.panic":
+            return v("when")
+        case "system.updatesPending":
+            return v("count").map { "\($0) ready to install" }
+
+        // Local network
+        case "network.lan.newDevice":
+            return join(v("who"), v("ssid"))
+        case "network.lan.gatewayMAC":
+            return v("ssid")
+
+        // Subject-less posture (FileVault/SIP/Gatekeeper/firewall/auto-login/
+        // guest/no-internet/degraded) — the title carries the whole message.
+        default:
+            return nil
         }
     }
 

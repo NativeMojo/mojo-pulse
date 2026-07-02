@@ -411,6 +411,10 @@ final class ProcessViewerModel: ObservableObject {
 /// Pulse's security lens. Distinct from (and never a replacement for) the Top
 /// Processes tile. Click a row for the full reputation detail sheet.
 struct ProcessViewerView: View {
+    /// When set (e.g. from an event's "Show in All Processes"), the explorer
+    /// opens pre-filtered to this executable path or name, so the user lands on
+    /// exactly the flagged process instead of scrolling a full table.
+    var initialFilter: String? = nil
     var onShowTopProcesses: () -> Void = {}
     @StateObject private var model = ProcessViewerModel()
     @State private var selected: ProcViewerRow?
@@ -432,12 +436,25 @@ struct ProcessViewerView: View {
         }
         .frame(minWidth: 780, minHeight: 540)
         .task {
+            applyFilter(initialFilter)
             while !Task.isCancelled {
                 await model.refresh()
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .pulseSetProcessFilter)) { note in
+            applyFilter(note.object as? String)
+        }
         .sheet(item: $selected) { ProcessDetailView(proc: $0.asProcInfo) }
+    }
+
+    /// Narrow the explorer to one process. List mode reads cleanly for a single
+    /// hit, and the filter matches path/name/PID so an executable path lands on
+    /// exactly that binary.
+    private func applyFilter(_ filter: String?) {
+        guard let filter, !filter.isEmpty else { return }
+        model.query = filter
+        model.viewMode = .list
     }
 
     // MARK: Toolbar

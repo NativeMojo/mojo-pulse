@@ -2852,64 +2852,73 @@ struct VitalCell: View {
 /// DetectorEngine.recordFeedback.
 struct IncidentCard: View {
     let incident: Incident
-    /// Tapping the card body (anywhere but the ••• menu / action button) opens
-    /// the full detail window. Optional so the card can still be used in
-    /// non-interactive contexts.
+    /// Tapping the card body (anywhere but the ••• menu) opens the full detail
+    /// window. Optional so the card can still be used in non-interactive
+    /// contexts.
     var onSelect: (() -> Void)? = nil
     let onFeedback: (IncidentFeedback) -> Void
 
-    private var copy: IncidentCopy {
-        IncidentTemplates.render(incident)
+    @State private var isHovering = false
+
+    private var copy: IncidentCopy { IncidentTemplates.render(incident) }
+    private var summary: String? {
+        IncidentTemplates.summary(templateKey: incident.templateKey, context: incident.context)
     }
 
+    /// Minimal by design: a tinted glyph, the headline, and one terse essence
+    /// line. The full What / Why / How-to-handle and the investigate tools live
+    /// in the detail view a click away — the card is just the "what happened,
+    /// at a glance" that invites the click.
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: incident.category.systemImage)
-                    .font(.title3)
-                    .foregroundStyle(tint)
-                    .frame(width: 20)
+        HStack(spacing: 11) {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(tint.opacity(0.16))
+                .frame(width: 30, height: 30)
+                .overlay(
+                    Image(systemName: incident.category.systemImage)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(tint)
+                )
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(copy.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        feedbackMenu
-                    }
-                    Text(copy.what)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(copy.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let summary {
+                    Text(summary)
                         .font(.caption)
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let why = copy.why {
-                        Text(why)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let action = copy.action {
-                        ActionBox(text: action, tint: tint, url: copy.actionURL)
-                            .padding(.top, 2)
-                    }
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
             }
+
+            Spacer(minLength: 6)
+
+            feedbackMenu
+                .opacity(isHovering ? 1 : 0)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.tertiary)
         }
-        .padding(12)
+        .padding(.vertical, 9)
+        .padding(.horizontal, 11)
         .background(
             RoundedRectangle(cornerRadius: 11)
-                .fill(tint.opacity(0.08))
+                .fill(tint.opacity(isHovering ? 0.15 : 0.09))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 11)
                 .stroke(tint.opacity(0.22), lineWidth: 0.5)
         )
-        // Whole card is a tap target for "show full details". The inner ••• menu
-        // and action button are higher-priority controls, so they still handle
-        // their own taps — only taps on the title/body text fall through here.
+        // Whole card is the tap target for "show details". The ••• menu is a
+        // higher-priority control, so it still handles its own taps.
         .contentShape(Rectangle())
         .onTapGesture { onSelect?() }
-        .help(onSelect == nil ? "" : "Show full details")
+        .onHover { isHovering = $0 }
+        .help(onSelect == nil ? "" : "Show details")
     }
 
     private var tint: Color {
@@ -2920,105 +2929,34 @@ struct IncidentCard: View {
         Menu {
             Button("Not an issue right now") { onFeedback(.dismissed) }
             Button("Mute for 1 hour") { onFeedback(.muted1h) }
-            Button("Always ignore this") { onFeedback(.mutedForever) }
+            Button("Always ignore") { onFeedback(.mutedForever) }
             Divider()
             Button("It's real — thanks") { onFeedback(.confirmed) }
         } label: {
             Image(systemName: "ellipsis.circle")
-                .font(.caption)
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .help("Quick actions")
     }
 }
 
-// MARK: - ActionBox
+// MARK: - Card action routing
 
-/// The advisory/action box at the bottom of an incident card. Two states:
-///
-///   url == nil  — pure text. Renders as a static colored panel, exactly the
-///                 way the action copy looked before launchers existed.
-///   url != nil  — clickable button. Hover lifts the fill slightly and adds
-///                 a tiny "arrow.up.right.square" glyph on the right so it
-///                 reads as actionable. Click opens the URL via NSWorkspace.
-///
-/// We deliberately don't show the glyph in the no-URL case because that
-/// would imply the panel is interactive. The visual difference between
-/// "advice" and "shortcut" should be clear at a glance.
-/// Internal card-action routes. `mojopulse://` action URLs never leave the
-/// app — ActionBox posts the matching notification and MenuBarController
-/// opens the right Pulse window. Pulse's own viewers beat bouncing the user
-/// to Activity Monitor (they show signer, posture, connections, trust).
+/// Internal card-action route. `mojopulse://` action URLs never leave the app —
+/// the event detail's primary button posts this and MenuBarController opens the
+/// All Processes explorer. Pulse's own viewer beats bouncing the user to
+/// Activity Monitor (it shows signer, posture, connections, trust).
 extension Notification.Name {
+    /// Open the All Processes explorer. `object` optionally carries a filter
+    /// string (an executable path or process name) to narrow straight to one
+    /// process — so an event can point at exactly what it flagged.
     static let pulseShowProcessViewer = Notification.Name("mojopulse.showProcessViewer")
-}
-
-struct ActionBox: View {
-    let text: String
-    let tint: Color
-    let url: URL?
-
-    @State private var isHovering = false
-
-    var body: some View {
-        if let url {
-            Button {
-                if url.scheme == "mojopulse" {
-                    NotificationCenter.default.post(name: .pulseShowProcessViewer, object: nil)
-                } else {
-                    NSWorkspace.shared.open(url)
-                }
-            } label: {
-                content(showLauncher: true)
-            }
-            .buttonStyle(.plain)
-            .onHover { isHovering = $0 }
-            .help(launcherTooltip(for: url))
-        } else {
-            content(showLauncher: false)
-        }
-    }
-
-    @ViewBuilder
-    private func content(showLauncher: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if showLauncher {
-                Image(systemName: "arrow.up.right.square")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(tint.opacity(isHovering ? 0.22 : 0.12))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 5)
-                .stroke(tint.opacity(isHovering ? 0.55 : 0.35), lineWidth: 0.5)
-        )
-        .contentShape(Rectangle())
-    }
-
-    /// Generate a short hover tooltip telling the user *what* will open.
-    /// We special-case the few launcher URLs we actually use; an unknown
-    /// URL falls back to the host. Keeps the user from being surprised by
-    /// a Settings pane snapping open out of nowhere.
-    private func launcherTooltip(for url: URL) -> String {
-        let s = url.absoluteString
-        if s.hasPrefix("mojopulse://processes") { return "Click to open All Processes" }
-        if s.contains("battery") { return "Click to open Battery Settings" }
-        if s.contains("Storage") { return "Click to open Storage Settings" }
-        if s.contains("wifi-settings") { return "Click to open Wi-Fi Settings" }
-        return "Click to open \(url.host ?? url.absoluteString)"
-    }
+    /// Re-target an already-open explorer window to a new filter string.
+    static let pulseSetProcessFilter = Notification.Name("mojopulse.setProcessFilter")
 }
 
 // MARK: - History views
@@ -3043,6 +2981,8 @@ struct IncidentDetailView: View {
     @State private var ignored = false
     @State private var quitPID: Int?
     @State private var seller: String?
+    @State private var appIcon: NSImage?
+    @State private var detailProc: ProcInfo?
     @State private var showQuitConfirm = false
     @State private var quitFailed = false
 
@@ -3050,37 +2990,19 @@ struct IncidentDetailView: View {
     private var tint: Color { SeverityColors.color(for: record.severity, fallbackQuiet: false) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: 14) {
             header
             chipRow
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text(copy.what)
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let why = copy.why {
-                    Text(why)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let seller {
-                    HStack(spacing: 5) {
-                        Image(systemName: "checkmark.seal.fill")
-                            .font(.caption2).foregroundStyle(SeverityColors.good)
-                        Text("Sold by \(seller) · App Store")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 1)
-                }
-            }
-
+            sections
+            evidence
+            if let action = copy.action { handleCallout(action) }
             Divider()
-            actionsRow
+            toolsSection
         }
         .padding(18)
-        .frame(width: 390)
+        .frame(width: 400)
         .task { await resolve() }
+        .sheet(item: $detailProc) { ProcessDetailView(proc: $0) }
         .confirmationDialog("Quit \(subjectName)?", isPresented: $showQuitConfirm) {
             Button("Quit \(subjectName)", role: .destructive) { quit() }
             Button("Cancel", role: .cancel) {}
@@ -3097,15 +3019,8 @@ struct IncidentDetailView: View {
     // MARK: Header + chips
 
     private var header: some View {
-        HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 11)
-                .fill(tint.opacity(0.15))
-                .frame(width: 42, height: 42)
-                .overlay(
-                    Image(systemName: record.category.systemImage)
-                        .font(.system(size: 20))
-                        .foregroundStyle(tint)
-                )
+        HStack(spacing: 13) {
+            headerIcon
             VStack(alignment: .leading, spacing: 2) {
                 Text(copy.title).font(.headline)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3118,6 +3033,111 @@ struct IncidentDetailView: View {
                 .foregroundStyle(record.isActive ? tint : Color.secondary)
                 .padding(.horizontal, 9).padding(.vertical, 3)
                 .background(Capsule().fill(record.isActive ? tint.opacity(0.14) : Color.secondary.opacity(0.12)))
+        }
+    }
+
+    /// The real app icon when the event's subject resolves to a bundle (makes a
+    /// specific app instantly recognizable); otherwise a tinted category glyph.
+    @ViewBuilder
+    private var headerIcon: some View {
+        if let appIcon {
+            Image(nsImage: appIcon)
+                .resizable()
+                .frame(width: 44, height: 44)
+        } else {
+            RoundedRectangle(cornerRadius: 11)
+                .fill(tint.opacity(0.15))
+                .frame(width: 44, height: 44)
+                .overlay(
+                    Image(systemName: record.category.systemImage)
+                        .font(.system(size: 21))
+                        .foregroundStyle(tint)
+                )
+        }
+    }
+
+    // MARK: Body sections
+
+    private var sections: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            labeledBlock("What's happening", copy.what)
+            if let why = copy.why { labeledBlock("Why it matters", why) }
+            if let seller {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.caption2).foregroundStyle(SeverityColors.good)
+                    Text("Verified: sold by \(seller) on the App Store")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func labeledBlock(_ label: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            sectionLabel(label)
+            Text(text)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .tracking(0.5)
+    }
+
+    /// The template's "what you can do" guidance, as a calm tinted callout — the
+    /// judgment ("if you built this yourself, ignore it; otherwise quit it")
+    /// that the action buttons below then let the user act on.
+    private func handleCallout(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            sectionLabel("How to handle")
+            Text(text)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(RoundedRectangle(cornerRadius: 9).fill(tint.opacity(0.09)))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(tint.opacity(0.20), lineWidth: 0.5))
+    }
+
+    /// The concrete evidence: where the subject runs from and its full command
+    /// line with arguments — the "what am I actually looking at / ignoring?"
+    /// facts. Only rendered when the event carries them (process/listener
+    /// events); copyable and selectable so the user can paste them anywhere.
+    @ViewBuilder
+    private var evidence: some View {
+        if subjectPath != nil || subjectCommand != nil {
+            VStack(alignment: .leading, spacing: 9) {
+                if let path = subjectPath { factRow("Location", path) }
+                if let cmd = subjectCommand { factRow("Command", cmd) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(11)
+            .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.primary.opacity(0.07), lineWidth: 0.5))
+        }
+    }
+
+    private func factRow(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                sectionLabel(label)
+                Spacer()
+                EventCopyButton(value: value)
+            }
+            Text(value)
+                .font(.system(size: 11.5, design: .monospaced))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(4)
+                .truncationMode(.middle)
         }
     }
 
@@ -3142,46 +3162,151 @@ struct IncidentDetailView: View {
         .lineLimit(1)
     }
 
-    // MARK: Actions
+    // MARK: Tools & actions
 
-    private var actionsRow: some View {
-        HStack(spacing: 8) {
-            actionButton("magnifyingglass", "Search web") { WebLookup.search(searchQuery) }
-            if let path = subjectPath {
-                actionButton("folder", "Reveal") {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    /// A prominent primary action (derived from the template's action target —
+    /// "Open in All Processes" for anything process-shaped, or the right System
+    /// Settings pane), then a row of investigate/handle tools scaled to what
+    /// this specific event supports.
+    private var toolsSection: some View {
+        VStack(spacing: 9) {
+            if let primary = primaryAction { primaryButton(primary) }
+            HStack(spacing: 8) {
+                toolButton("magnifyingglass", "Search web") { WebLookup.search(searchQuery) }
+                if let path = subjectPath {
+                    toolButton("folder", "Reveal") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                    }
+                }
+                if quitPID != nil {
+                    toolButton("stop.circle", "Quit", role: .destructive) { showQuitConfirm = true }
+                }
+                if engine != nil {
+                    toolButton(ignored ? "bell.slash.fill" : "bell.slash",
+                               ignored ? "Ignored" : "Always ignore",
+                               active: ignored) {
+                        if ignored { engine?.unmute(signature: record.signature); ignored = false }
+                        else { engine?.muteForever(signature: record.signature); ignored = true }
+                    }
                 }
             }
-            if quitPID != nil {
-                actionButton("stop.circle", "Quit") { showQuitConfirm = true }
-            }
-            if engine != nil {
-                actionButton(ignored ? "bell.slash.fill" : "bell.slash",
-                             ignored ? "Ignoring" : "Ignore",
-                             active: ignored) {
-                    if ignored { engine?.unmute(signature: record.signature); ignored = false }
-                    else { engine?.muteForever(signature: record.signature); ignored = true }
-                }
+            if let caption = ignoreScopeCaption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
-    private func actionButton(_ icon: String, _ label: String, active: Bool = false,
-                              _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 16))
-                Text(label).font(.system(size: 11))
+    /// Spells out exactly what "Always ignore" will silence, so the scope is
+    /// never a guess. Shown for command-bearing process events — the case where
+    /// "am I ignoring this dev server or every python?" was unclear.
+    private var ignoreScopeCaption: String? {
+        guard engine != nil, isProcessEvent, subjectCommand != nil else { return nil }
+        return "“Always ignore” matches this exact command line above — a different command or port will alert again."
+    }
+
+    private struct PrimaryAction { let icon: String; let label: String; let run: () -> Void }
+
+    /// The main "go investigate this" button, mapped from the template's action
+    /// URL: Pulse's own All Processes explorer for process/connection/listener
+    /// events (where signer, path, connections, open files, and trust all live),
+    /// or the specific System Settings pane for posture events.
+    private var primaryAction: PrimaryAction? {
+        // A still-running process → open its full detail (the exact rich
+        // inspector the Processes explorer shows: signer, path, command,
+        // connections, open files, env). The single best investigate action.
+        if isProcessEvent, let pid = quitPID {
+            return PrimaryAction(icon: "cube.box", label: "View process details") {
+                openProcessDetail(pid: pid)
+            }
+        }
+        guard let url = copy.actionURL else { return nil }
+        if url.scheme == "mojopulse" {
+            // Process ended (or never resolved): fall back to the explorer,
+            // filtered to this executable path so it's not a needle-in-haystack.
+            let target = subjectPath ?? subjectName
+            return PrimaryAction(icon: "list.bullet.indent", label: "Show in All Processes") {
+                NotificationCenter.default.post(name: .pulseShowProcessViewer, object: target)
+            }
+        }
+        return PrimaryAction(icon: "gearshape", label: settingsLabel(for: url)) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Whether this event is about a specific process (so "process details" and
+    /// the explorer deep-link apply) — the templates route those to the
+    /// mojopulse:// process viewer.
+    private var isProcessEvent: Bool { copy.actionURL?.scheme == "mojopulse" }
+
+    /// Open the full process inspector for a running PID, as a sheet over the
+    /// event. Fetches live CPU/memory (which the inspector's header shows)
+    /// off-main, then presents.
+    private func openProcessDetail(pid: Int) {
+        let name = subjectName
+        let fallback = subjectPath
+        Task {
+            let info = await Task.detached {
+                EventProcessInfo.fetch(pid: pid, name: name, fallbackPath: fallback)
+            }.value
+            detailProc = info
+        }
+    }
+
+    /// Friendly label for the System Settings pane an action URL opens.
+    private func settingsLabel(for url: URL) -> String {
+        let s = url.absoluteString
+        if s.contains(".battery") { return "Open Battery Settings" }
+        if s.contains(".Storage") { return "Open Storage Settings" }
+        if s.contains("wifi-settings") { return "Open Wi-Fi Settings" }
+        if s.contains("FileVault") { return "Open FileVault Settings" }
+        if s.contains("PrivacySecurity") { return "Open Privacy & Security" }
+        if s.contains("LoginItems") { return "Open Login Items" }
+        if s.contains("Users-Groups") { return "Open Users & Groups" }
+        if s.contains("Sharing") { return "Open Sharing Settings" }
+        if s.contains("Software-Update") { return "Open Software Update" }
+        return "Open Settings"
+    }
+
+    private func primaryButton(_ p: PrimaryAction) -> some View {
+        Button(action: p.run) {
+            HStack(spacing: 7) {
+                Image(systemName: p.icon).font(.system(size: 14, weight: .semibold))
+                Text(p.label).font(.callout.weight(.semibold))
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 9)
-            .background(RoundedRectangle(cornerRadius: 10).fill(active ? tint.opacity(0.14) : Color.primary.opacity(0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(active ? tint.opacity(0.4) : Color.primary.opacity(0.08), lineWidth: 0.5))
-            .foregroundStyle(active ? tint : Color.primary)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.16)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor.opacity(0.4), lineWidth: 0.5))
+            .foregroundStyle(Color.accentColor)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(label == "Ignore" ? "Stop showing events like this" : label)
+    }
+
+    private func toolButton(_ icon: String, _ label: String, active: Bool = false,
+                            role: ButtonRole? = nil, _ action: @escaping () -> Void) -> some View {
+        let fg: Color = active ? tint : (role == .destructive ? SeverityColors.issue : .primary)
+        return Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 15))
+                Text(label)
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 9).fill(active ? tint.opacity(0.14) : Color.primary.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(active ? tint.opacity(0.4) : Color.primary.opacity(0.08), lineWidth: 0.5))
+            .foregroundStyle(fg)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(label.hasPrefix("Always ignore") || label == "Ignored" ? "Permanently stop showing events like this" : label)
     }
 
     // MARK: Derived subject
@@ -3191,6 +3316,14 @@ struct IncidentDetailView: View {
     }
     private var subjectPath: String? {
         record.context["path"].flatMap { $0.hasPrefix("/") ? $0 : nil }
+    }
+    /// The exact PID captured when the event fired — used to Quit precisely and
+    /// to deep-link the explorer to *this* process, not a name lookalike.
+    private var subjectPID: Int? { record.context["pid"].flatMap(Int.init) }
+    private var subjectCommand: String? {
+        guard let c = record.context["cmd"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !c.isEmpty else { return nil }
+        return c
     }
 
     /// Context-seeded web query — lands the user on a real answer, not a bare
@@ -3230,22 +3363,48 @@ struct IncidentDetailView: View {
     private func resolve() async {
         ignored = engine?.isSuppressed(signature: record.signature) ?? false
 
-        // Quit is only offered when the subject is still running. GUI match is
-        // instant; otherwise scan by path/name off the main actor.
+        // Quit is only offered when the subject is still running, resolved in
+        // precision order so it targets the exact process, never a lookalike.
         let name = subjectName
-        if let app = NSWorkspace.shared.runningApplications.first(where: {
-            $0.activationPolicy == .regular && $0.localizedName == name
-        }) {
+
+        // 1) The PID captured when the event fired, if it's still alive as the
+        //    same on-disk binary — the precise target for a suspect process.
+        if let pid = subjectPID, let path = subjectPath {
+            let live = await Task.detached { ProcessPath.resolve(pid: pid, fallback: "") }.value
+            if live == path { quitPID = pid }
+        }
+        // 2) Foreground GUI app by display name (also yields its real icon).
+        if quitPID == nil,
+           let app = NSWorkspace.shared.runningApplications.first(where: {
+               $0.activationPolicy == .regular && $0.localizedName == name
+           }) {
             quitPID = Int(app.processIdentifier)
-        } else {
+            if let icon = app.icon { appIcon = sized(icon) }
+        }
+        // 3) Off-main path/name scan for daemons / CLI tools.
+        if quitPID == nil {
             let path = subjectPath
             quitPID = await Task.detached { RunningProcessLookup.pidByScan(name: name, path: path) }.value
+        }
+
+        // Fall back to the bundle's own icon when the subject resolves to a
+        // .app on disk (covers events whose subject isn't a foreground GUI app).
+        if appIcon == nil, let path = subjectPath, let bundle = AppBundle.bundleURL(forExecutable: path) {
+            appIcon = sized(NSWorkspace.shared.icon(forFile: bundle.path))
         }
 
         // App Store seller, when the subject resolves to an App Store bundle.
         if let path = subjectPath, let bid = AppBundle.bundleID(forExecutable: path) {
             if case .found(_, let s) = await AppStoreLookup.verify(bundleID: bid) { seller = s }
         }
+    }
+
+    /// A copy of an icon sized for the header, so we never mutate a shared
+    /// NSImage instance the process explorer also renders at a smaller size.
+    private func sized(_ image: NSImage) -> NSImage {
+        let copy = image.copy() as? NSImage ?? image
+        copy.size = NSSize(width: 44, height: 44)
+        return copy
     }
 
     // MARK: Quit
@@ -3285,6 +3444,32 @@ struct IncidentDetailView: View {
     }
 }
 
+/// A compact copy-to-clipboard glyph button that flashes a checkmark for ~1.2s.
+/// Used by the event detail's Location / Command evidence rows; copies the full
+/// value even when the on-screen text is truncated.
+private struct EventCopyButton: View {
+    let value: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(value, forType: .string)
+            withAnimation { copied = true }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                withAnimation { copied = false }
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 10))
+                .foregroundStyle(copied ? SeverityColors.good : .secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Copy")
+    }
+}
+
 /// Opens the user's default browser to a web search — the "just tell me what
 /// this is" escape hatch for any process, including daemons the App Store
 /// catalog can't answer.
@@ -3310,6 +3495,23 @@ enum RunningProcessLookup {
             if (comm as NSString).lastPathComponent == name { return pid }
         }
         return nil
+    }
+}
+
+/// Builds a `ProcInfo` for one PID so the event detail can open the full
+/// process inspector (which shows live CPU/memory in its header). One `ps` for
+/// %CPU + resident size, plus proc_pidpath for the true executable path.
+enum EventProcessInfo {
+    nonisolated static func fetch(pid: Int, name: String, fallbackPath: String?) -> ProcInfo {
+        let out = (Shell.run("/bin/ps", ["-p", "\(pid)", "-o", "pcpu=,rss=,comm="]) ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        // "pcpu rss comm…" — split off the two leading numbers, keep the rest.
+        let toks = out.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true).map(String.init)
+        let cpu = toks.count > 0 ? (Double(toks[0]) ?? 0) : 0
+        let rssKB = toks.count > 1 ? (UInt64(toks[1]) ?? 0) : 0
+        let comm = toks.count > 2 ? toks[2] : ""
+        let path = ProcessPath.resolve(pid: pid, fallback: comm.isEmpty ? (fallbackPath ?? "") : comm)
+        return ProcInfo(pid: pid, name: name, path: path, cpuPercent: cpu, memoryBytes: rssKB * 1024)
     }
 }
 
@@ -3564,7 +3766,7 @@ struct MutedItemsView: View {
                 .foregroundStyle(.secondary)
             Text("You're not ignoring anything")
                 .font(.headline)
-            Text("When you choose “Always ignore this” or “Mute for 1 hour” on an event, it shows up here so you can lift it later.")
+            Text("When you choose “Always ignore” or “Mute for 1 hour” on an event, it shows up here so you can lift it later.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

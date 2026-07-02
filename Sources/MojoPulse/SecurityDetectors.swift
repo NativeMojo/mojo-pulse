@@ -208,13 +208,15 @@ final class SuspectProcessDetector: MultiDetector {
                 "reasons": f.reasonsText
             ]
             if let brand = f.impersonatedBrand { context["brand"] = brand }
+            if let pid = f.pid { context["pid"] = String(pid) }
+            if let cmd = f.command { context["cmd"] = cmd }
             return Incident(
                 category: .security,
                 severity: f.isStrong ? .issue : .watch,
                 detectorID: id,
                 templateKey: f.impersonatedBrand != nil ? "security.impersonation" : "security.suspectProcess",
                 context: context,
-                signature: "security:suspect:\(djb2(f.key))",
+                signature: "security:suspect:\(djb2(f.ignoreKey))",
                 startedAt: signals.timestamp
             )
         }
@@ -301,12 +303,16 @@ final class UnexpectedListenerDetector: MultiDetector {
     func evaluateAll(signals: Signals) -> [Incident] {
         guard signals.security.scanned else { return [] }
         return signals.security.unexpectedListeners.map { listener in
-            Incident(
+            var context = ["process": listener.process, "port": String(listener.port)]
+            if let path = listener.path { context["path"] = path }
+            if let pid = listener.pid { context["pid"] = String(pid) }
+            if let cmd = listener.command { context["cmd"] = cmd }
+            return Incident(
                 category: .security,
                 severity: .watch,
                 detectorID: id,
                 templateKey: "security.unexpectedListener",
-                context: ["process": listener.process, "port": String(listener.port)],
+                context: context,
                 signature: "security:listener:\(listener.process):\(listener.port)",
                 startedAt: signals.timestamp
             )

@@ -26,6 +26,12 @@ struct ExposedService: Sendable, Equatable, Hashable {
 struct ListenerItem: Sendable, Equatable, Hashable {
     let process: String
     let port: Int
+    /// The listener's on-disk executable + running PID + full command line, so
+    /// the event can say *where* it runs from and *what* it is — not just its
+    /// name. Optional: resolution is best-effort and unprivileged.
+    var path: String? = nil
+    var pid: Int? = nil
+    var command: String? = nil
 }
 
 /// Lightweight, Sendable reference to a running app, captured on the main
@@ -332,7 +338,11 @@ final class SecurityCollector: ObservableObject {
             guestAccount: raw.guestAccount,
             exposedServices: raw.exposedServices.sorted { $0.port < $1.port },
             unexpectedListeners: raw.unexpectedListeners.sorted { $0.port < $1.port },
-            suspectProcesses: raw.suspectProcesses.sorted { $0.name.lowercased() < $1.name.lowercased() },
+            suspectProcesses: raw.suspectProcesses.sorted {
+                // Name, then ignoreKey — a stable order now that one binary can
+                // yield several findings (one per command line).
+                ($0.name.lowercased(), $0.ignoreKey) < ($1.name.lowercased(), $1.ignoreKey)
+            },
             unrecognizedProcesses: raw.unrecognizedProcesses.sorted { $0.name.lowercased() < $1.name.lowercased() },
             newPersistenceItems: newItems,
             xprotect: cachedXProtect,
@@ -523,9 +533,40 @@ enum SecurityScanner {
             if listenerAllowlist.contains(where: { command.hasPrefix($0) }) { continue }
             // Prefer the untruncated binary name for display + signature.
             let display = path.isEmpty ? command : (path as NSString).lastPathComponent
-            unexpected["\(display):\(port)"] = ListenerItem(process: display, port: port)
+            unexpected["\(display):\(port)"] = ListenerItem(
+                process: display,
+                port: port,
+                path: path.isEmpty ? nil : path,
+                pid: pid,
+                command: commandLine(pid: pid)
+            )
         }
         return (Array(exposed.values), Array(unexpected.values))
+    }
+
+    /// One process's full command line (executable + arguments), unprivileged
+    /// and best-effort. Own-user processes are complete; others may be partial.
+    private static func commandLine(pid: Int) -> String? {
+        let out = (Shell.run("/bin/ps", ["-p", "\(pid)", "-o", "command="]) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return out.isEmpty ? nil : out
+    }
+
+    /// Command line → the PIDs running it, for a set of PIDs that share one
+    /// executable. One `ps` call (comma-separated PID list) regardless of how
+    /// many, so grouping a worker pool by command stays cheap.
+    private static func commandsByPID(_ pids: [Int]) -> [String: [Int]] {
+        guard !pids.isEmpty else { return [:] }
+        let list = pids.map(String.init).joined(separator: ",")
+        guard let out = Shell.run("/bin/ps", ["-p", list, "-o", "pid=,command="]) else { return [:] }
+        var byCommand: [String: [Int]] = [:]
+        for line in out.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard let sp = t.firstIndex(of: " "), let pid = Int(t[..<sp]) else { continue }
+            let cmd = String(t[t.index(after: sp)...]).trimmingCharacters(in: .whitespaces)
+            if !cmd.isEmpty { byCommand[cmd, default: []].append(pid) }
+        }
+        return byCommand
     }
 
     // MARK: Trust scan (the Trust Engine's process sweep)
@@ -592,16 +633,44 @@ enum SecurityScanner {
                 connections: pids.reduce(0) { $0 + (connectedPIDs[$1] ?? 0) }
             )
             let key = TrustEvaluator.identityKey(bundleID: candidate.bundleID, path: path)
-            let (tier, finding) = TrustEvaluator.evaluate(
+            // Lowest pid is the stable representative when several copies run.
+            let repPID = pids.min()
+            var (tier, finding) = TrustEvaluator.evaluate(
                 candidate,
                 firstSeen: context.firstSeen[key],
                 baselineSeeded: context.seeded,
                 trusted: context.trusted.contains(key),
+                pid: repPID,
                 now: now
             )
             keysSeen.append(key)
             switch tier {
-            case .suspect: suspect.append(finding)
+            case .suspect:
+                // Only suspect findings become incidents, so only they pay for
+                // the extra `ps` to capture command lines.
+                if candidate.isGUIApp {
+                    // A GUI app is one identity; keep a single finding (command
+                    // is just for display) and ignore/dedup by its bundle key.
+                    if let repPID { finding.command = commandLine(pid: repPID) }
+                    suspect.append(finding)
+                } else {
+                    // A CLI/interpreter binary can run many different things, so
+                    // emit one finding per distinct command line — that's what
+                    // "Always ignore" and dedup key on, so silencing one dev
+                    // server doesn't silence every use of the interpreter.
+                    let byCommand = commandsByPID(pids)
+                    if byCommand.isEmpty {
+                        suspect.append(finding)   // command not visible; fall back to the binary
+                    } else {
+                        for (cmd, cmdPIDs) in byCommand {
+                            var f = finding
+                            f.command = cmd
+                            f.ignoreKey = cmd
+                            f.pid = cmdPIDs.min()
+                            suspect.append(f)
+                        }
+                    }
+                }
             case .unrecognized: unrecognized.append(finding)
             case .recognized: break
             }

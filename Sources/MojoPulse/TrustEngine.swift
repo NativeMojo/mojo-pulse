@@ -96,7 +96,21 @@ struct TrustFinding: Sendable, Equatable, Hashable, Identifiable {
     /// nil = part of the install-time baseline ("before Mojo Pulse").
     let firstSeen: Date?
 
-    var id: String { key }
+    /// A representative running PID for this identity at scan time — lets the
+    /// UI deep-link straight to it and fetch its command line.
+    var pid: Int?
+    /// Full command line with arguments, captured for *suspect* findings only
+    /// (so the event can show what's actually running, not just which binary).
+    /// nil until enriched, or when unavailable.
+    var command: String?
+    /// The identity the user's "Always ignore" and incident dedup key on. For a
+    /// suspect CLI/interpreter process this is its exact command line — so
+    /// ignoring silences that one invocation, not every use of the binary — and
+    /// for everything else it's `key` (the bundle/executable identity). Set by
+    /// the scanner; the baseline/first-seen store keeps using `key` regardless.
+    var ignoreKey: String
+
+    var id: String { ignoreKey }
 
     /// Whether a strong (alone-is-enough) signal drove the escalation —
     /// decides incident severity and template.
@@ -174,6 +188,7 @@ enum TrustEvaluator {
         firstSeen: Date?,
         baselineSeeded: Bool,
         trusted: Bool,
+        pid: Int? = nil,
         now: Date = Date()
     ) -> (tier: TrustTier, finding: TrustFinding) {
         let info = ProcessTrust.evaluate(path: c.path)
@@ -270,7 +285,10 @@ enum TrustEvaluator {
             notarized: info.notarized,
             signals: signals,
             hasNetwork: c.connections > 0,
-            firstSeen: isBaseline ? nil : effectiveFirstSeen
+            firstSeen: isBaseline ? nil : effectiveFirstSeen,
+            pid: pid,
+            command: nil,
+            ignoreKey: key
         )
         return (tier, finding)
     }
