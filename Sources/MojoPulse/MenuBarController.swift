@@ -1173,7 +1173,13 @@ final class MenuBarController: NSObject {
     private func showEventWindow(_ record: IncidentRecord) {
         popover.performClose(nil)
 
-        let hosting = NSHostingController(rootView: DialogChrome { IncidentDetailView(record: record, engine: engine) })
+        // No DialogChrome: the detail view owns its footer bar (investigate
+        // menu, Quit, Ignore menu, Done) so the actions sit on one native row.
+        let hosting = NSHostingController(rootView: IncidentDetailView(
+            record: record,
+            engine: engine,
+            onClose: { [weak self] in self?.eventWindow?.performClose(nil) }
+        ))
         if let window = eventWindow {
             window.contentViewController = hosting
             window.setContentSize(hosting.view.fittingSize)

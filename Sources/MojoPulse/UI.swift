@@ -2919,6 +2919,19 @@ struct IncidentCard: View {
         .onTapGesture { onSelect?() }
         .onHover { isHovering = $0 }
         .help(onSelect == nil ? "" : "Show details")
+        // Right-click mirrors the ••• menu — the natural macOS gesture for
+        // "act on this row without opening it".
+        .contextMenu {
+            if let onSelect {
+                Button("Show Details") { onSelect() }
+                Divider()
+            }
+            Button("Not an Issue Right Now") { onFeedback(.dismissed) }
+            Button("Mute for 1 Hour") { onFeedback(.muted1h) }
+            Button("Always Ignore") { onFeedback(.mutedForever) }
+            Divider()
+            Button("It's Real — Thanks") { onFeedback(.confirmed) }
+        }
     }
 
     private var tint: Color {
@@ -2977,6 +2990,11 @@ struct IncidentDetailView: View {
     /// When present, unlocks the per-signature Ignore rule (the same one the
     /// live card sets) for events that already resolved. nil hides it.
     var engine: DetectorEngine?
+    /// How the hosting surface closes this view (window close / sheet
+    /// dismissal). The view owns its footer bar — including Done — so the
+    /// investigate verbs, Ignore menu, and Done live on one native row.
+    var onClose: (() -> Void)? = nil
+    @Environment(\.colorScheme) private var colorScheme
     @State private var now = Date()
     @State private var ignored = false
     @State private var quitPID: Int?
@@ -2990,16 +3008,19 @@ struct IncidentDetailView: View {
     private var tint: Color { SeverityColors.color(for: record.severity, fallbackQuiet: false) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            chipRow
-            sections
-            evidence
-            if let action = copy.action { handleCallout(action) }
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                chipRow
+                sections
+                evidence
+                if let action = copy.action { handleCallout(action) }
+                if let primary = primaryAction { primaryButton(primary) }
+            }
+            .padding(18)
             Divider()
-            toolsSection
+            footerBar
         }
-        .padding(18)
         .frame(width: 400)
         .task { await resolve() }
         .sheet(item: $detailProc) { ProcessDetailView(proc: $0) }
@@ -3037,13 +3058,27 @@ struct IncidentDetailView: View {
     }
 
     /// The real app icon when the event's subject resolves to a bundle (makes a
-    /// specific app instantly recognizable); otherwise a tinted category glyph.
+    /// specific app instantly recognizable); otherwise the Pulse mark, white on
+    /// a SOLID severity tile — notification-icon language, one confident brand
+    /// anchor instead of a washed-out glyph. SF glyph only as the last resort.
     @ViewBuilder
     private var headerIcon: some View {
         if let appIcon {
             Image(nsImage: appIcon)
                 .resizable()
                 .frame(width: 44, height: 44)
+        } else if let mark = PulseMark.image {
+            RoundedRectangle(cornerRadius: 11)
+                .fill(tint)
+                .frame(width: 44, height: 44)
+                .overlay(
+                    Image(nsImage: mark)
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 28, height: 28)
+                        .foregroundStyle(.white)
+                )
         } else {
             RoundedRectangle(cornerRadius: 11)
                 .fill(tint.opacity(0.15))
@@ -3085,25 +3120,42 @@ struct IncidentDetailView: View {
     private func sectionLabel(_ text: String) -> some View {
         Text(text)
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
+            // A step darker than .secondary — the 10pt uppercase labels were
+            // borderline on the hazy window material (color mockup feedback).
+            .foregroundStyle(Color.primary.opacity(0.65))
             .textCase(.uppercase)
             .tracking(0.5)
     }
 
-    /// The template's "what you can do" guidance, as a calm tinted callout — the
-    /// judgment ("if you built this yourself, ignore it; otherwise quit it")
-    /// that the action buttons below then let the user act on.
+    /// The template's "what you can do" guidance — a NEUTRAL panel with a thin
+    /// severity bar (option C from the color mockups). The eye still lands on
+    /// the advice, but the severity color stays a whisper: a red event no
+    /// longer floods the lower dialog, and dark mode avoids the muddy tint.
     private func handleCallout(_ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            sectionLabel("How to handle")
-            Text(text)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 0) {
+            Rectangle().fill(tint).frame(width: 3)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("How to handle")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(calloutLabelTint)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                Text(text)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(11)
-        .background(RoundedRectangle(cornerRadius: 9).fill(tint.opacity(0.09)))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(tint.opacity(0.20), lineWidth: 0.5))
+        .background(Color.primary.opacity(0.04))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.primary.opacity(0.07), lineWidth: 0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+
+    /// The severity color tuned for small-text contrast: darker on the light
+    /// neutral panel, the raw tint on dark (where it already reads well).
+    private var calloutLabelTint: Color {
+        colorScheme == .dark ? tint : SeverityColors.textEmphasis(for: record.severity)
     }
 
     /// The concrete evidence: where the subject runs from and its full command
@@ -3132,7 +3184,7 @@ struct IncidentDetailView: View {
                 EventCopyButton(value: value)
             }
             Text(value)
-                .font(.system(size: 11.5, design: .monospaced))
+                .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3166,46 +3218,100 @@ struct IncidentDetailView: View {
 
     /// A prominent primary action (derived from the template's action target —
     /// "Open in All Processes" for anything process-shaped, or the right System
-    /// Settings pane), then a row of investigate/handle tools scaled to what
-    /// this specific event supports.
-    private var toolsSection: some View {
-        VStack(spacing: 9) {
-            if let primary = primaryAction { primaryButton(primary) }
-            HStack(spacing: 8) {
-                toolButton("magnifyingglass", "Search web") { WebLookup.search(searchQuery) }
+    /// Settings pane). Occasional verbs live in the footer's menus instead of a
+    /// button grid — a native macOS dialog bar, not an iOS tab bar.
+    private var footerBar: some View {
+        HStack(spacing: 10) {
+            Menu {
+                Button("Search the Web") { WebLookup.search(searchQuery) }
                 if let path = subjectPath {
-                    toolButton("folder", "Reveal") {
+                    Button("Reveal in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
                     }
                 }
-                if quitPID != nil {
-                    toolButton("stop.circle", "Quit", role: .destructive) { showQuitConfirm = true }
-                }
-                if engine != nil {
-                    toolButton(ignored ? "bell.slash.fill" : "bell.slash",
-                               ignored ? "Ignored" : "Always ignore",
-                               active: ignored) {
-                        if ignored { engine?.unmute(signature: record.signature); ignored = false }
-                        else { engine?.muteForever(signature: record.signature); ignored = true }
+                if let cmd = subjectCommand {
+                    Button("Copy Command") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(cmd, forType: .string)
                     }
                 }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.system(size: 15))
             }
-            if let caption = ignoreScopeCaption {
-                Text(caption)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More actions")
+
+            if quitPID != nil {
+                Button(role: .destructive) { showQuitConfirm = true } label: {
+                    Text("Quit…")
+                }
+                .help("Quit \(subjectName)")
             }
+
+            Spacer()
+
+            if engine != nil { ignoreMenu }
+
+            // Plain (not the accent-filled default button) — the solid hero
+            // above owns the blue. Return still closes via an explicit binding.
+            Button("Done") { close() }
+                .keyboardShortcut(.return, modifiers: [])
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
     }
 
-    /// Spells out exactly what "Always ignore" will silence, so the scope is
-    /// never a guess. Shown for command-bearing process events — the case where
-    /// "am I ignoring this dev server or every python?" was unclear.
-    private var ignoreScopeCaption: String? {
-        guard engine != nil, isProcessEvent, subjectCommand != nil else { return nil }
-        return "“Always ignore” matches this exact command line above — a different command or port will alert again."
+    private func close() {
+        if let onClose { onClose() } else { NSApp.keyWindow?.performClose(nil) }
+    }
+
+    /// The full feedback vocabulary the live card's ••• menu offers — dismiss,
+    /// mute 1h, ignore forever, confirm — with the rule's exact scope as the
+    /// menu's section header, shown at the moment of choice instead of as a
+    /// footnote under a button grid.
+    private var ignoreMenu: some View {
+        Menu {
+            Section(ignoreScopeText) {
+                if ignored {
+                    Button("Stop Ignoring") {
+                        engine?.unmute(signature: record.signature)
+                        ignored = false
+                    }
+                } else {
+                    Button("Mute for 1 Hour") { applyFeedback(.muted1h) }
+                    Button("Always Ignore") { applyFeedback(.mutedForever) }
+                }
+            }
+            if !ignored, record.isActive {
+                Divider()
+                Button("Not an Issue Right Now") { applyFeedback(.dismissed) }
+                Button("It's Real — Thanks") { applyFeedback(.confirmed) }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: ignored ? "bell.slash.fill" : "bell.slash")
+                Text(ignored ? "Ignoring" : "Ignore")
+            }
+        }
+        .fixedSize()
+        .help(ignored ? "This event is being ignored" : "Silence events like this")
+    }
+
+    /// What an ignore rule from this event actually matches — a whole worker
+    /// tree for command-scoped process events, the event kind otherwise.
+    private var ignoreScopeText: String {
+        guard isProcessEvent, subjectCommand != nil else { return "Applies to this kind of event" }
+        if let n = record.context["procs"].flatMap(Int.init), n > 1 {
+            return "Applies to this exact command + \(n - 1) worker\(n == 2 ? "" : "s")"
+        }
+        return "Applies to this exact command line"
+    }
+
+    private func applyFeedback(_ fb: IncidentFeedback) {
+        engine?.applyFeedback(fb, signature: record.signature)
+        if fb == .muted1h || fb == .mutedForever { ignored = true }
     }
 
     private struct PrimaryAction { let icon: String; let label: String; let run: () -> Void }
@@ -3271,6 +3377,8 @@ struct IncidentDetailView: View {
         return "Open Settings"
     }
 
+    /// The hero action — SOLID accent fill, the one confident button in the
+    /// dialog (Done demotes to plain so nothing competes with it).
     private func primaryButton(_ p: PrimaryAction) -> some View {
         Button(action: p.run) {
             HStack(spacing: 7) {
@@ -3279,34 +3387,11 @@ struct IncidentDetailView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.16)))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor.opacity(0.4), lineWidth: 0.5))
-            .foregroundStyle(Color.accentColor)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor))
+            .foregroundStyle(.white)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    private func toolButton(_ icon: String, _ label: String, active: Bool = false,
-                            role: ButtonRole? = nil, _ action: @escaping () -> Void) -> some View {
-        let fg: Color = active ? tint : (role == .destructive ? SeverityColors.issue : .primary)
-        return Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 15))
-                Text(label)
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 9)
-            .background(RoundedRectangle(cornerRadius: 9).fill(active ? tint.opacity(0.14) : Color.primary.opacity(0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(active ? tint.opacity(0.4) : Color.primary.opacity(0.08), lineWidth: 0.5))
-            .foregroundStyle(fg)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(label.hasPrefix("Always ignore") || label == "Ignored" ? "Permanently stop showing events like this" : label)
     }
 
     // MARK: Derived subject
@@ -3349,6 +3434,7 @@ struct IncidentDetailView: View {
         var out: [String] = []
         if let p = c["process"] { out.append(p) }
         if let n = c["name"], n != c["process"] { out.append(n) }
+        if let n = c["procs"] { out.append("\(n) processes") }
         if let port = c["port"] { out.append("port \(port)") }
         if let ip = c["ip"] { out.append(ip) }
         if let place = c["place"] { out.append(place) }
@@ -3599,17 +3685,8 @@ struct HistoryPanelView: View {
         .onReceive(timer) { now = $0 }
         .onAppear { history.refresh() }
         .sheet(item: $detailRecord) { record in
-            VStack(spacing: 0) {
-                IncidentDetailView(record: record, engine: engine)
-                Divider()
-                HStack {
-                    Spacer()
-                    Button("Done") { detailRecord = nil }
-                        .keyboardShortcut(.defaultAction)
-                }
-                .padding(12)
-            }
-            .frame(width: 380)
+            // The detail view owns its footer (incl. Done), so no extra chrome.
+            IncidentDetailView(record: record, engine: engine, onClose: { detailRecord = nil })
         }
     }
 
@@ -4354,6 +4431,19 @@ struct CopyableInfoRow: View {
     }
 }
 
+// MARK: - Pulse mark
+
+/// The app-icon mark extracted as a template (white shield, pulse line knocked
+/// out to transparency — built from Resources/AppIcon-source.png by the
+/// extract-mark script). Rendered white on a solid severity tile in the event
+/// header, so Pulse's own alerts carry the brand the way notification icons
+/// do. nil if the resource is missing; callers fall back to an SF glyph.
+@MainActor
+enum PulseMark {
+    static let image: NSImage? = Bundle.main.url(forResource: "PulseMark", withExtension: "png")
+        .flatMap { NSImage(contentsOf: $0) }
+}
+
 // MARK: - Severity colors
 
 /// Single source of truth for the severity tints used in the dot, the
@@ -4372,6 +4462,17 @@ enum SeverityColors {
         case .info:  return fallbackQuiet ? quiet : info
         case .watch: return watch
         case .issue: return issue
+        }
+    }
+
+    /// Darker severity variants for small text on light neutral panels — the
+    /// raw tints (esp. amber) fall below comfortable contrast at caption sizes.
+    /// Dark mode keeps the raw tint, which already reads well there.
+    static func textEmphasis(for severity: IncidentSeverity) -> Color {
+        switch severity {
+        case .info:  return Color(red: 0.14, green: 0.38, blue: 0.68)
+        case .watch: return Color(red: 0.60, green: 0.40, blue: 0.04)
+        case .issue: return Color(red: 0.62, green: 0.17, blue: 0.14)
         }
     }
 }

@@ -188,7 +188,7 @@ enum IncidentTemplates {
                 title: "Suspect process running",
                 what: "\(name) combines traits that don't usually go together in legitimate software: \(reasons).",
                 why: "No single trait makes a program malicious — but this combination is how unwanted software commonly behaves, so Pulse only raises it when several line up.",
-                action: "Check where it's running from and its command below, and open its full details for the signer and connections. If you built or installed it yourself, choose “Always ignore”; otherwise quit it.",
+                action: "Check its location and command, and open its full details for the signer and connections. If you built or installed it yourself, choose “Always ignore”; otherwise quit it.",
                 actionURL: processViewerURL
             )
 
@@ -235,7 +235,7 @@ enum IncidentTemplates {
                 title: "Unexpected network listener",
                 what: "\(process) is listening on port \(port) — a network-facing port other devices could reach if your firewall allows it.",
                 why: "This is often a local dev server, but an unrecognized listener can also be remote-access software you didn't intend to expose. If your firewall is on, inbound connections are blocked unless you've allowed this app.",
-                action: "If it's your own dev server, choose “Always ignore”. Otherwise check where it's running from below, open its details for the signer, and quit it if you don't recognize it.",
+                action: "If it's your own dev server, choose “Always ignore”. Otherwise check its location, open its details for the signer, and quit it if you don't recognize it.",
                 actionURL: processViewerURL
             )
 
@@ -530,7 +530,7 @@ enum IncidentTemplates {
         case "security.unexpectedListener":
             return join(v("process"), v("port").map { "port \($0)" })
         case "security.suspectProcess", "security.unsignedApp":
-            return v("name")
+            return join(v("name"), v("procs").map { "\($0) processes" })
         case "security.impersonation":
             let brand = v("brand")
             return join(v("name"), brand != v("name") ? brand.map { "looks like \($0)" } : nil)

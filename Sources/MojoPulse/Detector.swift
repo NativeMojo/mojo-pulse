@@ -258,10 +258,19 @@ final class DetectorEngine: ObservableObject {
     /// un-ignorable). If the same condition is active right now, its card
     /// closes immediately, exactly like ignoring it there.
     func muteForever(signature: String, now: Date = Date()) {
+        applyFeedback(.mutedForever, signature: signature, now: now)
+    }
+
+    /// Record any feedback by signature — the full card vocabulary (dismiss,
+    /// mute 1h, mute forever, confirmed) from surfaces that hold a record
+    /// rather than a live incident (the event detail window, history). Routes
+    /// through the live incident when one is active so mutes/dismissals close
+    /// its card immediately.
+    func applyFeedback(_ fb: IncidentFeedback, signature: String, now: Date = Date()) {
         if let active = activeIncidents.first(where: { $0.signature == signature }) {
-            recordFeedback(.mutedForever, for: active, now: now)
+            recordFeedback(fb, for: active, now: now)
         } else {
-            feedback.record(.mutedForever, signature: signature, now: now)
+            feedback.record(fb, signature: signature, now: now)
         }
     }
 

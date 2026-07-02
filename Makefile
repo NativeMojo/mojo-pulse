@@ -69,6 +69,7 @@ app: build
 	@cp $(BUILD_DIR)/$(APP_NAME) $(APP_BUNDLE)/Contents/MacOS/
 	@cp Info.plist $(APP_BUNDLE)/Contents/
 	@cp Resources/AppIcon.icns $(APP_BUNDLE)/Contents/Resources/
+	@cp Resources/PulseMark.png $(APP_BUNDLE)/Contents/Resources/
 	@cp Resources/WorldOutline.json $(APP_BUNDLE)/Contents/Resources/
 	@cp Resources/oui.csv $(APP_BUNDLE)/Contents/Resources/
 	@# Auto-increment the build counter (gitignored file) and stamp the bundle's
