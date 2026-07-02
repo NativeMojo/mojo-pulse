@@ -301,18 +301,41 @@ final class SuspectConnectionDetector: MultiDetector {
 final class UnexpectedListenerDetector: MultiDetector {
     let id = "security.unexpectedListener"
 
+    /// Executable basenames that are developer runtimes — where an
+    /// all-interfaces bind is almost always an accidental `0.0.0.0` and the
+    /// right advice is "bind 127.0.0.1", not "is this malware?".
+    private static let devRuntimes = ["python", "node", "ruby", "php", "deno", "bun",
+                                      "java", "dotnet", "perl", "beam.smp"]
+
     func evaluateAll(signals: Signals) -> [Incident] {
         guard signals.security.scanned else { return [] }
+
+        // Same escalation condition as ExposedServiceDetector: any listener is
+        // a much bigger deal on insecure Wi-Fi with no VPN, where anyone
+        // nearby can reach it.
+        let onRiskyNetwork = signals.wifi.hasWiFiLink
+            && signals.wifi.security.isInsecure
+            && !signals.wifi.vpnActive
+
         return signals.security.unexpectedListeners.map { listener in
             var context = ["process": listener.process, "port": String(listener.port)]
             if let path = listener.path { context["path"] = path }
             if let pid = listener.pid { context["pid"] = String(pid) }
             if let cmd = listener.command { context["cmd"] = cmd }
+            context["iface"] = listener.bindsAllInterfaces ? "all interfaces" : "a LAN address"
+            // The concrete fix, when the command visibly carries the 0.0.0.0.
+            if listener.command?.contains("0.0.0.0") == true { context["fix"] = "1" }
+
+            let name = listener.process.lowercased()
+            let isDevRuntime = Self.devRuntimes.contains { name.hasPrefix($0) }
+
             return Incident(
                 category: .security,
-                severity: .watch,
+                severity: onRiskyNetwork ? .issue : .watch,
                 detectorID: id,
-                templateKey: "security.unexpectedListener",
+                // Same signature either way, so an existing "Always ignore"
+                // survives the template/severity flip.
+                templateKey: isDevRuntime ? "security.devServerExposed" : "security.unexpectedListener",
                 context: context,
                 signature: "security:listener:\(listener.process):\(listener.port)",
                 startedAt: signals.timestamp

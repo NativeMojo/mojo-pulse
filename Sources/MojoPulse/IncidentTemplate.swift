@@ -231,11 +231,29 @@ enum IncidentTemplates {
         case "security.unexpectedListener":
             let process = ctx["process"] ?? "A process"
             let port = ctx["port"] ?? "?"
+            let iface = ctx["iface"] ?? "a network-facing address"
+            let fixTail = ctx["fix"] != nil
+                ? " If it's yours and only needs to be local, replace 0.0.0.0 with 127.0.0.1 in its command."
+                : ""
             return IncidentCopy(
                 title: "Unexpected network listener",
-                what: "\(process) is listening on port \(port) — a network-facing port other devices could reach if your firewall allows it.",
+                what: "\(process) is accepting connections on port \(port) on \(iface) — other devices on your network can reach it, not just this Mac.",
                 why: "This is often a local dev server, but an unrecognized listener can also be remote-access software you didn't intend to expose. If your firewall is on, inbound connections are blocked unless you've allowed this app.",
-                action: "If it's your own dev server, choose “Always ignore”. Otherwise check its location, open its details for the signer, and quit it if you don't recognize it.",
+                action: "If it's your own server, choose “Always ignore”.\(fixTail) Otherwise check its location, open its details for the signer, and quit it if you don't recognize it.",
+                actionURL: processViewerURL
+            )
+
+        case "security.devServerExposed":
+            let process = ctx["process"] ?? "A dev runtime"
+            let port = ctx["port"] ?? "?"
+            let fix = ctx["fix"] != nil
+                ? "Replace 0.0.0.0 with 127.0.0.1 in the command (e.g. --host 127.0.0.1) and restart it."
+                : "Restart it bound to localhost — most servers take --host 127.0.0.1 or a bind address."
+            return IncidentCopy(
+                title: "Dev server open to your network",
+                what: "\(process) is serving port \(port) on every network interface — anyone on your network can reach it, not just this Mac.",
+                why: "Dev servers started with 0.0.0.0 (or that default to it) expose debug endpoints, hot-reload sockets, and usually-unauthenticated APIs to the whole network. On shared or public Wi-Fi that's anyone nearby.",
+                action: "If you only need it locally: \(fix) If you're sharing it with other devices on purpose, choose “Always ignore”.",
                 actionURL: processViewerURL
             )
 
@@ -529,6 +547,8 @@ enum IncidentTemplates {
         // Security — process, connection, listener
         case "security.unexpectedListener":
             return join(v("process"), v("port").map { "port \($0)" })
+        case "security.devServerExposed":
+            return join(v("process"), v("port").map { "port \($0)" }, "open to your network")
         case "security.suspectProcess", "security.unsignedApp":
             return join(v("name"), v("procs").map { "\($0) processes" })
         case "security.impersonation":

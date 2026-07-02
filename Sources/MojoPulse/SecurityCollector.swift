@@ -32,6 +32,10 @@ struct ListenerItem: Sendable, Equatable, Hashable {
     var path: String? = nil
     var pid: Int? = nil
     var command: String? = nil
+    /// True when bound to every interface (lsof shows "*:port") rather than a
+    /// single LAN address — the classic 0.0.0.0 dev-server bind. Loopback-only
+    /// listeners never reach this list at all.
+    var bindsAllInterfaces: Bool = true
 }
 
 /// Lightweight, Sendable reference to a running app, captured on the main
@@ -538,7 +542,8 @@ enum SecurityScanner {
                 port: port,
                 path: path.isEmpty ? nil : path,
                 pid: pid,
-                command: commandLine(pid: pid)
+                command: commandLine(pid: pid),
+                bindsAllInterfaces: name.hasPrefix("*")
             )
         }
         return (Array(exposed.values), Array(unexpected.values))
