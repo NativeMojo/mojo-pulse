@@ -84,13 +84,17 @@ struct NearbyBluetoothView: View {
     private var content: some View {
         if mode == .sonar {
             VStack(spacing: 8) {
-                Spacer(minLength: 6)
+                // The face takes all the space the window gives it (square,
+                // centered) — resize the window, the sonar grows with it.
                 SonarFace(manager: manager, face: faceColor, ring: ringColor) { selectedID = $0 }
-                    .frame(width: 380, height: 380)
+                    .aspectRatio(1, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 10)
                 legend
                 Text("Ring = signal-based range band · bearing is illustrative (Bluetooth can't sense direction)")
                     .font(.caption2).foregroundStyle(.tertiary)
-                Spacer(minLength: 6)
+                    .padding(.bottom, 8)
             }
             .frame(maxWidth: .infinity)
         } else {
@@ -231,6 +235,11 @@ private struct SonarFace: View {
         GeometryReader { geo in
             let size = min(geo.size.width, geo.size.height)
             let c = size / 2
+            // Everything on the face scales with it — labels, blips, center —
+            // so a maximized window reads as a bigger instrument, not a
+            // stretched small one. 380pt is the design-reference size.
+            let scale = max(size / 380, 0.7)
+            let labelSize = min(max(9, 9 * scale), 14)
             ZStack {
                 Circle().fill(face)
                 Circle().stroke(ring.opacity(0.30), lineWidth: 0.5)
@@ -241,9 +250,9 @@ private struct SonarFace: View {
                         .stroke(ring.opacity(0.20), lineWidth: 0.5)
                         .frame(width: size * f, height: size * f)
                     Text(BluetoothRange.allCases[i].label)
-                        .font(.system(size: 9))
+                        .font(.system(size: labelSize))
                         .foregroundStyle(ring.opacity(0.55))
-                        .position(x: c, y: c - size * f / 2 + 9)
+                        .position(x: c, y: c - size * f / 2 + labelSize)
                 }
 
                 // The sweep — only while actively scanning.
@@ -266,31 +275,31 @@ private struct SonarFace: View {
                 }
 
                 // You, at the center.
-                RoundedRectangle(cornerRadius: 7)
+                RoundedRectangle(cornerRadius: 7 * scale)
                     .fill(Color.accentColor)
-                    .frame(width: 24, height: 24)
-                    .overlay(centerGlyph)
+                    .frame(width: 24 * scale, height: 24 * scale)
+                    .overlay(centerGlyph(scale))
                     .position(x: c, y: c)
 
                 if manager.devices.isEmpty && !manager.scanning {
                     Text("Press Scan")
-                        .font(.caption).foregroundStyle(ring.opacity(0.6))
-                        .position(x: c, y: c + 30)
+                        .font(.system(size: 12 * scale)).foregroundStyle(ring.opacity(0.6))
+                        .position(x: c, y: c + 30 * scale)
                 }
 
                 // Blips.
                 ForEach(manager.sorted) { d in
                     let p = position(for: d, size: size)
-                    Blip(device: d)
+                    Blip(device: d, scale: scale)
                         .position(p)
                         .onTapGesture { onSelect(d.id) }
                     if d.name != nil || d.isFindMy {
                         Text(d.displayName)
-                            .font(.system(size: 9))
+                            .font(.system(size: labelSize))
                             .foregroundStyle(d.isFindMy ? SeverityColors.watch : Color(white: 0.75))
                             .lineLimit(1)
-                            .frame(maxWidth: 90)
-                            .position(x: min(max(p.x, 48), size - 48), y: p.y + 13)
+                            .frame(maxWidth: 110 * scale)
+                            .position(x: min(max(p.x, 55 * scale), size - 55 * scale), y: p.y + 14 * scale)
                             .allowsHitTesting(false)
                     }
                 }
@@ -300,13 +309,13 @@ private struct SonarFace: View {
     }
 
     @ViewBuilder
-    private var centerGlyph: some View {
+    private func centerGlyph(_ scale: CGFloat) -> some View {
         if let mark = PulseMark.image {
             Image(nsImage: mark).renderingMode(.template)
                 .resizable().scaledToFit()
-                .frame(width: 14, height: 14).foregroundStyle(.white)
+                .frame(width: 14 * scale, height: 14 * scale).foregroundStyle(.white)
         } else {
-            Image(systemName: "shield.fill").font(.system(size: 11)).foregroundStyle(.white)
+            Image(systemName: "shield.fill").font(.system(size: 11 * scale)).foregroundStyle(.white)
         }
     }
 
@@ -336,11 +345,13 @@ private struct SonarFace: View {
 /// One device dot; Find My trackers pulse continuously.
 private struct Blip: View {
     let device: NearbyBluetoothDevice
+    var scale: CGFloat = 1
+
     @State private var pulse = false
 
     var body: some View {
         let color = kindColor(device)
-        let d: CGFloat = device.isFindMy ? 11 : (device.kind == .apple ? 7 : 9)
+        let d: CGFloat = (device.isFindMy ? 11 : (device.kind == .apple ? 7 : 9)) * scale
         Circle()
             .fill(color)
             .frame(width: d, height: d)

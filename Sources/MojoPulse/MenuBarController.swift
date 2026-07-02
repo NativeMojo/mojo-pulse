@@ -1124,7 +1124,7 @@ final class MenuBarController: NSObject {
         let window = NSWindow(contentViewController: hosting)
         window.title = "Nearby Bluetooth"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 580, height: 660))
+        window.setContentSize(NSSize(width: 680, height: 760))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
