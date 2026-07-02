@@ -108,10 +108,29 @@ enum AppIconCache {
     static func icon(for path: String) -> NSImage {
         let key = bundlePath(path)
         if let hit = cache[key] { return hit }
-        let img = NSWorkspace.shared.icon(forFile: key.isEmpty ? "/" : key)
+        let resolved = fetch(key: key)
+        // Copy before sizing — NSWorkspace can hand back shared instances,
+        // and mutating those corrupts every other consumer of the same icon.
+        let img = (resolved.copy() as? NSImage) ?? resolved
         img.size = NSSize(width: 18, height: 18)
         cache[key] = img
         return img
+    }
+
+    /// For a RUNNING app, the live NSRunningApplication record's icon is the
+    /// authoritative source (it's what Activity Monitor-style tools use).
+    /// `icon(forFile:)` intermittently returns the generic-executable
+    /// placeholder when ~1,100 rows query it in one burst — and once that
+    /// placeholder landed in the cache, Chrome stayed iconless all session.
+    /// Every .app row in a process list is running by definition, so the
+    /// record is nearly always there; the file query is the fallback.
+    private static func fetch(key: String) -> NSImage {
+        if key.hasSuffix(".app"),
+           let live = NSWorkspace.shared.runningApplications
+               .first(where: { $0.bundleURL?.path == key })?.icon {
+            return live
+        }
+        return NSWorkspace.shared.icon(forFile: key.isEmpty ? "/" : key)
     }
 
     /// The enclosing .app bundle when the executable lives in one (so all of
