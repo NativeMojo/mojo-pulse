@@ -1688,6 +1688,9 @@ struct ProcessesView: View {
         let display: String
         let color: Color
         var proc: ProcInfo? = nil
+        /// Processes folded into this slice (an app plus its helpers). 1 for
+        /// standalone processes; 0 for aggregate slices (Other/Free).
+        var memberCount: Int = 0
     }
 
     private static let palette: [Color] = [.blue, .green, .orange, .purple, .pink]
@@ -1744,6 +1747,9 @@ struct ProcessesView: View {
                 .contentShape(Rectangle())
                 .pointerStyle(.link)
                 .onTapGesture { selected = proc }
+                .help(s.memberCount > 1
+                      ? "\(s.name) and \(s.memberCount - 1) helper processes, combined — click to inspect the main process"
+                      : "Click to inspect")
         } else {
             row
         }
@@ -1804,12 +1810,18 @@ struct ProcessesView: View {
         return (String(format: "%.0f GB", Double(total) / 1_073_741_824), "total")
     }
 
+    // Slices come from the FOLDED groups (Chrome + its 100 helpers = one
+    // "Google Chrome" slice — the same rollup the All Processes explorer
+    // shows), so the chart matches how the user thinks about apps. Clicking a
+    // slice inspects the tree's root process; the group total rides in `help`.
+
     private var cpuSlices: [Slice] {
-        let top = processes.current.topByCPU
+        let top = processes.current.topGroupsByCPU
         guard !top.isEmpty else { return [] }
-        var slices = top.enumerated().map { i, p in
-            Slice(id: "cpu-\(p.pid)", name: p.name, value: max(p.cpuPercent, 0.1),
-                  display: p.cpuDisplay, color: Self.palette[i % Self.palette.count], proc: p)
+        var slices = top.enumerated().map { i, g in
+            Slice(id: "cpu-\(g.root.pid)", name: g.name, value: max(g.cpuPercent, 0.1),
+                  display: g.cpuDisplay, color: Self.palette[i % Self.palette.count],
+                  proc: g.root, memberCount: g.count)
         }
         let other = processes.current.totalCPUPercent - top.reduce(0) { $0 + $1.cpuPercent }
         if other > 1 {
@@ -1820,11 +1832,12 @@ struct ProcessesView: View {
     }
 
     private var memorySlices: [Slice] {
-        let top = processes.current.topByMemory
+        let top = processes.current.topGroupsByMemory
         guard !top.isEmpty else { return [] }
-        var slices = top.enumerated().map { i, p in
-            Slice(id: "mem-\(p.pid)", name: p.name, value: Double(p.memoryBytes),
-                  display: p.memoryDisplay, color: Self.palette[i % Self.palette.count], proc: p)
+        var slices = top.enumerated().map { i, g in
+            Slice(id: "mem-\(g.root.pid)", name: g.name, value: Double(g.memoryBytes),
+                  display: g.memoryDisplay, color: Self.palette[i % Self.palette.count],
+                  proc: g.root, memberCount: g.count)
         }
         let used = system.current.memoryUsedBytes
         let total = system.current.memoryTotalBytes

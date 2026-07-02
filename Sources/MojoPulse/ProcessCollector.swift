@@ -39,16 +39,47 @@ struct ProcInfo: Sendable, Equatable, Identifiable {
     }
 }
 
+/// One process TREE folded to its root — Chrome plus its 100 helpers as a
+/// single "Google Chrome" entry, the same fold the All Processes explorer
+/// does. `root` is the tree's top process (under launchd), which is what a
+/// click inspects; the totals sum the whole subtree.
+struct ProcGroup: Sendable, Equatable, Identifiable {
+    let root: ProcInfo
+    let cpuPercent: Double
+    let memoryBytes: UInt64
+    let count: Int
+
+    var id: Int { root.pid }
+    var name: String { root.name }
+
+    var cpuDisplay: String { String(format: "%.0f%%", cpuPercent) }
+    var memoryDisplay: String {
+        let gb = Double(memoryBytes) / 1_073_741_824
+        if gb >= 1 { return String(format: "%.1f GB", gb) }
+        return String(format: "%.0f MB", Double(memoryBytes) / 1_048_576)
+    }
+}
+
 /// Top processes by CPU and by memory. `sampled` is false until the first real
 /// sample (or whenever the collector is idle-gated and has cleared itself).
+///
+/// Two shapes on purpose: the flat per-process lists feed the detectors
+/// (a runaway is a single process, and attribution should name the actual
+/// culprit), while the folded groups feed the Top Processes UI (the user
+/// thinks in apps, not helper processes).
 struct ProcessSnapshot: Sendable, Equatable {
     var topByCPU: [ProcInfo]
     var topByMemory: [ProcInfo]
+    var topGroupsByCPU: [ProcGroup]
+    var topGroupsByMemory: [ProcGroup]
     /// Sum of every process's %CPU — used for the chart's "Other" slice.
     var totalCPUPercent: Double
     var sampled: Bool
 
-    static let empty = ProcessSnapshot(topByCPU: [], topByMemory: [], totalCPUPercent: 0, sampled: false)
+    static let empty = ProcessSnapshot(
+        topByCPU: [], topByMemory: [],
+        topGroupsByCPU: [], topGroupsByMemory: [],
+        totalCPUPercent: 0, sampled: false)
 }
 
 // MARK: - ProcessCollector
@@ -122,27 +153,36 @@ final class ProcessCollector: ObservableObject {
 
 enum ProcessSampler {
     static func sample(top: Int) -> ProcessSnapshot {
-        // pid/pcpu/rss/comm with empty headers (the `=` suffix suppresses them).
-        // comm is the executable path (may contain spaces) and comes last.
-        guard let out = Shell.run("/bin/ps", ["-axo", "pid=,pcpu=,rss=,comm="]) else {
-            return ProcessSnapshot(topByCPU: [], topByMemory: [], totalCPUPercent: 0, sampled: true)
+        // pid/ppid/pcpu/rss/comm with empty headers (the `=` suffix suppresses
+        // them). comm may contain spaces and comes last; the real executable
+        // path comes from proc_pidpath (ps mangles unusual Unicode), with comm
+        // as the fallback for processes the kernel won't let us query.
+        guard let out = Shell.run("/bin/ps", ["-axo", "pid=,ppid=,pcpu=,rss=,comm="]) else {
+            return ProcessSnapshot(
+                topByCPU: [], topByMemory: [],
+                topGroupsByCPU: [], topGroupsByMemory: [],
+                totalCPUPercent: 0, sampled: true)
         }
 
         var procs: [ProcInfo] = []
+        var ppidByPID: [Int: Int] = [:]
         var totalCPU = 0.0
         for line in out.split(separator: "\n") {
             let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard parts.count >= 4,
+            guard parts.count >= 5,
                   let pid = Int(parts[0]),
-                  let cpu = Double(parts[1]),
-                  let rssKB = UInt64(parts[2]) else { continue }
-            let comm = parts[3...].joined(separator: " ")
-            let name = (comm as NSString).lastPathComponent
+                  let ppid = Int(parts[1]),
+                  let cpu = Double(parts[2]),
+                  let rssKB = UInt64(parts[3]) else { continue }
+            let comm = parts[4...].joined(separator: " ")
+            let path = ProcessPath.resolve(pid: pid, fallback: comm)
+            let name = (path as NSString).lastPathComponent
+            ppidByPID[pid] = ppid
             totalCPU += cpu
             procs.append(ProcInfo(
                 pid: pid,
-                name: name.isEmpty ? comm : name,
-                path: comm,
+                name: name.isEmpty ? path : name,
+                path: path,
                 cpuPercent: cpu,
                 memoryBytes: rssKB * 1024
             ))
@@ -150,6 +190,59 @@ enum ProcessSampler {
 
         let byCPU = Array(procs.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(top))
         let byMem = Array(procs.sorted { $0.memoryBytes > $1.memoryBytes }.prefix(top))
-        return ProcessSnapshot(topByCPU: byCPU, topByMemory: byMem, totalCPUPercent: totalCPU, sampled: true)
+        let groups = fold(procs, ppidByPID: ppidByPID)
+        let gByCPU = Array(groups.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(top))
+        let gByMem = Array(groups.sorted { $0.memoryBytes > $1.memoryBytes }.prefix(top))
+        return ProcessSnapshot(
+            topByCPU: byCPU, topByMemory: byMem,
+            topGroupsByCPU: gByCPU, topGroupsByMemory: gByMem,
+            totalCPUPercent: totalCPU, sampled: true)
+    }
+
+    /// Fold every process into its tree root (the ancestor directly under
+    /// launchd) and sum the subtree — the same rollup the All Processes
+    /// explorer shows for a collapsed parent, so both tools tell one story.
+    private static func fold(_ procs: [ProcInfo], ppidByPID: [Int: Int]) -> [ProcGroup] {
+        let known = Set(procs.map(\.pid))
+        var rootOf: [Int: Int] = [:]
+
+        func root(of pid: Int) -> Int {
+            if let cached = rootOf[pid] { return cached }
+            var chain: [Int] = []
+            var cur = pid
+            var hops = 0   // cap guards pid-reuse cycles in a torn snapshot
+            while hops < 64,
+                  let pp = ppidByPID[cur], pp > 1, known.contains(pp),
+                  rootOf[cur] == nil {
+                chain.append(cur)
+                cur = pp
+                hops += 1
+            }
+            let r = rootOf[cur] ?? cur
+            for member in chain { rootOf[member] = r }
+            rootOf[pid] = r
+            return r
+        }
+
+        var cpuSum: [Int: Double] = [:]
+        var memSum: [Int: UInt64] = [:]
+        var countByRoot: [Int: Int] = [:]
+        for p in procs {
+            let r = root(of: p.pid)
+            cpuSum[r, default: 0] += p.cpuPercent
+            memSum[r, default: 0] += p.memoryBytes
+            countByRoot[r, default: 0] += 1
+        }
+
+        var groups: [ProcGroup] = []
+        for p in procs where rootOf[p.pid] == p.pid {
+            groups.append(ProcGroup(
+                root: p,
+                cpuPercent: cpuSum[p.pid] ?? p.cpuPercent,
+                memoryBytes: memSum[p.pid] ?? p.memoryBytes,
+                count: countByRoot[p.pid] ?? 1
+            ))
+        }
+        return groups
     }
 }
