@@ -142,6 +142,7 @@ struct Signals: Sendable {
     let processes: ProcessSnapshot
     let events: SystemEventsSnapshot
     let lan: LANSnapshot
+    let connections: ConnectionAlertSnapshot
 }
 
 /// Our own enum mirroring ProcessInfo.ThermalState so detectors don't

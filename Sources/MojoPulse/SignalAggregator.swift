@@ -32,6 +32,7 @@ final class SignalAggregator {
     private let processes: ProcessCollector
     private let events: SystemEventsCollector
     private let arp: ARPCollector
+    private let connectionWatch: ConnectionWatcher
     private let history: MetricHistoryStore
 
     private var task: Task<Void, Never>?
@@ -47,6 +48,7 @@ final class SignalAggregator {
         processes: ProcessCollector,
         events: SystemEventsCollector,
         arp: ARPCollector,
+        connectionWatch: ConnectionWatcher,
         history: MetricHistoryStore,
         slowInterval: TimeInterval = 5.0,
         fastInterval: TimeInterval = 2.0
@@ -60,6 +62,7 @@ final class SignalAggregator {
         self.processes = processes
         self.events = events
         self.arp = arp
+        self.connectionWatch = connectionWatch
         self.history = history
         self.slowInterval = slowInterval
         self.fastInterval = fastInterval
@@ -80,6 +83,9 @@ final class SignalAggregator {
         // ARP watcher scans on its own slow loop; a freshly-seen device (or a
         // gateway-MAC change) yanks the tick forward so its card fires promptly.
         arp.onChange = { [weak self] in self?.forceTick() }
+        // Connection watcher likewise — a flagged destination shouldn't wait
+        // out the tick interval.
+        connectionWatch.onChange = { [weak self] in self?.forceTick() }
 
         // Run one tick immediately so the UI has a starting state instead of
         // an empty snapshot during the first interval.
@@ -171,7 +177,8 @@ final class SignalAggregator {
             security: security.current,
             processes: processes.current,
             events: events.current,
-            lan: arp.current
+            lan: arp.current,
+            connections: connectionWatch.current
         )
         engine.tick(signals: signals)
     }

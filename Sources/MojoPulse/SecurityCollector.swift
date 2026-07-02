@@ -591,7 +591,9 @@ enum SecurityScanner {
 
     /// Paths SIP prevents anyone from modifying — Apple's by construction.
     /// /usr/local is the deliberate carve-out (user-writable, Homebrew).
-    private static func isSIPProtected(_ path: String) -> Bool {
+    /// Internal (not private): ConnectionWatcher applies the same Apple-code
+    /// exclusion to connection sampling.
+    static func isSIPProtected(_ path: String) -> Bool {
         if path.hasPrefix("/usr/local/") { return false }
         return path.hasPrefix("/System/") || path.hasPrefix("/usr/")
             || path.hasPrefix("/bin/") || path.hasPrefix("/sbin/")

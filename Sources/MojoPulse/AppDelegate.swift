@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var processCollector: ProcessCollector?
     private var systemEventsCollector: SystemEventsCollector?
     private var arpCollector: ARPCollector?
+    private var connectionWatcher: ConnectionWatcher?
     private var detectorEngine: DetectorEngine?
     private var signalAggregator: SignalAggregator?
     private var networkInfo: NetworkInfo?
@@ -136,6 +137,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // same DB (in-memory fallback when the DB is unavailable).
         let lanBaseline = LANBaselineStore(database: db)
         let arp = ARPCollector(settings: settings, wifi: wifi, baseline: lanBaseline)
+        // Connection alerts: watches where apps connect (flagged destinations,
+        // new countries). Off by default — the toggle explains that enabling
+        // it sends destination IPs to mojoverify for reputation checks.
+        let connectionWatch = ConnectionWatcher(settings: settings)
+        self.connectionWatcher = connectionWatch
         self.thermalCollector = thermal
         self.reachabilityMonitor = reach
         self.systemCollector = system
@@ -174,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             PersistenceChangeDetector(),
             ExposedServiceDetector(),
             SuspectProcessDetector(),
+            SuspectConnectionDetector(),
             UnexpectedListenerDetector(),
             XProtectDetectionDetector(),
             RunawayProcessDetector(settings: settings),
@@ -215,6 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             processes: processes,
             events: events,
             arp: arp,
+            connectionWatch: connectionWatch,
             history: metricHistory
         )
         self.detectorEngine = engine
@@ -296,6 +304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // aggregator.start) is set before the first scan completes — same
         // ordering rationale as security/events above.
         arp.start()
+        // Connection watcher last, same rationale. Idles unless enabled.
+        connectionWatch.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -306,5 +316,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         securityCollector?.stop()
         systemEventsCollector?.stop()
         arpCollector?.stop()
+        connectionWatcher?.stop()
     }
 }

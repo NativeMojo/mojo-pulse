@@ -36,6 +36,7 @@ final class Settings: ObservableObject {
         static let runawayAlerts = "process.runawayAlertsEnabled"
         static let menuBarIcon = "ui.menuBarIconStyle"
         static let geoLookup = "network.geoLookupEnabled"
+        static let connectionAlerts = "network.connectionAlertsEnabled"
         static let lanWatch = "network.lanWatchEnabled"
         static let lanIdentify = "network.lanIdentifyEnabled"
         static let lanNewDeviceAlerts = "network.lanNewDeviceAlertsEnabled"
@@ -82,6 +83,15 @@ final class Settings: ObservableObject {
     /// When off, the connection list still works fully — just without geo.
     @Published var geoLookupEnabled: Bool {
         didSet { defaults.set(geoLookupEnabled, forKey: Key.geoLookup) }
+    }
+
+    /// Whether the connection watcher may check where apps are connecting
+    /// (flagged destinations + new-country notes). OFF by default: like the
+    /// map's geo lookups it sends destination IPs (public ones only, never
+    /// payloads) to mojoverify, cached locally. When off, the watcher idles
+    /// and both connection detectors go quiet.
+    @Published var connectionAlertsEnabled: Bool {
+        didSet { defaults.set(connectionAlertsEnabled, forKey: Key.connectionAlerts) }
     }
 
     /// Master switch for the passive LAN watcher (ARP-based device inventory +
@@ -159,6 +169,7 @@ final class Settings: ObservableObject {
             Key.runawayAlerts: true,
             Key.menuBarIcon: MenuBarIconStyle.heartbeat.rawValue,
             Key.geoLookup: false,
+            Key.connectionAlerts: false,
             Key.lanWatch: false,
             Key.lanIdentify: false,
             Key.lanNewDeviceAlerts: false,
@@ -175,6 +186,7 @@ final class Settings: ObservableObject {
         self.menuBarIconStyle = MenuBarIconStyle(rawValue: defaults.string(forKey: Key.menuBarIcon) ?? "")
             ?? .heartbeat
         self.geoLookupEnabled = defaults.bool(forKey: Key.geoLookup)
+        self.connectionAlertsEnabled = defaults.bool(forKey: Key.connectionAlerts)
         self.lanWatchEnabled = defaults.bool(forKey: Key.lanWatch)
         self.lanIdentifyEnabled = defaults.bool(forKey: Key.lanIdentify)
         self.lanNewDeviceAlertsEnabled = defaults.bool(forKey: Key.lanNewDeviceAlerts)

@@ -221,6 +221,69 @@ final class SuspectProcessDetector: MultiDetector {
     }
 }
 
+// MARK: - Connection alerts (Trust Engine)
+
+/// Turns the connection watcher's findings into incidents. Two shapes, per
+/// the no-noise rules (never a bare "new IP"):
+///
+///   FLAGGED destination — the remote has genuinely bad reputation. Category
+///   .security (notifies). Red when the reputation is outright bad or the
+///   app is also on the Trust Engine's suspect list; yellow for a medium
+///   reading on an unvouched app.
+///
+///   NEW COUNTRY — "this app started talking somewhere it never has". A
+///   deliberately quiet journal card: category .network at watch severity,
+///   which never banners (NotificationManager only posts for red or
+///   security-category incidents). It lives while the connection does, then
+///   closes into Recent activity and the country joins the app's baseline.
+///
+/// Per-item signatures throughout, so "Always ignore this" silences one
+/// app+destination pairing and nothing else.
+@MainActor
+final class SuspectConnectionDetector: MultiDetector {
+    let id = "security.suspectConnection"
+
+    func evaluateAll(signals: Signals) -> [Incident] {
+        guard signals.connections.scanned else { return [] }
+        let suspectKeys = Set(signals.security.suspectProcesses.map(\.key))
+
+        return signals.connections.findings.map { f in
+            switch f.kind {
+            case .flaggedDestination:
+                let red = f.riskAlert || suspectKeys.contains(f.identityKey)
+                return Incident(
+                    category: .security,
+                    severity: red ? .issue : .watch,
+                    detectorID: id,
+                    templateKey: "security.connFlagged",
+                    context: [
+                        "name": f.appName,
+                        "ip": f.remoteIP,
+                        "place": f.place,
+                        "tags": f.tags
+                    ],
+                    signature: "conn:flagged:\(djb2("\(f.identityKey)|\(f.remoteIP)"))",
+                    startedAt: signals.timestamp
+                )
+            case .newCountry:
+                return Incident(
+                    category: .network,
+                    severity: .watch,
+                    detectorID: id,
+                    templateKey: "network.connNewCountry",
+                    context: [
+                        "name": f.appName,
+                        "place": f.place,
+                        "country": f.country
+                    ],
+                    signature: "conn:newcountry:\(djb2("\(f.identityKey)|\(f.country)"))",
+                    startedAt: signals.timestamp
+                )
+            }
+        }
+    }
+}
+
 // MARK: - Unexpected network listeners
 
 /// Fires for each process listening on a non-loopback port that isn't a known

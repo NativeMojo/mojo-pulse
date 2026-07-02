@@ -1446,6 +1446,12 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var networkSection: some View {
+        group("Connection alerts") {
+            toggleRow("Watch where apps connect",
+                      "Alert if an app keeps a connection to a server flagged as an attacker or abuser, and quietly note when an app first talks to a new country. Checks destination addresses (public IPs only, never content) against mojoverify; results are cached on this Mac. Off by default.",
+                      $settings.connectionAlertsEnabled)
+        }
+
         group("Network watch") {
             toggleRow("Watch the local network",
                       "Quietly inventory the devices on your Wi-Fi and alert if your router's hardware address changes (a sign of an attack). No extra permissions, nothing leaves your Mac.",

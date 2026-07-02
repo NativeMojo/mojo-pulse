@@ -204,6 +204,30 @@ enum IncidentTemplates {
                 actionURL: processViewerURL
             )
 
+        case "security.connFlagged":
+            let name = ctx["name"] ?? "An app"
+            let place = ctx["place"] ?? "a remote server"
+            let ip = ctx["ip"] ?? "an address"
+            let tags = ctx["tags"] ?? "bad reputation"
+            return IncidentCopy(
+                title: "App talking to a flagged server",
+                what: "\(name) has an ongoing connection to \(ip) (\(place)) — an address flagged as: \(tags).",
+                why: "Legitimate services occasionally share hosting with bad actors, but a sustained connection to an attack- or abuse-listed address is worth a look — especially from an app you don't recognize.",
+                action: "Open All Processes and click \(name) to see its signer and every connection. Quit it if you don't recognize it; choose “Always ignore this” if you know exactly what it is.",
+                actionURL: processViewerURL
+            )
+
+        case "network.connNewCountry":
+            let name = ctx["name"] ?? "An app"
+            let place = ctx["place"] ?? "a new country"
+            return IncidentCopy(
+                title: "New destination for an app",
+                what: "\(name) is connected to \(place) — a country it hasn't talked to before on this Mac.",
+                why: "Usually just a CDN, update server, or region change — that's why this is a quiet note, not an alert. It's recorded so a real pattern change is visible in your recent activity.",
+                action: "Curious? Open All Processes and click \(name) to see where it's connected.",
+                actionURL: processViewerURL
+            )
+
         case "security.unexpectedListener":
             let process = ctx["process"] ?? "A process"
             let port = ctx["port"] ?? "?"
