@@ -380,10 +380,14 @@ struct PopoverView: View {
         .buttonStyle(.plain)
     }
 
-    /// The three domain cards. Network drills in place; Security and Recent open
-    /// their windows for now (they become drill-in screens in a later pass).
+    /// The domain cards. Processes opens the explorer window; Network drills in
+    /// place; Security and Recent drill in too.
     private var domainRows: some View {
         VStack(spacing: 7) {
+            domainCard(icon: "list.bullet.indent", tint: neutralIconColor,
+                       title: "Processes", subtitle: "Every app and background process, by trust") {
+                onShowProcessViewer()
+            }
             domainCard(icon: "wifi",
                        tint: wifi.stableVPNActive ? SeverityColors.good : neutralIconColor,
                        title: "Network", subtitle: networkSubtitle) {

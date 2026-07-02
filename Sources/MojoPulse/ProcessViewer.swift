@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Darwin
 
 /// The kernel's true executable path for a PID. `ps comm` mangles paths with
@@ -12,18 +13,31 @@ enum ProcessPath {
         let n = proc_pidpath(Int32(pid), &buf, UInt32(buf.count))
         return n > 0 ? String(cString: buf) : fallback
     }
+
+    /// Thread count via `proc_pidinfo` — macOS `ps` has no thread column, and
+    /// this is a cheap syscall (same libproc family as `proc_pidpath`, no
+    /// subprocess). Returns 0 when the kernel denies it (other users' procs).
+    static func threadCount(pid: Int) -> Int {
+        var info = proc_taskinfo()
+        let size = Int32(MemoryLayout<proc_taskinfo>.size)
+        let r = proc_pidinfo(Int32(pid), PROC_PIDTASKINFO, 0, &info, size)
+        return r == size ? Int(info.pti_threadnum) : 0
+    }
 }
 
-// MARK: - Sampler
+// MARK: - Row
 
-/// One row in the full process list. Trust is filled in lazily (it shells out to
-/// codesign), so it starts nil and populates on a second pass.
+/// One process in the explorer. Trust is filled lazily (it shells out to
+/// codesign), so it starts nil and populates on a second pass. Flat here — the
+/// model builds the parent→child tree from `ppid` at display time.
 struct ProcViewerRow: Identifiable, Equatable, Sendable {
     let pid: Int
+    let ppid: Int
     let name: String
     let path: String
     let cpu: Double
     let memBytes: UInt64
+    var threads: Int
     let user: String
     var trust: TrustInfo?
 
@@ -36,100 +50,155 @@ struct ProcViewerRow: Identifiable, Equatable, Sendable {
 }
 
 /// Lists every process via `ps` (unprivileged, sees all users). Distinct from
-/// `ProcessSampler` (top-5 only) — this is the full table for the viewer.
+/// `ProcessSampler` (top-5 only) — this is the full table for the explorer.
 enum ProcessViewerSampler {
     static func sample() -> [ProcViewerRow] {
-        guard let out = Shell.run("/bin/ps", ["-axo", "pid=,pcpu=,rss=,user=,comm="]) else { return [] }
+        guard let out = Shell.run("/bin/ps", ["-axo", "pid=,ppid=,pcpu=,rss=,user=,comm="]) else { return [] }
         var rows: [ProcViewerRow] = []
         for line in out.split(separator: "\n") {
             let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard parts.count >= 5,
+            guard parts.count >= 6,
                   let pid = Int(parts[0]),
-                  let cpu = Double(parts[1]),
-                  let rssKB = UInt64(parts[2]) else { continue }
-            let user = String(parts[3])
-            let comm = parts[4...].joined(separator: " ")
+                  let ppid = Int(parts[1]),
+                  let cpu = Double(parts[2]),
+                  let rssKB = UInt64(parts[3]) else { continue }
+            let user = String(parts[4])
+            let comm = parts[5...].joined(separator: " ")
             let path = ProcessPath.resolve(pid: pid, fallback: comm)
             let name = (path as NSString).lastPathComponent
             rows.append(ProcViewerRow(
                 pid: pid,
+                ppid: ppid,
                 name: name.isEmpty ? path : name,
                 path: path,
                 cpu: cpu,
                 memBytes: rssKB * 1024,
+                threads: ProcessPath.threadCount(pid: pid),
                 user: user
             ))
         }
         return rows
     }
+
+    /// Thread counts for EVERY process (incl. root/other-user, which the
+    /// `proc_pidinfo` syscall can't read unprivileged). `top` can, but it's
+    /// ~1s and heavy — so the model runs this sparingly (at open + rarely) and
+    /// merges it in for the processes the syscall left at zero.
+    static func threadCountsFromTop() -> [Int: Int] {
+        guard let out = Shell.run("/usr/bin/top", ["-l", "1", "-stats", "pid,th"], timeout: 8) else { return [:] }
+        var m: [Int: Int] = [:]
+        for line in out.split(separator: "\n") {
+            let p = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard p.count == 2, let pid = Int(p[0]), let th = Int(p[1]) else { continue }
+            m[pid] = th
+        }
+        return m
+    }
+}
+
+// MARK: - App icons
+
+/// Cached app icons for explorer rows. `NSWorkspace.icon(forFile:)` is cheap
+/// and main-bound; we key on the .app bundle (so helpers share their app's
+/// icon) and cache so the 2 s refresh doesn't re-fetch. Main-actor only.
+@MainActor
+enum AppIconCache {
+    private static var cache: [String: NSImage] = [:]
+
+    static func icon(for path: String) -> NSImage {
+        let key = bundlePath(path)
+        if let hit = cache[key] { return hit }
+        let img = NSWorkspace.shared.icon(forFile: key.isEmpty ? "/" : key)
+        img.size = NSSize(width: 18, height: 18)
+        cache[key] = img
+        return img
+    }
+
+    /// The enclosing .app bundle when the executable lives in one (so all of
+    /// Chrome's helpers show Chrome's icon), else the executable itself.
+    private static func bundlePath(_ p: String) -> String {
+        if let r = p.range(of: ".app/") { return String(p[..<r.lowerBound]) + ".app" }
+        return p
+    }
 }
 
 // MARK: - Model
 
+enum ProcCategory { case app, background, system }
+
+enum ProcTab: String, CaseIterable, Identifiable {
+    case all = "All", apps = "Apps", background = "Background", system = "System", unverified = "Unverified"
+    var id: String { rawValue }
+}
+
+/// One rendered line: a process plus its tree position. `depth` indents only
+/// the Process column; `hasChildren` drives the disclosure control. When a
+/// parent is collapsed, the displayed cpu/mem/threads are the group TOTAL
+/// (self + all descendants) and `aggregated` is true — expanding switches them
+/// back to the process's own numbers, since the children then show their own.
+struct ProcDisplayRow: Identifiable, Equatable {
+    let row: ProcViewerRow
+    let depth: Int
+    let hasChildren: Bool
+    let cpu: Double
+    let memBytes: UInt64
+    let threads: Int
+    let aggregated: Bool
+    var id: Int { row.pid }
+}
+
 @MainActor
 final class ProcessViewerModel: ObservableObject {
-    enum SortKey: String, CaseIterable, Identifiable { case cpu, memory, name; var id: String { rawValue } }
+    enum SortKey { case cpu, memory, threads, pid, name }
+    enum ViewMode { case tree, list }
 
     @Published private(set) var rows: [ProcViewerRow] = []
-    @Published var query: String = ""
+    @Published var query = ""
     @Published var sortKey: SortKey = .cpu
-    @Published var onlyFlagged = false
+    @Published var ascending = false
+    @Published var viewMode: ViewMode = .tree
+    @Published var tab: ProcTab = .all
+    @Published var expandedPIDs: Set<Int> = []
 
-    /// Trust verdicts already computed this session, keyed by path. Lets the 2 s
-    /// refresh skip re-evaluating known binaries (ProcessTrust also caches, but
-    /// this drives the two-phase "show rows now, fill trust next" UX).
     private var knownTrust: [String: TrustInfo] = [:]
+    private var guiPIDs: Set<Int> = []
+    /// Complete thread counts (incl. root procs) from `top`, refreshed rarely
+    /// since `top` is expensive; the per-refresh syscall covers own-user procs
+    /// live and this fills the rest.
+    private var threadsByPID: [Int: Int] = [:]
+    private var topTick = 0
 
-    /// App Store seller verification (user-initiated, cached): the signature
-    /// of a Store app only says "Mac App Store", so on request we resolve each
-    /// one's bundle ID → seller via Apple's public catalog and show the real
-    /// developer in the Signed-by column, same as Developer ID rows.
+    // App Store seller verification (user-initiated, cached).
     @Published private(set) var verifyingSellers = false
     @Published private(set) var didVerifySellers = false
-    @Published private(set) var sellers: [String: String] = [:]     // bundleID → seller
-    private var bundleIDByPath: [String: String?] = [:]             // path → bundleID (nil = none)
+    @Published private(set) var sellers: [String: String] = [:]   // bundleID → seller
+    private var bundleIDByPath: [String: String?] = [:]
 
     var appStoreCount: Int { rows.filter { $0.trust?.label == .macAppStore }.count }
 
-    func seller(for row: ProcViewerRow) -> String? {
-        guard row.trust?.label == .macAppStore,
-              let bid = bundleIDByPath[row.path] ?? nil else { return nil }
-        return sellers[bid]
-    }
-
-    func verifySellers() async {
-        guard !verifyingSellers else { return }
-        verifyingSellers = true
-        defer { verifyingSellers = false }
-
-        // Resolve bundle IDs for App Store rows we haven't mapped yet
-        // (plist reads — off-main).
-        let masPaths = rows.filter { $0.trust?.label == .macAppStore }.map(\.path)
-        let unresolved = masPaths.filter { bundleIDByPath[$0] == nil }
-        if !unresolved.isEmpty {
-            let resolved = await Task.detached(priority: .utility) {
-                var m: [String: String?] = [:]
-                for p in unresolved { m[p] = AppBundle.bundleID(forExecutable: p) }
-                return m
-            }.value
-            for (p, b) in resolved { bundleIDByPath[p] = b }
-        }
-
-        // One catalog lookup per distinct app; AppStoreLookup caches across
-        // the session, so re-runs and the detail sheet share results.
-        let ids = Set(masPaths.compactMap { bundleIDByPath[$0] ?? nil })
-        for id in ids where sellers[id] == nil {
-            if case .found(_, let seller) = await AppStoreLookup.verify(bundleID: id) {
-                sellers[id] = seller
-            }
-        }
-        didVerifySellers = true
-    }
+    // MARK: Refresh
 
     func refresh() async {
+        // GUI-app pids drive the App/Background/System split — NSWorkspace is
+        // main-bound, so snapshot it here before the off-main sample.
+        guiPIDs = Set(NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .map { Int($0.processIdentifier) })
+
+        // Complete thread counts from `top` at open, then every ~30 s (15×2 s)
+        // — too heavy to run every refresh. The syscall already covers the
+        // user's own processes live; this fills root/other-user ones.
+        if threadsByPID.isEmpty || topTick % 15 == 0 {
+            threadsByPID = await Task.detached(priority: .utility) { ProcessViewerSampler.threadCountsFromTop() }.value
+        }
+        topTick += 1
+
         let raw = await Task.detached(priority: .userInitiated) { ProcessViewerSampler.sample() }.value
-        rows = raw.map { r in
-            var row = r; row.trust = knownTrust[r.path]; return row
+        rows = raw.map {
+            var r = $0
+            r.trust = knownTrust[$0.path]
+            if r.threads == 0, let t = threadsByPID[$0.pid] { r.threads = t }
+            return r
         }
 
         let missing = Array(Set(rows.filter { $0.trust == nil }.map(\.path)))
@@ -140,246 +209,435 @@ final class ProcessViewerModel: ObservableObject {
             return m
         }.value
         for (p, info) in evaluated { knownTrust[p] = info }
-        rows = rows.map { row in
-            var r = row; if r.trust == nil { r.trust = knownTrust[r.path] }; return r
+        rows = rows.map { var r = $0; if r.trust == nil { r.trust = knownTrust[$0.path] }; return r }
+    }
+
+    // MARK: Classification + company
+
+    func category(_ row: ProcViewerRow) -> ProcCategory {
+        if guiPIDs.contains(row.pid) { return .app }
+        if row.user == "root" || (row.path.hasPrefix("/") && SecurityScanner.isSIPProtected(row.path)) {
+            return .system
+        }
+        return .background
+    }
+
+    func seller(for row: ProcViewerRow) -> String? {
+        guard row.trust?.label == .macAppStore, let bid = bundleIDByPath[row.path] ?? nil else { return nil }
+        return sellers[bid]
+    }
+
+    /// The Company column: verified developer/seller, or an amber "no
+    /// developer identity" for unvouched code (the trust dot carries color).
+    func company(for row: ProcViewerRow) -> (text: String, warn: Bool)? {
+        guard let t = row.trust else { return nil }
+        if let s = seller(for: row) { return (s, false) }
+        switch t.label {
+        case .apple: return ("Apple", false)
+        case .developerID(let who):
+            if let r = who.range(of: " (", options: .backwards) { return (String(who[..<r.lowerBound]), false) }
+            return (who, false)
+        case .macAppStore: return (t.teamID.map { "Team \($0)" } ?? "App Store", false)
+        case .adhoc, .unsigned, .unknown: return ("no developer identity", true)
         }
     }
 
-    var visibleRows: [ProcViewerRow] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        var filtered = rows
-        if !q.isEmpty {
-            filtered = filtered.filter {
-                $0.name.lowercased().contains(q) || $0.path.lowercased().contains(q)
-                    || $0.user.lowercased().contains(q) || "\($0.pid)".contains(q)
+    func trustColor(_ row: ProcViewerRow) -> Color {
+        switch row.trust?.label {
+        case .apple: return SeverityColors.info
+        case .developerID, .macAppStore: return SeverityColors.good
+        case .adhoc: return SeverityColors.watch
+        case .unsigned: return SeverityColors.issue
+        case .unknown, .none: return Color.secondary.opacity(0.5)
+        }
+    }
+
+    // MARK: Sorting + tree
+
+    func toggleSort(_ key: SortKey) {
+        if sortKey == key { ascending.toggle() }
+        else { sortKey = key; ascending = (key == .name || key == .pid) }
+    }
+
+    func toggleExpand(_ pid: Int) {
+        if expandedPIDs.contains(pid) { expandedPIDs.remove(pid) } else { expandedPIDs.insert(pid) }
+    }
+
+    private func sorted(_ rows: [ProcViewerRow]) -> [ProcViewerRow] {
+        let asc = rows.sorted { a, b in
+            switch sortKey {
+            case .cpu: return a.cpu < b.cpu
+            case .memory: return a.memBytes < b.memBytes
+            case .threads: return a.threads < b.threads
+            case .pid: return a.pid < b.pid
+            case .name: return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
             }
         }
-        if onlyFlagged {
-            filtered = filtered.filter { $0.trust?.label.isElevated == true }
-        }
-        switch sortKey {
-        case .cpu: return filtered.sorted { $0.cpu > $1.cpu }
-        case .memory: return filtered.sorted { $0.memBytes > $1.memBytes }
-        case .name: return filtered.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return ascending ? asc : asc.reversed()
+    }
+
+    private func tabMatch(_ row: ProcViewerRow) -> Bool {
+        switch tab {
+        case .all: return true
+        case .apps: return category(row) == .app
+        case .background: return category(row) == .background
+        case .system: return category(row) == .system
+        case .unverified: return row.trust?.label.isElevated == true
         }
     }
 
-    var flaggedCount: Int { rows.filter { $0.trust?.label.isElevated == true }.count }
+    private func matchesQuery(_ r: ProcViewerRow, _ q: String) -> Bool {
+        r.name.lowercased().contains(q) || r.path.lowercased().contains(q)
+            || r.user.lowercased().contains(q) || "\(r.pid)".contains(q)
+    }
+
+    /// A row belongs in a category tab's TREE if it matches the tab, or any of
+    /// its ancestors does — so filtering to "Apps" keeps each app's helper
+    /// subtree instead of orphaning it.
+    private func matchesSelfOrAncestor(_ r: ProcViewerRow, byPID: [Int: ProcViewerRow]) -> Bool {
+        var cur: ProcViewerRow? = r
+        var hops = 0
+        while let c = cur, hops < 64 {
+            if tabMatch(c) { return true }
+            cur = c.ppid > 1 ? byPID[c.ppid] : nil
+            hops += 1
+        }
+        return false
+    }
+
+    var displayRows: [ProcDisplayRow] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+
+        // Search or list mode → flat, direct tab matches only. (Tree + search
+        // reads as confusing.)
+        func flat(_ r: ProcViewerRow) -> ProcDisplayRow {
+            ProcDisplayRow(row: r, depth: 0, hasChildren: false,
+                           cpu: r.cpu, memBytes: r.memBytes, threads: r.threads, aggregated: false)
+        }
+        if !q.isEmpty {
+            let hits = rows.filter { tabMatch($0) && matchesQuery($0, q) }
+            return sorted(hits).map(flat)
+        }
+        if viewMode == .list {
+            return sorted(rows.filter(tabMatch)).map(flat)
+        }
+
+        // Tree: in a category tab keep a match's descendants (so an app brings
+        // its helpers). Roots are procs whose parent isn't in view (ppid ≤ 1 =
+        // launchd/kernel are top-level, matching Activity Monitor).
+        let base: [ProcViewerRow]
+        if tab == .all {
+            base = rows
+        } else {
+            let byPID = Dictionary(rows.map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
+            base = rows.filter { matchesSelfOrAncestor($0, byPID: byPID) }
+        }
+        let pidSet = Set(base.map(\.pid))
+        var childrenByPPID: [Int: [ProcViewerRow]] = [:]
+        var roots: [ProcViewerRow] = []
+        for r in base {
+            if r.ppid <= 1 || !pidSet.contains(r.ppid) { roots.append(r) }
+            else { childrenByPPID[r.ppid, default: []].append(r) }
+        }
+
+        // Subtree totals (self + all descendants), memoized — used both for the
+        // collapsed-parent rollup and for sorting groups by their real weight.
+        var totals: [Int: (cpu: Double, mem: UInt64, th: Int)] = [:]
+        func subtree(_ r: ProcViewerRow) -> (cpu: Double, mem: UInt64, th: Int) {
+            if let t = totals[r.pid] { return t }
+            var c = r.cpu, m = r.memBytes, th = r.threads
+            for k in childrenByPPID[r.pid] ?? [] { let s = subtree(k); c += s.cpu; m += s.mem; th += s.th }
+            let t = (c, m, th); totals[r.pid] = t; return t
+        }
+        // Sort siblings: resource keys rank by the group total so the heaviest
+        // app floats up even while collapsed; name/pid stay literal.
+        func sortNodes(_ ns: [ProcViewerRow]) -> [ProcViewerRow] {
+            let asc = ns.sorted { a, b in
+                switch sortKey {
+                case .cpu: return subtree(a).cpu < subtree(b).cpu
+                case .memory: return subtree(a).mem < subtree(b).mem
+                case .threads: return subtree(a).th < subtree(b).th
+                case .pid: return a.pid < b.pid
+                case .name: return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+                }
+            }
+            return ascending ? asc : asc.reversed()
+        }
+
+        var out: [ProcDisplayRow] = []
+        func walk(_ r: ProcViewerRow, _ depth: Int) {
+            let kids = sortNodes(childrenByPPID[r.pid] ?? [])
+            let hasKids = !kids.isEmpty
+            let expanded = expandedPIDs.contains(r.pid)
+            let rollup = hasKids && !expanded
+            let disp: (cpu: Double, mem: UInt64, th: Int) = rollup ? subtree(r) : (r.cpu, r.memBytes, r.threads)
+            out.append(ProcDisplayRow(row: r, depth: depth, hasChildren: hasKids,
+                                      cpu: disp.cpu, memBytes: disp.mem, threads: disp.th, aggregated: rollup))
+            if expanded { for k in kids { walk(k, depth + 1) } }
+        }
+        for r in sortNodes(roots) { walk(r, 0) }
+        return out
+    }
+
+    // MARK: Seller verification
+
+    func verifySellers() async {
+        guard !verifyingSellers else { return }
+        verifyingSellers = true
+        defer { verifyingSellers = false }
+
+        let masPaths = rows.filter { $0.trust?.label == .macAppStore }.map(\.path)
+        let unresolved = masPaths.filter { bundleIDByPath[$0] == nil }
+        if !unresolved.isEmpty {
+            let resolved = await Task.detached(priority: .utility) {
+                var m: [String: String?] = [:]
+                for p in unresolved { m[p] = AppBundle.bundleID(forExecutable: p) }
+                return m
+            }.value
+            for (p, b) in resolved { bundleIDByPath[p] = b }
+        }
+        let ids = Set(masPaths.compactMap { bundleIDByPath[$0] ?? nil })
+        for id in ids where sellers[id] == nil {
+            if case .found(_, let seller) = await AppStoreLookup.verify(bundleID: id) { sellers[id] = seller }
+        }
+        didVerifySellers = true
+    }
 }
 
 // MARK: - View
 
-/// Pulse's own process viewer: every process with a code-signing trust badge,
-/// owner, CPU and memory — a security-lens alternative to Activity Monitor.
-/// Click a row for the full detail sheet (path, command, parent, signer).
+/// Pulse's process explorer: a sortable tree of every process with app icons,
+/// verified Company, threads, and a trust dot — the ProcXray-style layout with
+/// Pulse's security lens. Distinct from (and never a replacement for) the Top
+/// Processes tile. Click a row for the full reputation detail sheet.
 struct ProcessViewerView: View {
     var onShowTopProcesses: () -> Void = {}
     @StateObject private var model = ProcessViewerModel()
     @State private var selected: ProcViewerRow?
 
+    // Column widths — shared by the header and every row so they line up.
+    private let wPID: CGFloat = 52, wCPU: CGFloat = 48, wMem: CGFloat = 68
+    private let wThreads: CGFloat = 52, wCompany: CGFloat = 150, wPath: CGFloat = 190
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            controls
-            columnHeader
+        VStack(alignment: .leading, spacing: 0) {
+            toolbar
+            tabBar
+            Divider()
+            header
             Divider()
             list
+            Divider()
             footer
         }
-        .padding(16)
-        .frame(minWidth: 620, minHeight: 500)
+        .frame(minWidth: 780, minHeight: 540)
         .task {
             while !Task.isCancelled {
                 await model.refresh()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
             }
         }
         .sheet(item: $selected) { ProcessDetailView(proc: $0.asProcInfo) }
     }
 
-    private var controls: some View {
+    // MARK: Toolbar
+
+    private var toolbar: some View {
         HStack(spacing: 10) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
-                TextField("Search name, path, user, PID", text: $model.query)
-                    .textFieldStyle(.plain)
+                TextField("Filter", text: $model.query).textFieldStyle(.plain)
                 if !model.query.isEmpty {
                     Button { model.query = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
                     }
-                    .buttonStyle(.plain)
-                    .help("Clear search")
+                    .buttonStyle(.plain).help("Clear")
                 }
             }
             .padding(.horizontal, 9).padding(.vertical, 5)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
 
-            Picker("Sort", selection: $model.sortKey) {
-                Text("CPU").tag(ProcessViewerModel.SortKey.cpu)
-                Text("Memory").tag(ProcessViewerModel.SortKey.memory)
-                Text("Name").tag(ProcessViewerModel.SortKey.name)
+            Picker("", selection: $model.viewMode) {
+                Label("Tree", systemImage: "list.bullet.indent").tag(ProcessViewerModel.ViewMode.tree)
+                Label("List", systemImage: "list.bullet").tag(ProcessViewerModel.ViewMode.list)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            .help("Tree groups helpers under their app")
 
-            Toggle(isOn: $model.onlyFlagged) {
-                Label("Unsigned", systemImage: "exclamationmark.shield")
+            Button {
+                Task { await model.verifySellers() }
+            } label: {
+                Image(systemName: model.didVerifySellers ? "checkmark.seal.fill" : "checkmark.seal")
+                    .foregroundStyle(model.didVerifySellers ? SeverityColors.good : .secondary)
             }
-            .toggleStyle(.button)
-            .controlSize(.small)
-            .fixedSize()
-            .help("Show only unsigned or ad-hoc processes")
+            .buttonStyle(.plain)
+            .disabled(model.verifyingSellers || model.appStoreCount == 0)
+            .help("Verify App Store sellers from Apple's public catalog")
         }
+        .padding(.horizontal, 12).padding(.vertical, 9)
     }
 
-    private var columnHeader: some View {
+    private var tabBar: some View {
+        HStack(spacing: 2) {
+            ForEach(ProcTab.allCases) { t in
+                Button { model.tab = t } label: {
+                    Text(t.rawValue)
+                        .font(.callout)
+                        .fontWeight(model.tab == t ? .medium : .regular)
+                        .foregroundStyle(model.tab == t ? Color.primary : Color.secondary)
+                        .padding(.horizontal, 11).padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7)
+                                .fill(model.tab == t ? Color.primary.opacity(0.08) : .clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12).padding(.bottom, 8)
+    }
+
+    // MARK: Header (clickable sort)
+
+    private var header: some View {
         HStack(spacing: 10) {
-            Text("Signed by").frame(width: 150, alignment: .leading)
-            Text("Process").frame(maxWidth: .infinity, alignment: .leading)
-            Text("CPU").frame(width: 52, alignment: .trailing)
-            Text("Memory").frame(width: 70, alignment: .trailing)
-            Text("User").frame(width: 76, alignment: .leading)
+            sortHeader("Process", .name).frame(maxWidth: .infinity, alignment: .leading)
+            sortHeader("PID", .pid).frame(width: wPID, alignment: .trailing)
+            sortHeader("CPU", .cpu).frame(width: wCPU, alignment: .trailing)
+            sortHeader("Memory", .memory).frame(width: wMem, alignment: .trailing)
+            sortHeader("Threads", .threads).frame(width: wThreads, alignment: .trailing)
+            Text("Company").frame(width: wCompany, alignment: .leading)
+            Text("Path").frame(width: wPath, alignment: .leading)
         }
         .font(.caption2).foregroundStyle(.secondary)
-        .textCase(.uppercase).tracking(0.3)
+        .padding(.horizontal, 14).padding(.vertical, 6)
     }
 
-    private var list: some View {
-        List(model.visibleRows) { row in
-            rowView(row)
-                .contentShape(Rectangle())
-                .onTapGesture { selected = row }
-                .listRowInsets(EdgeInsets(top: 3, leading: 4, bottom: 3, trailing: 4))
-        }
-        .listStyle(.plain)
-    }
-
-    private func rowView(_ row: ProcViewerRow) -> some View {
-        HStack(spacing: 10) {
-            trustBadge(row).frame(width: 150, alignment: .leading)
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 4) {
-                    Text(row.name).font(.callout).lineLimit(1).truncationMode(.middle)
-                    if !ProcessPosture.quickFlags(path: row.path, name: row.name).isEmpty {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 9)).foregroundStyle(SeverityColors.watch)
-                            .help("Worth a look — open for details")
-                    }
+    private func sortHeader(_ title: String, _ key: ProcessViewerModel.SortKey) -> some View {
+        Button { model.toggleSort(key) } label: {
+            HStack(spacing: 3) {
+                Text(title)
+                if model.sortKey == key {
+                    Image(systemName: model.ascending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
                 }
-                Text(verbatim: "PID \(row.pid)").font(.caption2).foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: List
+
+    @ViewBuilder
+    private var list: some View {
+        if model.displayRows.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: model.tab == .unverified ? "checkmark.seal" : "magnifyingglass")
+                    .font(.largeTitle).foregroundStyle(.secondary)
+                Text(emptyMessage).font(.callout).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(40)
+        } else {
+            List(model.displayRows) { dr in
+                rowView(dr)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                    .contentShape(Rectangle())
+                    .onTapGesture { selected = dr.row }
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    private var emptyMessage: String {
+        if !model.query.trimmingCharacters(in: .whitespaces).isEmpty { return "No processes match your filter." }
+        if model.tab == .unverified { return "Every running process has a verified identity.\nNothing unsigned or ad-hoc." }
+        return "No processes in this view."
+    }
+
+    private func rowView(_ dr: ProcDisplayRow) -> some View {
+        let row = dr.row
+        return HStack(spacing: 10) {
+            // Process cell — the only column that indents for the tree.
+            HStack(spacing: 6) {
+                Color.clear.frame(width: CGFloat(dr.depth) * 15, height: 1)
+                if dr.hasChildren {
+                    // highPriorityGesture beats the row's open-on-tap, so the
+                    // chevron expands instead of launching the detail sheet.
+                    Image(systemName: model.expandedPIDs.contains(row.pid) ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                        .highPriorityGesture(TapGesture().onEnded { model.toggleExpand(row.pid) })
+                } else {
+                    Color.clear.frame(width: 16, height: 1)
+                }
+                Circle().fill(model.trustColor(row)).frame(width: 7, height: 7)
+                Image(nsImage: AppIconCache.icon(for: row.path))
+                    .resizable().frame(width: 18, height: 18)
+                Text(row.name).font(.callout).lineLimit(1).truncationMode(.middle)
+                if !ProcessPosture.quickFlags(path: row.path, name: row.name).isEmpty {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9)).foregroundStyle(SeverityColors.watch)
+                        .help("Worth a look — open for details")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text(String(format: "%.1f%%", row.cpu))
-                .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .trailing)
-            Text(memText(row.memBytes))
-                .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                .frame(width: 70, alignment: .trailing)
-            Text(row.user).font(.caption).foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.tail)
-                .frame(width: 76, alignment: .leading)
+
+            Text("\(row.pid)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .frame(width: wPID, alignment: .trailing)
+            Text(String(format: "%.1f", dr.cpu)).font(.caption.monospacedDigit())
+                .foregroundStyle(dr.aggregated || dr.cpu >= 50 ? Color.primary : .secondary)
+                .frame(width: wCPU, alignment: .trailing)
+            Text(memText(dr.memBytes)).font(.caption.monospacedDigit())
+                .foregroundStyle(dr.aggregated ? Color.primary : .secondary)
+                .frame(width: wMem, alignment: .trailing)
+            Text(dr.threads > 0 ? "\(dr.threads)" : "—").font(.caption.monospacedDigit())
+                .foregroundStyle(dr.aggregated ? Color.primary : .secondary)
+                .frame(width: wThreads, alignment: .trailing)
+            companyCell(row).frame(width: wCompany, alignment: .leading)
+            Text(row.path).font(.caption2.monospaced()).foregroundStyle(.tertiary)
+                .lineLimit(1).truncationMode(.head)
+                .frame(width: wPath, alignment: .leading)
         }
+        .padding(.vertical, 4)
+        .help(dr.aggregated ? "Combined total for \(row.name) and its helpers — expand to break it down" : "")
     }
 
     @ViewBuilder
-    private func trustBadge(_ row: ProcViewerRow) -> some View {
-        if let info = row.trust {
-            let seller = model.seller(for: row)
-            HStack(spacing: 6) {
-                Circle().fill(trustColor(info.label)).frame(width: 7, height: 7)
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 3) {
-                        Text(seller ?? trustPrimary(info)).font(.caption).foregroundStyle(.primary)
-                            .lineLimit(1).truncationMode(.tail)
-                        if seller != nil {
-                            Image(systemName: "checkmark.seal.fill")
-                                .font(.system(size: 8)).foregroundStyle(SeverityColors.good)
-                                .help("Seller confirmed from Apple's App Store catalog")
-                        }
-                    }
-                    if let sub = trustSecondary(info, verified: seller != nil) {
-                        Text(sub).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                    }
+    private func companyCell(_ row: ProcViewerRow) -> some View {
+        if let c = model.company(for: row) {
+            HStack(spacing: 3) {
+                Text(c.text).font(.caption)
+                    .foregroundStyle(c.warn ? SeverityColors.watch : Color.secondary)
+                    .lineLimit(1).truncationMode(.tail)
+                if model.seller(for: row) != nil {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 8)).foregroundStyle(SeverityColors.good)
+                        .help("Seller confirmed from Apple's catalog")
                 }
             }
         } else {
-            HStack(spacing: 6) {
-                Circle().fill(Color.secondary.opacity(0.3)).frame(width: 7, height: 7)
-                Text("checking…").font(.caption).foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    /// The real signer when we have it: the org name for Developer ID, the
-    /// signing class otherwise. (App Store apps are signed by Apple, so the
-    /// developer's name isn't in the signature — only the Team ID; "Verify
-    /// sellers" upgrades those rows to the catalog-confirmed seller name.)
-    private func trustPrimary(_ info: TrustInfo) -> String {
-        switch info.label {
-        case .developerID(let who):
-            if let r = who.range(of: " (", options: .backwards) { return String(who[..<r.lowerBound]) }
-            return who
-        case .macAppStore: return "App Store"
-        case .apple: return "Apple"
-        case .adhoc: return "Ad-hoc"
-        case .unsigned: return "Unsigned"
-        case .unknown: return "Unknown"
-        }
-    }
-
-    private func trustSecondary(_ info: TrustInfo, verified: Bool = false) -> String? {
-        switch info.label {
-        case .developerID: return "Developer ID"
-        case .macAppStore:
-            if verified { return "App Store" }
-            return info.teamID.map { "Team \($0)" }
-        default: return nil
-        }
-    }
-
-    private func trustColor(_ label: TrustLabel) -> Color {
-        switch label {
-        case .apple: return SeverityColors.info
-        case .developerID: return SeverityColors.good
-        case .macAppStore: return SeverityColors.good
-        case .adhoc: return SeverityColors.watch
-        case .unsigned: return SeverityColors.issue
-        case .unknown: return Color.secondary
+            Text("checking…").font(.caption).foregroundStyle(.tertiary)
         }
     }
 
     private var footer: some View {
-        HStack {
-            Text("\(model.rows.count) processes")
+        HStack(spacing: 6) {
+            Text("\(model.displayRows.count) shown · \(model.rows.count) total")
                 .font(.caption2).foregroundStyle(.secondary)
-            if model.flaggedCount > 0 {
-                Text("·").font(.caption2).foregroundStyle(.tertiary)
-                HStack(spacing: 4) {
-                    Circle().fill(SeverityColors.watch).frame(width: 6, height: 6)
-                    Text("\(model.flaggedCount) unsigned or ad-hoc")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
+            if model.verifyingSellers {
+                Text("· verifying sellers…").font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer()
-            if model.appStoreCount > 0 {
-                Button {
-                    Task { await model.verifySellers() }
-                } label: {
-                    if model.verifyingSellers {
-                        Label("Verifying…", systemImage: "hourglass")
-                    } else if model.didVerifySellers {
-                        Label("Sellers verified", systemImage: "checkmark.seal")
-                    } else {
-                        Label("Verify App Store sellers", systemImage: "checkmark.seal")
-                    }
-                }
-                .controlSize(.small)
-                .disabled(model.verifyingSellers)
-                .help("Confirm who sells each App Store app, from Apple's public catalog.")
-            }
-            Button("Top Processes") { onShowTopProcesses() }
-                .controlSize(.small)
+            Button("Top Processes") { onShowTopProcesses() }.controlSize(.small)
         }
+        .padding(.horizontal, 12).padding(.vertical, 8)
     }
 
     private func memText(_ bytes: UInt64) -> String {
