@@ -270,7 +270,15 @@ final class MenuBarController: NSObject {
         // callback through every card site; we own the windows, so we route.
         NotificationCenter.default.publisher(for: .pulseShowProcessViewer)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] note in self?.showProcessViewerWindow(filter: note.object as? String) }
+            .sink { [weak self] note in
+                // The object is either a filter string (path/name) or a ProcTab
+                // (e.g. Security's "Review suspects" opens the Unverified tab).
+                if let tab = note.object as? ProcTab {
+                    self?.showProcessViewerWindow(tab: tab)
+                } else {
+                    self?.showProcessViewerWindow(filter: note.object as? String)
+                }
+            }
             .store(in: &cancellables)
     }
 
@@ -939,17 +947,19 @@ final class MenuBarController: NSObject {
     /// Pulse's own process viewer — a security-lens alternative to Activity
     /// Monitor (trust badges, owner, per-process detail). Standalone window with
     /// its own sampler + 2 s refresh, so it needs no aggregator fast tick.
-    private func showProcessViewerWindow(filter: String? = nil) {
+    private func showProcessViewerWindow(filter: String? = nil, tab: ProcTab? = nil) {
         popover.performClose(nil)
         if let existing = processViewerWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
-            // Re-target the already-open explorer to the requested process.
-            if let filter { NotificationCenter.default.post(name: .pulseSetProcessFilter, object: filter) }
+            // Re-target the already-open explorer to the requested process/tab.
+            if let tab { NotificationCenter.default.post(name: .pulseSetProcessFilter, object: tab) }
+            else if let filter { NotificationCenter.default.post(name: .pulseSetProcessFilter, object: filter) }
             return
         }
         let hosting = NSHostingController(rootView: DialogChrome { ProcessViewerView(
             initialFilter: filter,
+            initialTab: tab,
             system: system,
             onShowTopProcesses: { [weak self] in self?.showProcessesWindow() }) })
         let window = NSWindow(contentViewController: hosting)

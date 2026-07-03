@@ -454,6 +454,9 @@ struct ProcessViewerView: View {
     /// opens pre-filtered to this executable path or name, so the user lands on
     /// exactly the flagged process instead of scrolling a full table.
     var initialFilter: String? = nil
+    /// When set (e.g. Security screen's "Review" on suspect processes), the
+    /// explorer opens straight on this tab instead of the Apps default.
+    var initialTab: ProcTab? = nil
     /// Live system load for the footer gauges (CPU % + memory pressure at a
     /// glance while scanning the table).
     @ObservedObject var system: SystemCollector
@@ -479,13 +482,20 @@ struct ProcessViewerView: View {
         .frame(minWidth: 780, minHeight: 540)
         .task {
             applyFilter(initialFilter)
+            if let initialTab { model.tab = initialTab }
             while !Task.isCancelled {
                 await model.refresh()
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .pulseSetProcessFilter)) { note in
-            applyFilter(note.object as? String)
+            // Re-targeting an open window: either a filter string or a tab.
+            if let tab = note.object as? ProcTab {
+                model.query = ""
+                model.tab = tab
+            } else {
+                applyFilter(note.object as? String)
+            }
         }
         .sheet(item: $selected) { ProcessDetailView(proc: $0.asProcInfo) }
     }
