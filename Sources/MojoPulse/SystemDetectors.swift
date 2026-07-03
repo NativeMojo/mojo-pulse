@@ -410,14 +410,32 @@ final class CrashDetector: MultiDetector {
     func evaluateAll(signals: Signals) -> [Incident] {
         guard signals.events.scanned else { return [] }
         return signals.events.crashes.map { group in
-            Incident(
+            // evidence_ts is the newest report's own date: it timestamps the
+            // event at the crash (not at our scan), and a *newer* report is
+            // what pierces a dismissal — same reports never re-alert.
+            var ctx = [
+                "app": group.app,
+                "count": String(group.count),
+                "evidence_ts": String(Int(group.lastCrash.timeIntervalSince1970))
+            ]
+            if let d = group.details {
+                ctx["report"] = d.reportPath
+                if let v = d.reason { ctx["reason"] = v }
+                if let v = d.rawReason { ctx["rawReason"] = v }
+                if let v = d.procPath { ctx["path"] = v }
+                if let v = d.version { ctx["version"] = v }
+                if let v = d.crashedIn { ctx["crashedIn"] = v }
+            }
+            return Incident(
                 category: .app,
                 severity: .watch,
                 detectorID: id,
                 templateKey: "event.crash",
-                context: ["app": group.app, "count": String(group.count)],
+                context: ctx,
                 signature: "event:crash:\(group.app)",
-                startedAt: signals.timestamp
+                // The event happened when the app crashed — the report's date —
+                // not whenever Pulse next read the logs.
+                startedAt: group.firstCrash
             )
         }
     }
@@ -460,9 +478,13 @@ final class PanicDetector: Detector {
             severity: .issue,
             detectorID: id,
             templateKey: "event.panic",
-            context: ["when": Self.dateFormatter.string(from: date)],
+            context: [
+                "when": Self.dateFormatter.string(from: date),
+                "evidence_ts": String(Int(date.timeIntervalSince1970))
+            ],
             signature: "event:panic:\(Int(date.timeIntervalSince1970))",
-            startedAt: signals.timestamp
+            // Timestamped at the panic itself, not at our scan.
+            startedAt: date
         )
     }
 }

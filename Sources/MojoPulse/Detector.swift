@@ -159,9 +159,13 @@ final class DetectorEngine: ObservableObject {
         // single-shot Detector or a per-item MultiDetector. Captures the two
         // mutable locals above so the dedup bookkeeping is identical for both.
         func consider(_ proposed: Incident) {
-            // Suppress if the user has recently told us to shut up about
-            // this exact signature.
-            if feedback.isSuppressed(signature: proposed.signature, now: signals.timestamp) {
+            // Suppress if the user has told us to shut up about this exact
+            // signature — a snooze/ignore rule, or a Dismiss acknowledgment.
+            // Evidence newer than the acknowledgment (a fresh crash report)
+            // pierces a Dismiss and re-alerts; explicit mutes are never pierced.
+            if feedback.isSuppressed(signature: proposed.signature,
+                                     evidenceAt: proposed.evidenceAt,
+                                     now: signals.timestamp) {
                 return
             }
 
@@ -245,11 +249,12 @@ final class DetectorEngine: ObservableObject {
         feedback.removeSuppression(signature: signature)
     }
 
-    /// Whether a signature currently has an active mute rule — lets the
-    /// history views show "you're already ignoring this" instead of offering
-    /// the same action twice.
+    /// Whether a signature currently has an explicit mute rule (snooze /
+    /// always-ignore) — lets the history views show "you're already ignoring
+    /// this" instead of offering the same action twice. Dismiss acknowledgments
+    /// deliberately don't count: they're "seen it", not a rule.
     func isSuppressed(signature: String, now: Date = Date()) -> Bool {
-        feedback.isSuppressed(signature: signature, now: now)
+        feedback.hasMuteRule(signature: signature, now: now)
     }
 
     /// Permanently ignore a signature from anywhere — including a *historical*
@@ -261,16 +266,17 @@ final class DetectorEngine: ObservableObject {
         applyFeedback(.mutedForever, signature: signature, now: now)
     }
 
-    /// Record any feedback by signature — the full card vocabulary (dismiss,
-    /// mute 1h, mute forever, confirmed) from surfaces that hold a record
-    /// rather than a live incident (the event detail window, history). Routes
-    /// through the live incident when one is active so mutes/dismissals close
-    /// its card immediately.
-    func applyFeedback(_ fb: IncidentFeedback, signature: String, now: Date = Date()) {
+    /// Record any feedback by signature — the card vocabulary (dismiss, snooze,
+    /// always ignore) from surfaces that hold a record rather than a live
+    /// incident (the event detail window, history). Routes through the live
+    /// incident when one is active so mutes/dismissals close its card
+    /// immediately. `evidenceAt` anchors a Dismiss so only newer evidence
+    /// re-alerts (pass the record's own evidence timestamp when you have one).
+    func applyFeedback(_ fb: IncidentFeedback, signature: String, evidenceAt: Date? = nil, now: Date = Date()) {
         if let active = activeIncidents.first(where: { $0.signature == signature }) {
             recordFeedback(fb, for: active, now: now)
         } else {
-            feedback.record(fb, signature: signature, now: now)
+            feedback.record(fb, signature: signature, evidenceAt: evidenceAt, now: now)
         }
     }
 
@@ -279,7 +285,7 @@ final class DetectorEngine: ObservableObject {
     /// from the active list if it's a mute/dismiss action — instant
     /// gratification, no waiting for the next tick.
     func recordFeedback(_ fb: IncidentFeedback, for incident: Incident, now: Date = Date()) {
-        feedback.record(fb, signature: incident.signature, now: now)
+        feedback.record(fb, signature: incident.signature, evidenceAt: incident.evidenceAt, now: now)
 
         switch fb {
         case .dismissed, .muted1h, .mutedForever:
@@ -309,13 +315,28 @@ final class DetectorEngine: ObservableObject {
 /// tuning. For MVP we keep the protocol narrow so we can swap backends.
 @MainActor
 protocol FeedbackStore: AnyObject {
-    /// Whether a signature is currently muted (so the engine should hide it).
-    func isSuppressed(signature: String, now: Date) -> Bool
+    /// Whether the engine should swallow a proposal for this signature.
+    /// `evidenceAt` is the timestamp of the newest evidence behind the proposal
+    /// (the crash report's date, the panic's date, nil for ongoing conditions):
+    /// a Dismiss acknowledgment is pierced by evidence newer than itself — the
+    /// user acknowledged *those* reports, not future ones — while an explicit
+    /// snooze/ignore rule always holds until it expires.
+    func isSuppressed(signature: String, evidenceAt: Date?, now: Date) -> Bool
 
-    /// Record a user action against a signature.
-    func record(_ feedback: IncidentFeedback, signature: String, now: Date)
+    /// Whether the signature has an explicit mute rule (snooze / always
+    /// ignore). Dismiss acknowledgments don't count — this is what the
+    /// "Ignoring" UI state reflects.
+    func hasMuteRule(signature: String, now: Date) -> Bool
+
+    /// Record a user action against a signature. For `.dismissed`, pass the
+    /// incident's evidence timestamp (when it has one) so the acknowledgment
+    /// can be anchored: with evidence it holds until something newer shows up;
+    /// without, it quietly expires after a day (an ongoing condition that's
+    /// still true tomorrow deserves a re-mention).
+    func record(_ feedback: IncidentFeedback, signature: String, evidenceAt: Date?, now: Date)
 
     /// Currently-active mute rules, for the "manage ignored items" UI.
+    /// Dismiss acknowledgments are not listed — they're not rules.
     func activeSuppressions(now: Date) -> [SuppressionEntry]
 
     /// Lift a mute rule immediately (delete it and drop any cached entry, so
@@ -323,46 +344,64 @@ protocol FeedbackStore: AnyObject {
     func removeSuppression(signature: String)
 }
 
-/// Default in-memory implementation. Uses an expiration date per signature
-/// so "mute 1h" naturally unblocks itself; "mute forever" uses `.distantFuture`.
+/// How long a Dismiss on an ongoing condition (no evidence timestamp) stays
+/// quiet. Point-in-time events don't use this — their acknowledgment holds
+/// until newer evidence pierces it.
+let dismissRenagInterval: TimeInterval = 24 * 3600
+
+/// Default in-memory implementation. One rule per signature: an expiry date,
+/// plus — for Dismiss acknowledgments — when the user acknowledged, so newer
+/// evidence can pierce. Explicit mutes have `ackedAt == nil`.
 @MainActor
 final class InMemoryFeedbackStore: FeedbackStore {
-    private var suppressUntil: [String: Date] = [:]
+    private struct Rule {
+        var until: Date
+        var ackedAt: Date?
+    }
 
-    func isSuppressed(signature: String, now: Date) -> Bool {
-        guard let until = suppressUntil[signature] else { return false }
-        if until <= now {
-            suppressUntil.removeValue(forKey: signature)
+    private var rules: [String: Rule] = [:]
+
+    func isSuppressed(signature: String, evidenceAt: Date?, now: Date) -> Bool {
+        guard let rule = rules[signature] else { return false }
+        if rule.until <= now {
+            rules.removeValue(forKey: signature)
+            return false
+        }
+        if let acked = rule.ackedAt, let evidence = evidenceAt, evidence > acked {
+            // Something new happened after the user said "got it" — re-alert.
+            rules.removeValue(forKey: signature)
             return false
         }
         return true
     }
 
-    func record(_ feedback: IncidentFeedback, signature: String, now: Date) {
+    func hasMuteRule(signature: String, now: Date) -> Bool {
+        guard let rule = rules[signature] else { return false }
+        return rule.ackedAt == nil && rule.until > now
+    }
+
+    func record(_ feedback: IncidentFeedback, signature: String, evidenceAt: Date?, now: Date) {
         switch feedback {
         case .muted1h:
-            suppressUntil[signature] = now.addingTimeInterval(3600)
+            rules[signature] = Rule(until: now.addingTimeInterval(3600), ackedAt: nil)
         case .mutedForever:
-            suppressUntil[signature] = .distantFuture
+            rules[signature] = Rule(until: .distantFuture, ackedAt: nil)
         case .dismissed:
-            // "Dismissed" is a one-tick hide — it doesn't add to suppression;
-            // the engine removes it from active list immediately but the next
-            // detector evaluation will re-surface it if the condition persists.
-            // That's intentional: dismissal is "noted, thanks" not "never again".
-            break
+            let until = evidenceAt != nil ? Date.distantFuture : now.addingTimeInterval(dismissRenagInterval)
+            rules[signature] = Rule(until: until, ackedAt: now)
         case .none, .confirmed:
             break
         }
     }
 
     func activeSuppressions(now: Date) -> [SuppressionEntry] {
-        suppressUntil
-            .filter { $0.value > now }
-            .map { SuppressionEntry(signature: $0.key, until: $0.value, record: nil) }
+        rules
+            .filter { $0.value.ackedAt == nil && $0.value.until > now }
+            .map { SuppressionEntry(signature: $0.key, until: $0.value.until, record: nil) }
             .sorted { $0.until < $1.until }
     }
 
     func removeSuppression(signature: String) {
-        suppressUntil.removeValue(forKey: signature)
+        rules.removeValue(forKey: signature)
     }
 }

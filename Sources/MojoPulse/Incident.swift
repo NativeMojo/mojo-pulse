@@ -63,13 +63,19 @@ enum IncidentCategory: String, Sendable, Codable {
 // MARK: - Feedback
 
 /// User feedback on an incident. Used both for immediate mute behavior and
-/// as ground-truth labels for future baseline tuning.
+/// as ground-truth labels for future baseline tuning. The user-facing
+/// vocabulary is deliberately three verbs: Dismiss / Snooze / Always ignore.
 enum IncidentFeedback: Int, Sendable, Codable {
     case none = 0        // no feedback yet
-    case dismissed = 1   // user clicked "not an issue for me right now"
-    case muted1h = 2     // mute this signature for 1 hour
-    case mutedForever = 3  // mute this signature permanently
-    case confirmed = 4   // user acknowledged this was a real problem
+    /// "Dismiss" — acknowledged and cleared. Stays cleared for the evidence the
+    /// user already saw; only *newer* evidence (a fresh crash, a new panic) or —
+    /// for ongoing conditions — the next day re-surfaces it.
+    case dismissed = 1
+    case muted1h = 2     // "Snooze for 1 hour"
+    case mutedForever = 3  // "Always ignore" — permanent per-signature rule
+    /// Legacy "It's real" acknowledgment. No longer offered in the UI; the
+    /// case stays so old feedback rows still decode.
+    case confirmed = 4
 }
 
 // MARK: - Incident
@@ -103,6 +109,14 @@ struct Incident: Identifiable, Sendable, Hashable {
     var endedAt: Date?
 
     var isActive: Bool { endedAt == nil }
+
+    /// For point-in-time events (a crash report, a panic log), the timestamp of
+    /// the newest evidence behind this incident — stamped by the detector into
+    /// `context["evidence_ts"]`. A dismissal is pierced only by evidence newer
+    /// than itself, so acknowledged reports never re-alert but a fresh one does.
+    var evidenceAt: Date? {
+        context["evidence_ts"].flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
+    }
 
     init(
         id: UUID = UUID(),
@@ -230,6 +244,12 @@ struct IncidentRecord: Identifiable, Sendable, Hashable {
     }
 
     var isActive: Bool { endedAt == nil }
+
+    /// Same evidence timestamp a live `Incident` carries (see there) — records
+    /// need it so dismissing from history uses the right piercing anchor.
+    var evidenceAt: Date? {
+        context["evidence_ts"].flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
+    }
 
     /// Duration the incident was active. For still-active incidents, measured
     /// from start to `now` (caller supplies now, which makes this pure).

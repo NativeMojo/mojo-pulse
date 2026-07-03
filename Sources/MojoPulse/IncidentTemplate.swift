@@ -446,13 +446,18 @@ enum IncidentTemplates {
             let app = ctx["app"] ?? "An app"
             let count = Int(ctx["count"] ?? "1") ?? 1
             let times = count == 1 ? "crashed" : "crashed \(count) times"
+            var what = "\(app) \(times) in the last 24 hours."
+            if let reason = ctx["reason"] {
+                let lead = count == 1 ? "Cause" : "Most recent"
+                what += " \(lead): \(reason.prefix(1).lowercased() + reason.dropFirst())."
+            }
             return IncidentCopy(
                 title: count > 1 ? "\(app) keeps crashing" : "\(app) crashed",
-                what: "\(app) \(times) in the last 24 hours.",
+                what: what,
                 why: count > 1
                     ? "Repeated crashes usually mean a bad update, a corrupt preference, or a failing extension — worth looking into."
                     : "macOS logged a crash report for it. A one-off is usually harmless.",
-                action: "If it keeps happening, try updating or reinstalling the app. Choose “Always ignore” to stop tracking it.",
+                action: "Open the crash report for the full story — the top names exactly what failed. If it keeps happening, update or reinstall the app. Dismiss clears this; Pulse only alerts again if it crashes anew.",
                 actionURL: nil
             )
 
@@ -533,6 +538,11 @@ enum IncidentTemplates {
     // off, SIP off, firewall off, no internet, …) where the title alone already
     // says everything, so the card stays a clean one-liner.
 
+    /// Clock time for point-in-time events on the card essence line ("2:14 PM").
+    private static let essenceTimeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateStyle = .none; f.timeStyle = .short; return f
+    }()
+
     static func summary(templateKey key: String, context c: [String: String]) -> String? {
         func v(_ k: String) -> String? {
             guard let x = c[k]?.trimmingCharacters(in: .whitespaces), !x.isEmpty else { return nil }
@@ -541,6 +551,12 @@ enum IncidentTemplates {
         func join(_ parts: String?...) -> String? {
             let kept = parts.compactMap { $0 }
             return kept.isEmpty ? nil : kept.joined(separator: " · ")
+        }
+        // The moment the event actually happened (crash/panic report date).
+        func evidenceTime() -> String? {
+            v("evidence_ts").flatMap(Double.init).map {
+                essenceTimeFormatter.string(from: Date(timeIntervalSince1970: $0))
+            }
         }
 
         switch key {
@@ -593,7 +609,8 @@ enum IncidentTemplates {
         // System events
         case "event.crash":
             let n = v("count")
-            return join(v("app"), (n != nil && n != "1") ? "\(n!)×" : nil)
+            return join(v("app"), (n != nil && n != "1") ? "\(n!)×" : nil,
+                        evidenceTime().map { n != "1" ? "last at \($0)" : "at \($0)" })
         case "event.diskFailing":
             return v("disk")
         case "event.panic":

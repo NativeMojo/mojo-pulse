@@ -2910,11 +2910,11 @@ struct VitalCell: View {
 ///          │ Suggested action │
 ///          └──────────────────┘
 ///
-/// The [•••] menu has the three feedback options. We intentionally don't
-/// show a thumbs-up/thumbs-down row — users won't tap those, but they
-/// *will* tap "mute this for 1h" because it has immediate value to them.
-/// Every one of those mute clicks is a ground-truth label we store via
-/// DetectorEngine.recordFeedback.
+/// Hover reveals [✕] (Dismiss — the one-click acknowledge) and [•••]
+/// (Snooze 1h / Always ignore). We intentionally don't show a
+/// thumbs-up/thumbs-down row — users won't tap those, but they *will* act
+/// to clear or quiet a card, and every one of those clicks is a
+/// ground-truth label we store via DetectorEngine.recordFeedback.
 struct IncidentCard: View {
     let incident: Incident
     /// Tapping the card body (anywhere but the ••• menu) opens the full detail
@@ -2965,6 +2965,8 @@ struct IncidentCard: View {
 
             Spacer(minLength: 6)
 
+            dismissButton
+                .opacity(isHovering ? 1 : 0)
             feedbackMenu
                 .opacity(isHovering ? 1 : 0)
             Image(systemName: "chevron.right")
@@ -2987,18 +2989,16 @@ struct IncidentCard: View {
         .onTapGesture { onSelect?() }
         .onHover { isHovering = $0 }
         .help(onSelect == nil ? "" : "Show details")
-        // Right-click mirrors the ••• menu — the natural macOS gesture for
-        // "act on this row without opening it".
+        // Right-click mirrors the hover controls — the natural macOS gesture
+        // for "act on this row without opening it". Three verbs, no jargon.
         .contextMenu {
             if let onSelect {
                 Button("Show Details") { onSelect() }
                 Divider()
             }
-            Button("Not an Issue Right Now") { onFeedback(.dismissed) }
-            Button("Mute for 1 Hour") { onFeedback(.muted1h) }
+            Button("Dismiss") { onFeedback(.dismissed) }
+            Button("Snooze for 1 Hour") { onFeedback(.muted1h) }
             Button("Always Ignore") { onFeedback(.mutedForever) }
-            Divider()
-            Button("It's Real — Thanks") { onFeedback(.confirmed) }
         }
     }
 
@@ -3006,13 +3006,22 @@ struct IncidentCard: View {
         SeverityColors.color(for: incident.severity, fallbackQuiet: false)
     }
 
+    /// One-click acknowledge — the action people actually want on a card.
+    /// Clears it (history keeps it); only something *new* re-alerts.
+    private var dismissButton: some View {
+        Button { onFeedback(.dismissed) } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Dismiss — clears this event (kept in Recent). You'll only be alerted again if something new happens.")
+    }
+
     private var feedbackMenu: some View {
         Menu {
-            Button("Not an issue right now") { onFeedback(.dismissed) }
-            Button("Mute for 1 hour") { onFeedback(.muted1h) }
-            Button("Always ignore") { onFeedback(.mutedForever) }
-            Divider()
-            Button("It's real — thanks") { onFeedback(.confirmed) }
+            Button("Snooze for 1 Hour") { onFeedback(.muted1h) }
+            Button("Always Ignore") { onFeedback(.mutedForever) }
         } label: {
             Image(systemName: "ellipsis.circle")
                 .font(.system(size: 13))
@@ -3021,7 +3030,7 @@ struct IncidentCard: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Quick actions")
+        .help("Snooze or ignore")
     }
 }
 
@@ -3226,14 +3235,16 @@ struct IncidentDetailView: View {
         colorScheme == .dark ? tint : SeverityColors.textEmphasis(for: record.severity)
     }
 
-    /// The concrete evidence: where the subject runs from and its full command
-    /// line with arguments — the "what am I actually looking at / ignoring?"
-    /// facts. Only rendered when the event carries them (process/listener
-    /// events); copyable and selectable so the user can paste them anywhere.
+    /// The concrete evidence: where the subject runs from, its full command
+    /// line, and — for crashes — what the report says went wrong. The "what am
+    /// I actually looking at / ignoring?" facts. Only rendered when the event
+    /// carries them; copyable and selectable so the user can paste them anywhere.
     @ViewBuilder
     private var evidence: some View {
-        if subjectPath != nil || subjectCommand != nil {
+        if subjectPath != nil || subjectCommand != nil || crashReason != nil || crashFrame != nil {
             VStack(alignment: .leading, spacing: 9) {
+                if let reason = crashReason { factRow("Why it crashed", reason) }
+                if let frame = crashFrame { factRow("Crashed in", frame) }
                 if let path = subjectPath { factRow("Location", path) }
                 if let cmd = subjectCommand { factRow("Command", cmd) }
             }
@@ -3243,6 +3254,13 @@ struct IncidentDetailView: View {
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.primary.opacity(0.07), lineWidth: 0.5))
         }
     }
+
+    /// The report's own machinery line — "EXC_CRASH (SIGABRT) · Abort trap: 6".
+    /// The plain-English translation lives in the What's-happening copy; this
+    /// row is the searchable/copyable exact form.
+    private var crashReason: String? { record.context["rawReason"] }
+    private var crashFrame: String? { record.context["crashedIn"] }
+    private var crashReportPath: String? { record.context["report"] }
 
     private func factRow(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -3303,6 +3321,17 @@ struct IncidentDetailView: View {
                         NSPasteboard.general.setString(cmd, forType: .string)
                     }
                 }
+                if let report = crashReportPath {
+                    Divider()
+                    Button("Show Report in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: report)])
+                    }
+                    // The 24h window can hold more reports than the one we
+                    // parsed — the folder shows every crash, for every app.
+                    Button("All Crash Reports…") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: report).deletingLastPathComponent())
+                    }
+                }
             } label: {
                 Image(systemName: "ellipsis.circle").font(.system(size: 15))
             }
@@ -3322,10 +3351,22 @@ struct IncidentDetailView: View {
 
             if engine != nil { ignoreMenu }
 
-            // Plain (not the accent-filled default button) — the solid hero
-            // above owns the blue. Return still closes via an explicit binding.
-            Button("Done") { close() }
-                .keyboardShortcut(.return, modifiers: [])
+            if record.isActive, engine != nil {
+                // The one resolution most people want: acknowledged, cleared,
+                // kept in Recent. Return-key default; Done stays the "keep the
+                // alert, just close the window" escape hatch.
+                Button("Done") { close() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Dismiss") {
+                    applyFeedback(.dismissed)
+                    close()
+                }
+                .keyboardShortcut(.defaultAction)
+                .help("Clears this event (kept in Recent). You'll only be alerted again if something new happens.")
+            } else {
+                Button("Done") { close() }
+                    .keyboardShortcut(.defaultAction)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
@@ -3335,10 +3376,9 @@ struct IncidentDetailView: View {
         if let onClose { onClose() } else { NSApp.keyWindow?.performClose(nil) }
     }
 
-    /// The full feedback vocabulary the live card's ••• menu offers — dismiss,
-    /// mute 1h, ignore forever, confirm — with the rule's exact scope as the
-    /// menu's section header, shown at the moment of choice instead of as a
-    /// footnote under a button grid.
+    /// Silencing options — snooze or a permanent per-signature rule — with the
+    /// rule's exact scope as the menu's section header, shown at the moment of
+    /// choice. Dismiss lives as the footer's default button, not in here.
     private var ignoreMenu: some View {
         Menu {
             Section(ignoreScopeText) {
@@ -3348,14 +3388,9 @@ struct IncidentDetailView: View {
                         ignored = false
                     }
                 } else {
-                    Button("Mute for 1 Hour") { applyFeedback(.muted1h) }
+                    Button("Snooze for 1 Hour") { applyFeedback(.muted1h) }
                     Button("Always Ignore") { applyFeedback(.mutedForever) }
                 }
-            }
-            if !ignored, record.isActive {
-                Divider()
-                Button("Not an Issue Right Now") { applyFeedback(.dismissed) }
-                Button("It's Real — Thanks") { applyFeedback(.confirmed) }
             }
         } label: {
             HStack(spacing: 4) {
@@ -3364,7 +3399,7 @@ struct IncidentDetailView: View {
             }
         }
         .fixedSize()
-        .help(ignored ? "This event is being ignored" : "Silence events like this")
+        .help(ignored ? "This event is being ignored" : "Snooze or always ignore events like this")
     }
 
     /// What an ignore rule from this event actually matches — a whole worker
@@ -3378,7 +3413,7 @@ struct IncidentDetailView: View {
     }
 
     private func applyFeedback(_ fb: IncidentFeedback) {
-        engine?.applyFeedback(fb, signature: record.signature)
+        engine?.applyFeedback(fb, signature: record.signature, evidenceAt: record.evidenceAt)
         if fb == .muted1h || fb == .mutedForever { ignored = true }
     }
 
@@ -3389,6 +3424,14 @@ struct IncidentDetailView: View {
     /// events (where signer, path, connections, open files, and trust all live),
     /// or the specific System Settings pane for posture events.
     private var primaryAction: PrimaryAction? {
+        // A crash's single best investigate action: the report itself, opened
+        // in Console (the system viewer for .ips) — full backtrace and all.
+        if record.templateKey == "event.crash", let report = crashReportPath,
+           FileManager.default.fileExists(atPath: report) {
+            return PrimaryAction(icon: "doc.text.magnifyingglass", label: "Open Crash Report in Console") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: report))
+            }
+        }
         // A still-running process → open its full detail (the exact rich
         // inspector the Processes explorer shows: signer, path, command,
         // connections, open files, env). The single best investigate action.
@@ -3491,6 +3534,10 @@ struct IncidentDetailView: View {
             q = "\(name) mac app \(record.context["signer"] ?? "")"
         case "network.connFlagged", "network.connNewCountry":
             q = "\(name) mac app network connections"
+        case "event.crash":
+            // The raw indicator ("Abort trap: 6", a TCC message) is exactly
+            // what forums and release notes mention.
+            q = "\(name) mac crash \(record.context["rawReason"] ?? "")"
         default:
             q = "\(name) macOS"
         }
@@ -3509,6 +3556,11 @@ struct IncidentDetailView: View {
         else if let country = c["country"] { out.append(country) }
         if let signer = c["signer"], signer.count <= 22 { out.append(signer) }
         if let tags = c["tags"], !tags.isEmpty, tags.count <= 26 { out.append(tags) }
+        if record.templateKey == "event.crash" {
+            if let n = c["count"], n != "1" { out.append("\(n) crashes") }
+            if let v = c["version"] { out.append("v\(v)") }
+            if let evidence = record.evidenceAt { out.append("last at \(time(evidence))") }
+        }
         return Array(out.prefix(5))
     }
 
@@ -3572,7 +3624,12 @@ struct IncidentDetailView: View {
     // MARK: Formatting
 
     private var statusText: String {
-        record.isActive ? "active now" : "resolved \(RelativeTime.short(from: record.startedAt, to: now))"
+        // Point-in-time events (crash, panic) aren't "active" — they happened.
+        // Say when, from the evidence's own timestamp.
+        if record.isActive, let evidence = record.evidenceAt {
+            return "happened \(RelativeTime.short(from: evidence, to: now))"
+        }
+        return record.isActive ? "active now" : "resolved \(RelativeTime.short(from: record.startedAt, to: now))"
     }
     private var statusChip: String { record.isActive ? severityName : "Resolved" }
 
@@ -3911,7 +3968,7 @@ struct MutedItemsView: View {
                 .foregroundStyle(.secondary)
             Text("You're not ignoring anything")
                 .font(.headline)
-            Text("When you choose “Always ignore” or “Mute for 1 hour” on an event, it shows up here so you can lift it later.")
+            Text("When you choose “Always ignore” or “Snooze for 1 hour” on an event, it shows up here so you can lift it later.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

@@ -121,6 +121,12 @@ final class Database: @unchecked Sendable {
                 until INTEGER NOT NULL
             );
         """)
+        // Dismiss acknowledgments live in the same table as mute rules but
+        // carry the moment of acknowledgment: newer evidence pierces them.
+        // NULL = explicit mute rule (snooze / always-ignore), never pierced.
+        if !columnExists(table: "suppressions", column: "acked_at") {
+            try exec("ALTER TABLE suppressions ADD COLUMN acked_at INTEGER;")
+        }
         // Per-minute metric rollups (min/avg/max) for the persistent history
         // charts. One row per (metric, minute). Composite PK doubles as the
         // lookup index; pruned to a rolling retention window.
@@ -674,10 +680,13 @@ final class Database: @unchecked Sendable {
     }
 
     /// Upsert a suppression entry. Pass `.distantFuture` for mute-forever.
-    func setSuppression(signature: String, until: Date) throws {
+    /// `ackedAt` is non-nil for Dismiss acknowledgments (piercable), nil for
+    /// explicit mute rules.
+    func setSuppression(signature: String, until: Date, ackedAt: Date? = nil) throws {
         let sql = """
-            INSERT INTO suppressions (signature, until) VALUES (?, ?)
-            ON CONFLICT(signature) DO UPDATE SET until = excluded.until;
+            INSERT INTO suppressions (signature, until, acked_at) VALUES (?, ?, ?)
+            ON CONFLICT(signature) DO UPDATE SET until = excluded.until,
+                                                 acked_at = excluded.acked_at;
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -688,17 +697,22 @@ final class Database: @unchecked Sendable {
         // Clamp .distantFuture to Int64.max so we don't overflow.
         let untilSeconds = min(until.timeIntervalSince1970, Double(Int64.max))
         sqlite3_bind_int64(stmt, 2, Int64(untilSeconds))
+        if let ackedAt {
+            sqlite3_bind_int64(stmt, 3, Int64(ackedAt.timeIntervalSince1970))
+        } else {
+            sqlite3_bind_null(stmt, 3)
+        }
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw DBError.execFailed
         }
     }
 
-    /// Fetch the suppression expiry for a signature, if any. Returns nil if
-    /// the signature has no entry. The caller is responsible for comparing
-    /// against `now` — we don't auto-delete expired rows here because it's
-    /// cheaper to just treat them as inactive.
-    func suppressionUntil(signature: String) throws -> Date? {
-        let sql = "SELECT until FROM suppressions WHERE signature = ? LIMIT 1;"
+    /// Fetch the suppression rule for a signature, if any: its expiry plus the
+    /// acknowledgment time when it's a Dismiss (nil for explicit mutes). The
+    /// caller compares against `now` — we don't auto-delete expired rows here
+    /// because it's cheaper to just treat them as inactive.
+    func suppressionRule(signature: String) throws -> (until: Date, ackedAt: Date?)? {
+        let sql = "SELECT until, acked_at FROM suppressions WHERE signature = ? LIMIT 1;"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             throw DBError.prepareFailed
@@ -707,14 +721,17 @@ final class Database: @unchecked Sendable {
         sqlite3_bind_text(stmt, 1, signature, -1, Database.SQLITE_TRANSIENT)
         let step = sqlite3_step(stmt)
         guard step == SQLITE_ROW else { return nil }
-        let seconds = sqlite3_column_int64(stmt, 0)
-        return Date(timeIntervalSince1970: TimeInterval(seconds))
+        let until = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 0)))
+        let ackedAt: Date? = sqlite3_column_type(stmt, 1) == SQLITE_NULL
+            ? nil : Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 1)))
+        return (until, ackedAt)
     }
 
     /// All currently-active suppressions (mute rules), each joined to its most
     /// recent incident so the UI can show a friendly label instead of the raw
-    /// signature. Expired temporary mutes are filtered out. Soonest-to-expire
-    /// first so temporary mutes naturally sort ahead of permanent ones.
+    /// signature. Expired temporary mutes are filtered out, as are Dismiss
+    /// acknowledgments (`acked_at` set) — those aren't rules the user manages.
+    /// Soonest-to-expire first so temporary mutes sort ahead of permanent ones.
     func fetchSuppressions(now: Date) throws -> [SuppressionEntry] {
         let sql = """
             SELECT s.signature, s.until,
@@ -724,7 +741,7 @@ final class Database: @unchecked Sendable {
             LEFT JOIN incidents i
                 ON i.id = (SELECT id FROM incidents WHERE signature = s.signature
                            ORDER BY started_at DESC LIMIT 1)
-            WHERE s.until > ?
+            WHERE s.until > ? AND s.acked_at IS NULL
             ORDER BY s.until ASC;
         """
         var stmt: OpaquePointer?
@@ -856,53 +873,79 @@ extension Database: IncidentPersistence {
 // MARK: - DB-backed feedback store
 
 /// FeedbackStore implementation that reads/writes through `Database`, giving
-/// us persistence across restarts. Falls back to in-memory caching for the
-/// suppression check so the hot path doesn't hit SQLite on every tick.
+/// us persistence across restarts (a Dismiss survives relaunch — the single
+/// most important property; without it every acknowledged event came back).
+/// Falls back to in-memory caching for the suppression check so the hot path
+/// doesn't hit SQLite on every tick.
 @MainActor
 final class DatabaseFeedbackStore: FeedbackStore {
+    /// Mirror of one suppressions row. `ackedAt == nil` → explicit mute rule;
+    /// non-nil → Dismiss acknowledgment, pierced by newer evidence.
+    private struct Rule {
+        var until: Date
+        var ackedAt: Date?
+    }
+
+    /// `nil` in the cache means "checked the DB, no row" — so repeat lookups
+    /// for never-suppressed signatures don't hit SQLite every tick.
     private let database: Database
-    private var cache: [String: Date] = [:]
-    private var cacheHydrated = false
+    private var cache: [String: Rule?] = [:]
 
     init(database: Database) {
         self.database = database
     }
 
-    func isSuppressed(signature: String, now: Date) -> Bool {
-        if !cacheHydrated {
-            // First call — we don't hydrate the whole table eagerly, we just
-            // mark the cache as hot and fall through to per-signature lookup.
-            // For MVP the number of distinct signatures is tiny, so this
-            // converges fast.
-            cacheHydrated = true
-        }
-        if let cached = cache[signature] {
-            if cached <= now {
-                cache.removeValue(forKey: signature)
-                return false
-            }
-            return true
-        }
-        // Cache miss — ask the DB.
-        if let until = (try? database.suppressionUntil(signature: signature)) {
-            cache[signature] = until
-            return until > now
-        }
-        return false
+    private func rule(for signature: String) -> Rule? {
+        if let cached = cache[signature] { return cached }
+        let loaded = (try? database.suppressionRule(signature: signature))
+            .flatMap { $0.map { Rule(until: $0.until, ackedAt: $0.ackedAt) } }
+        cache.updateValue(loaded, forKey: signature)
+        return loaded
     }
 
-    func record(_ feedback: IncidentFeedback, signature: String, now: Date) {
+    private func drop(_ signature: String) {
+        try? database.deleteSuppression(signature: signature)
+        cache.updateValue(nil, forKey: signature)
+    }
+
+    func isSuppressed(signature: String, evidenceAt: Date?, now: Date) -> Bool {
+        guard let rule = rule(for: signature) else { return false }
+        if rule.until <= now {
+            drop(signature)
+            return false
+        }
+        if let acked = rule.ackedAt, let evidence = evidenceAt, evidence > acked {
+            // Evidence newer than the acknowledgment — the user hasn't seen
+            // *this* one. Clear the ack so it alerts like a fresh event.
+            drop(signature)
+            return false
+        }
+        return true
+    }
+
+    func hasMuteRule(signature: String, now: Date) -> Bool {
+        guard let rule = rule(for: signature) else { return false }
+        return rule.ackedAt == nil && rule.until > now
+    }
+
+    func record(_ feedback: IncidentFeedback, signature: String, evidenceAt: Date?, now: Date) {
         try? database.insertFeedback(signature: signature, feedback: feedback, ts: now)
 
         switch feedback {
         case .muted1h:
             let until = now.addingTimeInterval(3600)
-            cache[signature] = until
+            cache[signature] = Rule(until: until, ackedAt: nil)
             try? database.setSuppression(signature: signature, until: until)
         case .mutedForever:
-            cache[signature] = .distantFuture
+            cache[signature] = Rule(until: .distantFuture, ackedAt: nil)
             try? database.setSuppression(signature: signature, until: .distantFuture)
-        case .dismissed, .none, .confirmed:
+        case .dismissed:
+            // Anchored to its evidence when there is any (a newer report
+            // pierces); a day of quiet for ongoing conditions.
+            let until = evidenceAt != nil ? Date.distantFuture : now.addingTimeInterval(dismissRenagInterval)
+            cache[signature] = Rule(until: until, ackedAt: now)
+            try? database.setSuppression(signature: signature, until: until, ackedAt: now)
+        case .none, .confirmed:
             break
         }
     }
@@ -913,8 +956,8 @@ final class DatabaseFeedbackStore: FeedbackStore {
 
     func removeSuppression(signature: String) {
         try? database.deleteSuppression(signature: signature)
-        // Drop the cached expiry so the next isSuppressed() check re-reads the
+        // Drop the cached rule so the next isSuppressed() check re-reads the
         // (now empty) DB and the incident can re-surface immediately.
-        cache.removeValue(forKey: signature)
+        cache.updateValue(nil, forKey: signature)
     }
 }
