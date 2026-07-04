@@ -110,6 +110,9 @@ struct NetworkHealthView: View {
             let rtt = q.rttMs.map { "\(Int($0)) ms round-trips" } ?? "high latency"
             return (SeverityColors.watch, "Rough by nature — \(rtt)",
                     "\(net) runs like this; nothing is degrading")
+        case .paused:
+            return (SeverityColors.quiet, "Paused — \(q.reason ?? "probing suspended")",
+                    "\(net) · resumes automatically · history below still browsable · Settings → Network sentinel")
         case .offline:
             return (SeverityColors.issue, "No internet", "probes are failing — see the offline event")
         }

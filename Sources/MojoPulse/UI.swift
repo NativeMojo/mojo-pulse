@@ -722,7 +722,7 @@ struct PopoverView: View {
     private var sentinelDotColor: Color? {
         switch sentinel.quality.state {
         case .off: return nil
-        case .learning: return SeverityColors.quiet.opacity(0.55)
+        case .learning, .paused: return SeverityColors.quiet.opacity(0.55)
         case .normal: return SeverityColors.good
         case .degraded, .rough: return SeverityColors.watch
         case .offline: return SeverityColors.issue
@@ -747,6 +747,8 @@ struct PopoverView: View {
         case .rough:
             let rtt = q.rttMs.map { "\(Int($0)) ms round-trips" } ?? "high latency"
             return "Network quality: rough by nature — \(net) runs \(rtt)\(q.lossPct.map { $0 >= 1 ? String(format: " with %.0f%% loss", $0) : "" } ?? ""). Not degrading; it's just like this here."
+        case .paused:
+            return "Network quality: paused \(q.reason ?? "") — probes resume automatically. Change this in Settings → Network sentinel."
         case .offline:
             return "Network quality: no internet — probes are failing."
         }

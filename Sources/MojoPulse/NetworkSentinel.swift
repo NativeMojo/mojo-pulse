@@ -52,6 +52,10 @@ enum SentinelQualityState: String, Sendable {
     /// Objectively poor network (absolute floors), but not getting worse —
     /// "rough by nature, normal for here". Amber dot, calmer tooltip.
     case rough
+    /// Probing intentionally suspended (battery / Low Power Mode / a Speed
+    /// Test running). MUST be visible — a silent pause is indistinguishable
+    /// from a broken sentinel (learned the hard way).
+    case paused
 }
 
 struct SentinelQuality: Sendable, Equatable {
@@ -62,6 +66,8 @@ struct SentinelQuality: Sendable, Equatable {
     let gwBaselineMs: Double?   // learned usual to the router
     let lossPct: Double?
     let network: String
+    /// For `.paused`: the human-readable why ("on battery power", …).
+    var reason: String? = nil
     static let initial = SentinelQuality(state: .learning, rttMs: nil, gwMs: nil,
                                          baselineMs: nil, gwBaselineMs: nil,
                                          lossPct: nil, network: "")
@@ -181,9 +187,12 @@ final class NetworkSentinel: ObservableObject {
             setQuality(state: .offline, network: "")
             return
         }
-        if isSpeedTestActive() { return }
-        if ProcessInfo.processInfo.isLowPowerModeEnabled { return }
-        if settings.sentinelPauseOnBattery, system.current.battery?.isPluggedIn == false { return }
+        if isSpeedTestActive() { setPaused("while a Speed Test runs"); return }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { setPaused("in Low Power Mode"); return }
+        if settings.sentinelPauseOnBattery, system.current.battery?.isPluggedIn == false {
+            setPaused("on battery power")
+            return
+        }
 
         cycleCount += 1
         let now = Date()
@@ -286,6 +295,14 @@ final class NetworkSentinel: ObservableObject {
         let next = SentinelQuality(state: state, rttMs: nil, gwMs: nil,
                                    baselineMs: nil, gwBaselineMs: nil,
                                    lossPct: nil, network: network)
+        if quality != next { quality = next }
+    }
+
+    private func setPaused(_ reason: String) {
+        let network = wifi.current.ssid ?? (wifi.current.hasWiFiLink ? "wifi" : "ethernet")
+        let next = SentinelQuality(state: .paused, rttMs: nil, gwMs: nil,
+                                   baselineMs: nil, gwBaselineMs: nil,
+                                   lossPct: nil, network: network, reason: reason)
         if quality != next { quality = next }
     }
 
