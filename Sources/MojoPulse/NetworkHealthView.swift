@@ -120,15 +120,17 @@ struct NetworkHealthView: View {
     private var liveStats: some View {
         let q = sentinel.quality
         let organic = Double(system.current.netBytesInPerSec &+ system.current.netBytesOutPerSec)
-        return HStack(alignment: .firstTextBaseline, spacing: 26) {
+        return HStack(alignment: .firstTextBaseline, spacing: 20) {
             liveStat(q.rttMs.map { "\(Int($0)) ms" } ?? "—", "internet")
             liveStat(q.gwMs.map { "\(Int($0)) ms" } ?? "—", "router")
             liveStat(q.lossPct.map { $0 < 0.05 ? "0%" : String(format: "%.1f%%", $0) } ?? "—", "loss")
             liveStat(Self.rate(organic), "your traffic")
-            Spacer()
+            Spacer(minLength: 8)
             Text(range == .live ? "live · last 5 minutes" : "history · \(range.title.lowercased()) view")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
         .padding(.horizontal, 2)
     }
@@ -137,9 +139,13 @@ struct NetworkHealthView: View {
         HStack(alignment: .firstTextBaseline, spacing: 5) {
             Text(value)
                 .font(.system(size: 19, weight: .semibold, design: .rounded).monospacedDigit())
+                .lineLimit(1)
+                .fixedSize()
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize()
         }
     }
 
@@ -165,13 +171,18 @@ struct NetworkHealthView: View {
 
     @ViewBuilder
     private var chartArea: some View {
-        if plot.allSatisfy({ $0.samples.isEmpty }) {
+        if plot.allSatisfy({ $0.samples.isEmpty })
+            && (metric != .bloat || speedTestBloatPoints.isEmpty) {
             VStack(spacing: 5) {
-                Text("Collecting…")
+                Text(metric == .bloat ? "Needs load to measure" : "Collecting…")
                     .font(.subheadline.weight(.semibold))
-                Text("The sentinel records as it watches. Give it a moment and this fills in.")
+                Text(metric == .bloat
+                     ? "Bufferbloat only shows itself while your Mac moves real traffic — a call, a stream, an upload — and from every Speed Test you run. Nothing in this window yet."
+                     : "The sentinel records as it watches. Give it a moment and this fills in.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 56)
@@ -179,6 +190,21 @@ struct NetworkHealthView: View {
             trafficChart
         } else {
             lineChart
+        }
+    }
+
+    /// Every Speed Test already measured true loaded-vs-idle latency — those
+    /// become dots on the bloat timeline, so this tab has honest content even
+    /// before organic load has generated passive samples.
+    private var speedTestBloatPoints: [MetricSample] {
+        let cutoff = Date().addingTimeInterval(-currentWindow)
+        return speedTest.history.compactMap { result in
+            guard result.at >= cutoff, let idle = result.inetIdleMs else { return nil }
+            let deltas = [result.inetLoadedDownMs, result.inetLoadedUpMs]
+                .compactMap { $0 }
+                .map { max(0, $0 - idle) }
+            guard let worst = deltas.max() else { return nil }
+            return MetricSample(timestamp: result.at, value: worst)
         }
     }
 
@@ -255,6 +281,13 @@ struct NetworkHealthView: View {
                             .foregroundStyle(.tertiary)
                     }
             }
+            if metric == .bloat {
+                ForEach(speedTestBloatPoints) { point in
+                    PointMark(x: .value("t", point.timestamp), y: .value("v", point.value))
+                        .foregroundStyle(Self.upColor)
+                        .symbolSize(38)
+                }
+            }
         }
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
@@ -301,8 +334,8 @@ struct NetworkHealthView: View {
             singlePanel(tint: SeverityColors.watch, icon: "drop", title: "Packet loss",
                         rows: summaryRows(unit: .percent))
         case .bloat:
-            singlePanel(tint: Self.upColor, icon: "hourglass", title: "Added latency under your own load",
-                        rows: summaryRows(unit: .ms))
+            singlePanel(tint: Self.upColor, icon: "hourglass", title: "Added latency under load",
+                        rows: bloatRows())
         case .dns:
             singlePanel(tint: SeverityColors.info, icon: "signpost.right", title: "DNS resolver",
                         rows: summaryRows(unit: .ms))
@@ -361,6 +394,19 @@ struct NetworkHealthView: View {
 
     private func singlePanel(tint: Color, icon: String, title: String, rows: [(String, String)]) -> some View {
         statPanel(tint: tint, icon: icon, title: title, rows: rows)
+    }
+
+    /// Bloat blends both sources: passive samples (when load happened) and
+    /// the measured deltas from Speed Tests in the window.
+    private func bloatRows() -> [(String, String)] {
+        let passive = plot.first?.samples.map(\.value) ?? []
+        let tested = speedTestBloatPoints.map(\.value)
+        func fmt(_ v: Double?) -> String { v.map { "+\(Int($0)) ms" } ?? "—" }
+        return [
+            ("Passive · latest", fmt(passive.last)),
+            ("Passive · worst", fmt(passive.max())),
+            ("Speed tests · worst", fmt(tested.max()))
+        ]
     }
 
     private func statPanel(tint: Color, icon: String, title: String, rows: [(String, String)]) -> some View {

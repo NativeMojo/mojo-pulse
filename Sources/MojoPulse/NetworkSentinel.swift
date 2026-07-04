@@ -92,7 +92,6 @@ final class NetworkSentinel: ObservableObject {
     /// (absolute) verdict, which needs ~5 minutes of samples, not a baseline.
     private var networkCycles = 0
     private var gatewayIP: String?
-    private var capacityMbps: Double?
 
     private static let anchors = ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
     /// 60 s normally; the Network Health window steps this down to 15 s while
@@ -203,15 +202,15 @@ final class NetworkSentinel: ObservableObject {
         if gatewayIP == nil || cycleCount % 5 == 1 {
             gatewayIP = await GatewayFinder.defaultGateway()?.ip
         }
-        if capacityMbps == nil || cycleCount % 30 == 1, let database {
-            let downs = ((try? database.fetchSpeedTests(limit: 10)) ?? [])
-                .compactMap(\.downMbps).sorted()
-            capacityMbps = downs.isEmpty ? nil : downs[downs.count / 2]
-        }
-
-        // Organic-load tag: is the Mac's own traffic heavy right now?
-        let organicMbps = Double(system.current.netBytesInPerSec &+ system.current.netBytesOutPerSec) * 8 / 1_000_000
-        let busy = organicMbps > max(5, (capacityMbps ?? 0) * 0.15)
+        // Organic-load tag: is the Mac's own traffic meaningful right now?
+        // Per-direction absolute floors — a call, a stream, a backup. (An
+        // earlier %-of-capacity rule needed ~100 Mbps of organic traffic to
+        // count as busy, which starved the bloat signal completely.) Moderate
+        // loads dilute the busy median toward idle, which only ever
+        // under-reports bloat — the safe direction for the 150 ms alarm.
+        let downOrganic = Double(system.current.netBytesInPerSec) * 8 / 1_000_000
+        let upOrganic = Double(system.current.netBytesOutPerSec) * 8 / 1_000_000
+        let busy = downOrganic > 8 || upOrganic > 2
 
         // Probe: 4 echoes to the router, 3 to this cycle's anchor. The FIRST
         // router echo is discarded: it pays the Wi-Fi radio's power-save
@@ -402,7 +401,7 @@ final class NetworkSentinel: ObservableObject {
         let all = anchorSamples.values.flatMap { $0 }
         let busyRTTs = all.filter(\.busy).compactMap(\.ms)
         let idleRTTs = all.filter { !$0.busy }.compactMap(\.ms)
-        guard busyRTTs.count >= 20, idleRTTs.count >= 10,
+        guard busyRTTs.count >= 12, idleRTTs.count >= 8,
               let busyMed = median(busyRTTs), let idleMed = median(idleRTTs) else { return nil }
         return max(0, busyMed - idleMed)
     }
@@ -441,7 +440,7 @@ final class NetworkSentinel: ObservableObject {
                  to: loss.pct)
         }
 
-        // bloat — busy−idle > 150 ms (the ≥20 busy samples are the sustain).
+        // bloat — busy−idle > 150 ms (the busy-sample gate is the sustain).
         if let delta = bloatDelta() {
             let all = anchorSamples.values.flatMap { $0 }
             let idleMed = median(all.filter { !$0.busy }.compactMap(\.ms)) ?? 0
