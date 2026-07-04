@@ -242,7 +242,9 @@ struct SpeedTestView: View {
             HStack(alignment: .top, spacing: 22) {
                 VStack(alignment: .leading, spacing: 4) {
                     speedStat("arrow.down", "Download", result.downMbps, Self.downColor, grade: result.gradeDown)
-                    if let (tag, color) = usualTagInfo(result) {
+                    if result.downMbps == nil {
+                        failedTag("couldn't measure")
+                    } else if let (tag, color) = usualTagInfo(result) {
                         Text(tag)
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(color)
@@ -252,7 +254,12 @@ struct SpeedTestView: View {
                             .help("Compared to this Mac's median download across past tests. The tag appears below 70% of your usual.")
                     }
                 }
-                speedStat("arrow.up", "Upload", result.upMbps, Self.upColor, grade: result.gradeUp)
+                VStack(alignment: .leading, spacing: 4) {
+                    speedStat("arrow.up", "Upload", result.upMbps, Self.upColor, grade: result.gradeUp)
+                    if result.upMbps == nil {
+                        failedTag("couldn't measure")
+                    }
+                }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(result.rpm.map(String.init) ?? "—")
                         .font(.system(size: 24, weight: .semibold, design: .rounded).monospacedDigit())
@@ -282,6 +289,18 @@ struct SpeedTestView: View {
                 .lineLimit(1)
         }
         .padding(.horizontal, 2)
+    }
+
+    /// A failed phase is called out where the number should be — never a
+    /// silent "—" the user has to interrogate.
+    private func failedTag(_ text: String) -> some View {
+        Text("▲ \(text)")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(SeverityColors.issue)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(SeverityColors.issue.opacity(0.12)))
+            .help("This phase moved no data, so it couldn't be measured this run. The reason (HTTP status or stall) is in Why this verdict and the Test log.")
     }
 
     /// "▼ below your usual ~705" when this run's download strays under 70%

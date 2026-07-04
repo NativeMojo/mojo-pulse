@@ -249,7 +249,11 @@ private final class ThroughputMeter: NSObject, URLSessionDataDelegate, @unchecke
     private let lock = NSLock()
     private var received: Int64 = 0
     private var sent: Int64 = 0
-    private var lastSentByTask: [Int: Int64] = [:]
+    /// Keyed by object identity, NOT taskIdentifier — identifiers are only
+    /// unique within one session, and with one session per stream every
+    /// phase's tasks collide on the same small integers (which cross-wired
+    /// their progress baselines and zeroed the upload numbers).
+    private var lastSentByTask: [ObjectIdentifier: Int64] = [:]
     private var firstByteAtMs: Double?
     private var badStatus: Int?
 
@@ -263,6 +267,9 @@ private final class ThroughputMeter: NSObject, URLSessionDataDelegate, @unchecke
     var lastBadStatus: Int? { lock.withLock { badStatus } }
 
     func resetTTFB() { lock.withLock { firstByteAtMs = nil } }
+    /// Called between phases so an HTTP status left by the download can't be
+    /// misattributed to the upload (and vice versa).
+    func resetStatus() { lock.withLock { badStatus = nil } }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive response: URLResponse,
@@ -284,14 +291,15 @@ private final class ThroughputMeter: NSObject, URLSessionDataDelegate, @unchecke
                     didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
                     totalBytesExpectedToSend: Int64) {
         lock.withLock {
-            let prior = lastSentByTask[task.taskIdentifier] ?? 0
+            let key = ObjectIdentifier(task)
+            let prior = lastSentByTask[key] ?? 0
             sent += totalBytesSent - prior
-            lastSentByTask[task.taskIdentifier] = totalBytesSent
+            lastSentByTask[key] = totalBytesSent
         }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        _ = lock.withLock { lastSentByTask.removeValue(forKey: task.taskIdentifier) }
+        _ = lock.withLock { lastSentByTask.removeValue(forKey: ObjectIdentifier(task)) }
         onTaskFinished?(task)
     }
 }
@@ -584,15 +592,17 @@ final class SpeedTestEngine: ObservableObject {
                 self.appendLog("download: ramp still climbing — stepped up to \(activeDown) connections")
             })
         meter.onTaskFinished = nil
-        for session in loadSessions {
-            session.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
-        }
+        // invalidateAndCancel is immediate and final. (A getAllTasks{cancel}
+        // sweep here raced the next phase — its async callbacks were killing
+        // newborn upload tasks inside the reused sessions.)
+        teardownSessions()
         recordSpan("download", from: downloadStart)
         if Task.isCancelled { finishCancelled(); return }
 
         let downMbps = Self.stableRate(downSamples)
+        let downloadHTTPStatus = meter.lastBadStatus
         if downMbps == nil {
-            if let status = meter.lastBadStatus {
+            if let status = downloadHTTPStatus {
                 appendLog("download: edge refused with HTTP \(status) — no data moved")
             } else {
                 appendLog(String(format: "download: flows stalled after %.0f MB — no stable rate, result discarded",
@@ -606,18 +616,22 @@ final class SpeedTestEngine: ObservableObject {
 
         // 6 — upload -------------------------------------------------------
         setPhase(.upload, progress: 0.60)
+        meter.resetStatus()
         let uploadStart = elapsed()
         var activeUp = 0
-        meter.onTaskFinished = { [weak self] task in
+        meter.onTaskFinished = { [weak self, weak meter] task in
             let idx = task.taskDescription.flatMap(Int.init)
             Task { @MainActor [weak self] in
                 guard let self, self.phase == .upload,
                       let idx, idx < self.loadSessions.count else { return }
+                // Same churn guard as download: refused requests finish
+                // instantly — don't hammer the edge with them for 10 s.
+                if let meter, meter.lastBadStatus != nil, meter.totalSent < 1_000_000 { return }
                 self.spawnUploadStream(session: self.loadSessions[idx], index: idx)
             }
         }
         for i in 0..<Self.uploadStreams {
-            // Reuse the download phase's warm connections where they exist.
+            // Fresh sessions — the download phase's were torn down above.
             let session = i < loadSessions.count
                 ? loadSessions[i]
                 : addLoadSession(delegate: meter, config: config)
@@ -643,14 +657,20 @@ final class SpeedTestEngine: ObservableObject {
                 self.appendLog("upload: ramp still climbing — stepped up to \(activeUp) connections")
             })
         meter.onTaskFinished = nil
-        for session in loadSessions {
-            session.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
-        }
+        teardownSessions()
         recordSpan("upload", from: uploadStart)
         if Task.isCancelled { finishCancelled(); return }
 
         let upMbps = Self.stableRate(upSamples)
-        appendLog(String(format: "upload: %@", upMbps.map { String(format: "%.1f Mbps", $0) } ?? "failed"))
+        let uploadHTTPStatus = meter.lastBadStatus
+        if let upMbps {
+            appendLog(String(format: "upload: %.1f Mbps", upMbps))
+        } else if let status = uploadHTTPStatus {
+            appendLog("upload: edge refused with HTTP \(status) — no data moved")
+        } else {
+            appendLog(String(format: "upload: flows stalled after %.0f MB sent — no stable rate, result discarded",
+                             Double(meter.totalSent) / 1_048_576))
+        }
 
         stopPingers()
 
@@ -674,7 +694,8 @@ final class SpeedTestEngine: ObservableObject {
             idle: idleStats, loadedDown: loadedDown, loadedUp: loadedUp,
             hasISPHop: ispHop != nil,
             downMbps: downMbps, upMbps: upMbps,
-            downloadHTTPStatus: meter.lastBadStatus,
+            downloadHTTPStatus: downloadHTTPStatus,
+            uploadHTTPStatus: uploadHTTPStatus,
             resolverMs: resolverMs, fullDNSMs: fullMs,
             priorDown: priorDowns)
 
@@ -976,6 +997,7 @@ final class SpeedTestEngine: ObservableObject {
         hasISPHop: Bool,
         downMbps: Double?, upMbps: Double?,
         downloadHTTPStatus: Int?,
+        uploadHTTPStatus: Int?,
         resolverMs: Double?, fullDNSMs: Double?,
         priorDown: [Double]
     ) -> VerdictOut {
@@ -989,6 +1011,18 @@ final class SpeedTestEngine: ObservableObject {
                 if let prior = blame[culprit], prior == .bad { return }
                 blame[culprit] = grade
             }
+        }
+
+        // Measurement failures lead the findings list — a phase that couldn't
+        // run is the first thing the user should see, not a footnote.
+        let downNote = downloadHTTPStatus.map { " (HTTP \($0))" } ?? ""
+        let upNote = uploadHTTPStatus.map { " (HTTP \($0))" } ?? ""
+        if downMbps == nil && upMbps == nil {
+            add(.bad, "internet", "Throughput test couldn't move any data\(downNote) — the connection may be down or blocking the test endpoints.")
+        } else if downMbps == nil {
+            add(.warn, nil, "The download phase moved no data\(downNote), so download speed and its latency-under-load couldn't be measured this run.")
+        } else if upMbps == nil {
+            add(.warn, nil, "The upload phase moved no data\(upNote), so upload speed and its latency-under-load couldn't be measured this run.")
         }
 
         // Wi-Fi link quality.
@@ -1097,15 +1131,6 @@ final class SpeedTestEngine: ObservableObject {
             } else if median > 1, downMbps < median * 0.7 {
                 add(.warn, nil, String(format: "Download is below your usual — %.0f Mbps vs a typical %.0f Mbps on this Mac.", downMbps, median))
             }
-        }
-
-        let statusNote = downloadHTTPStatus.map { " (HTTP \($0))" } ?? ""
-        if downMbps == nil && upMbps == nil {
-            add(.bad, "internet", "Throughput test couldn't move any data\(statusNote) — the connection may be down or blocking speed.cloudflare.com.")
-        } else if downMbps == nil {
-            add(.warn, nil, "The download phase moved no data\(statusNote), so download speed and its latency-under-load couldn't be measured this run.")
-        } else if upMbps == nil {
-            add(.warn, nil, "The upload phase moved no data, so upload speed and its latency-under-load couldn't be measured this run.")
         }
 
         // Overall status + the single answer the user came for.
