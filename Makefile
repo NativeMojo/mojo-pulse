@@ -150,6 +150,11 @@ notarize: app
 # Full release: build → sign → notarize+staple the app → package the STAPLED
 # app into a DMG → notarize+staple the DMG → print the SHA256 (for the Homebrew
 # cask) and version. This is the distributable artifact.
+#
+# To actually SHIP a release (version bump + tag + this target + signed
+# appcast + GitHub release + Homebrew tap bump, all in one call), don't run
+# this directly — use `scripts/release.sh` instead. See its header comment
+# or `scripts/release.sh --help`.
 release: notarize
 	@mkdir -p $(DIST_DIR)/staging
 	@rm -rf $(DIST_DIR)/staging
