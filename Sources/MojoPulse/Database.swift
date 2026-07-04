@@ -661,6 +661,67 @@ final class Database: @unchecked Sendable {
         return results
     }
 
+    /// The most recent row for a given signature — used to route a clicked
+    /// notification back to its detail window once the condition has already
+    /// closed (a still-active incident is found in the live engine instead;
+    /// this covers "resolved by the time you clicked").
+    func fetchIncident(signature: String) throws -> IncidentRecord? {
+        let sql = """
+            SELECT id, signature, category, severity, detector_id, template_key,
+                   started_at, ended_at, context
+            FROM incidents
+            WHERE signature = ?
+            ORDER BY started_at DESC
+            LIMIT 1;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DBError.prepareFailed
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, signature, -1, Database.SQLITE_TRANSIENT)
+
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+
+        guard
+            let idCStr = sqlite3_column_text(stmt, 0),
+            let sigCStr = sqlite3_column_text(stmt, 1),
+            let catCStr = sqlite3_column_text(stmt, 2),
+            let detCStr = sqlite3_column_text(stmt, 4),
+            let tplCStr = sqlite3_column_text(stmt, 5),
+            let uuid = UUID(uuidString: String(cString: idCStr)),
+            let category = IncidentCategory(rawValue: String(cString: catCStr)),
+            let severity = IncidentSeverity(rawValue: Int(sqlite3_column_int(stmt, 3)))
+        else { return nil }
+
+        let startedAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 6)))
+        let endedAt: Date?
+        if sqlite3_column_type(stmt, 7) == SQLITE_NULL {
+            endedAt = nil
+        } else {
+            endedAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 7)))
+        }
+
+        var context: [String: String] = [:]
+        if let ctxCStr = sqlite3_column_text(stmt, 8),
+           let data = String(cString: ctxCStr).data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+            context = parsed
+        }
+
+        return IncidentRecord(
+            id: uuid,
+            signature: String(cString: sigCStr),
+            category: category,
+            severity: severity,
+            detectorID: String(cString: detCStr),
+            templateKey: String(cString: tplCStr),
+            startedAt: startedAt,
+            endedAt: endedAt,
+            context: context
+        )
+    }
+
     // MARK: - Feedback
 
     /// Append a feedback event. Never deleted — see schema docs above.

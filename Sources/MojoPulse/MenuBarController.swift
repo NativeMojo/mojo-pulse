@@ -265,6 +265,10 @@ final class MenuBarController: NSObject {
             .sink { [weak self] _ in self?.handleNetworkJoin() }
             .store(in: &cancellables)
 
+        // Clicking a delivered notification should take the user to the event
+        // it was about — the same detail window an incident card opens.
+        notifications.onOpen = { [weak self] identifier in self?.openFromNotification(identifier) }
+
         // Internal card actions (mojopulse:// action URLs): incident cards
         // deep in the view tree post a notification instead of threading a
         // callback through every card site; we own the windows, so we route.
@@ -1242,6 +1246,25 @@ final class MenuBarController: NSObject {
 
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Route a clicked notification back to the window that explains it. An
+    /// incident's signature opens its detail — live if still active,
+    /// otherwise the historical row from the DB (the condition may well have
+    /// resolved by the time the user clicks). The risky-Wi-Fi alert opens
+    /// Network Safety instead, since it isn't backed by an incident. Anything
+    /// unrecognized (e.g. a "Test notification") is silently ignored.
+    private func openFromNotification(_ identifier: String) {
+        if let active = engine.activeIncidents.first(where: { $0.signature == identifier }) {
+            showEventWindow(IncidentRecord(active))
+            return
+        }
+        if identifier.hasPrefix("network.safety.") {
+            showNetworkSafetyWindow()
+            return
+        }
+        guard let database, let record = try? database.fetchIncident(signature: identifier) else { return }
+        showEventWindow(record)
     }
 
     private func beginProcessesFastTick() {

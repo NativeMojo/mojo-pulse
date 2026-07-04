@@ -21,6 +21,12 @@ final class NotificationManager: NSObject {
     /// it — the app still runs (just without notifications) under `swift run`.
     private let center: UNUserNotificationCenter?
 
+    /// Fires when the user clicks a delivered notification (not on dismiss).
+    /// Passed the notification's identifier — an incident signature for
+    /// incident/test notifications, `"network.safety.<ssid>"` for the risky-
+    /// Wi-Fi alert. MenuBarController wires this to open the matching window.
+    var onOpen: ((String) -> Void)?
+
     init(settings: Settings) {
         self.settings = settings
         self.center = Bundle.main.bundleIdentifier != nil
@@ -142,5 +148,24 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .list, .sound])
+    }
+
+    /// Fires both when the user clicks the notification and when they
+    /// explicitly dismiss it — only the former should open a window, so we
+    /// gate on the default-action identifier. Hop to the main actor to
+    /// invoke `onOpen`, since this delegate callback isn't guaranteed to
+    /// arrive there.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+            let identifier = response.notification.request.identifier
+            Task { @MainActor in
+                self.onOpen?(identifier)
+            }
+        }
+        completionHandler()
     }
 }
