@@ -84,7 +84,9 @@ echo "==> Preflight checks"
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [[ "$CURRENT_BRANCH" == "main" ]] || { echo "Not on main (on $CURRENT_BRANCH) — aborting."; exit 1; }
 command -v gh >/dev/null || { echo "gh CLI not found"; exit 1; }
-gh auth status >/dev/null 2>&1 || { echo "gh not authenticated"; exit 1; }
+# `gh auth status` exits 1 if ANY configured account has a stale token, even an
+# inactive one — not what we want. Exercise the active credential directly.
+gh api user >/dev/null 2>&1 || { echo "gh not authenticated (active account can't reach the API)"; exit 1; }
 [[ -f "$NOTARY_KEY_FILE" ]] || { echo "Missing notary key: $NOTARY_KEY_FILE"; exit 1; }
 [[ -f "$SPARKLE_KEY_FILE" ]] || { echo "Missing Sparkle EdDSA key: $SPARKLE_KEY_FILE"; exit 1; }
 [[ -d "$TAP_DIR/.git" ]] || { echo "Homebrew tap not found at $TAP_DIR (override with TAP_DIR=)"; exit 1; }
