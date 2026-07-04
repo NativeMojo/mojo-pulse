@@ -377,6 +377,7 @@ final class SpeedTestEngine: ObservableObject {
         let name: String
         let downloadURL: URL
         let uploadURL: URL
+        let canaryDownloadURL: URL
         let edge: String?
     }
 
@@ -384,16 +385,45 @@ final class SpeedTestEngine: ObservableObject {
         name: "Cloudflare",
         downloadURL: URL(string: "https://speed.cloudflare.com/__down?bytes=50000000")!,
         uploadURL: URL(string: "https://speed.cloudflare.com/__up")!,
+        canaryDownloadURL: URL(string: "https://speed.cloudflare.com/__down?bytes=100000")!,
         edge: nil)
 
     private var provider = SpeedTestEngine.cloudflareProvider
 
     private func selectProvider() async -> LoadProvider {
         if let apple = await Self.fetchMensuraConfig() {
-            return apple
+            if await Self.canaryOK(apple) { return apple }
+            appendLog("provider: Apple mensura failed the canary — falling back to Cloudflare")
+        } else {
+            appendLog("provider: Apple mensura unreachable — falling back to Cloudflare")
         }
-        appendLog("provider: Apple mensura unreachable — falling back to Cloudflare")
-        return Self.cloudflareProvider
+        let cloudflare = Self.cloudflareProvider
+        if await Self.canaryOK(cloudflare) == false {
+            appendLog("provider: Cloudflare canary failed too — proceeding anyway, expect findings")
+        }
+        return cloudflare
+    }
+
+    /// 100 KB down + 1 MB up against the chosen provider before committing
+    /// the load phases to it. Catches rate-limiting (429), refused uploads,
+    /// and dead endpoints in about a second — instead of a 10 s phase
+    /// discovering it and a "—" where a number should be.
+    private static func canaryOK(_ provider: LoadProvider) async -> Bool {
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        var down = URLRequest(url: provider.canaryDownloadURL)
+        down.timeoutInterval = 5
+        guard let (_, downResp) = try? await session.data(for: down),
+              let downHTTP = downResp as? HTTPURLResponse,
+              (200..<300).contains(downHTTP.statusCode) else { return false }
+        var up = URLRequest(url: provider.uploadURL)
+        up.timeoutInterval = 6
+        up.httpMethod = "POST"
+        up.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        guard let (_, upResp) = try? await session.upload(for: up, from: Data(count: 1_000_000)),
+              let upHTTP = upResp as? HTTPURLResponse,
+              (200..<300).contains(upHTTP.statusCode) else { return false }
+        return true
     }
 
     private static func fetchMensuraConfig() async -> LoadProvider? {
@@ -409,7 +439,9 @@ final class SpeedTestEngine: ObservableObject {
               let down = URL(string: downStr), let up = URL(string: upStr) else { return nil }
         // "uslax1-edge-fx-036.aaplimg.com" → "uslax1"
         let edge = (obj["test_endpoint"] as? String)?.split(separator: "-").first.map(String.init)
-        return LoadProvider(name: "Apple", downloadURL: down, uploadURL: up, edge: edge)
+        let small = (urls["small_https_download_url"] as? String).flatMap(URL.init(string:)) ?? down
+        return LoadProvider(name: "Apple", downloadURL: down, uploadURL: up,
+                            canaryDownloadURL: small, edge: edge)
     }
 
     init(database: Database?, wifi: WiFiCollector) {
@@ -605,8 +637,9 @@ final class SpeedTestEngine: ObservableObject {
             if let status = downloadHTTPStatus {
                 appendLog("download: edge refused with HTTP \(status) — no data moved")
             } else {
-                appendLog(String(format: "download: flows stalled after %.0f MB — no stable rate, result discarded",
-                                 Double(meter.totalReceived) / 1_048_576))
+                let movedMB = Double(meter.totalReceived) / 1_048_576
+                let avgMbps = Double(meter.totalReceived) * 8 / Self.loadSeconds / 1_000_000
+                appendLog(String(format: "download: no stable rate — %.0f MB moved (≈%.0f Mbps avg), result discarded", movedMB, avgMbps))
             }
         }
         let ttfb = meter.firstByteMs.map { $0 - downStartMono }
@@ -668,8 +701,9 @@ final class SpeedTestEngine: ObservableObject {
         } else if let status = uploadHTTPStatus {
             appendLog("upload: edge refused with HTTP \(status) — no data moved")
         } else {
-            appendLog(String(format: "upload: flows stalled after %.0f MB sent — no stable rate, result discarded",
-                             Double(meter.totalSent) / 1_048_576))
+            let movedMB = Double(meter.totalSent) / 1_048_576
+            let avgMbps = Double(meter.totalSent) * 8 / Self.loadSeconds / 1_000_000
+            appendLog(String(format: "upload: no stable rate — %.0f MB sent (≈%.0f Mbps avg), result discarded", movedMB, avgMbps))
         }
 
         stopPingers()
@@ -829,14 +863,20 @@ final class SpeedTestEngine: ObservableObject {
         return samples
     }
 
-    /// The number to report: median of the stable back-stretch of the phase
-    /// (TCP slow-start and the ramp live in the front stretch).
+    /// The number to report: the windowed MEAN over the stable back-stretch
+    /// of the phase (TCP slow-start and the ramp live in the front stretch).
+    /// Mean, not median: the 10 Hz deltas telescope back to (bytes at end −
+    /// bytes at window start) ÷ time — the true cumulative rate — whereas a
+    /// median is defeated by upload progress arriving in multi-MB bursts
+    /// (didSendBodyData's cadence): most 100 ms ticks legitimately read zero
+    /// with spikes between, and the median of that is zero even while ~100 MB
+    /// genuinely moves. Verified against both providers at full concurrency.
     private static func stableRate(_ samples: [Double]) -> Double? {
         guard samples.count >= 20 else { return nil }
-        let stable = Array(samples[(samples.count * 2 / 5)...]).sorted()
+        let stable = Array(samples[(samples.count * 2 / 5)...])
         guard !stable.isEmpty else { return nil }
-        let median = stable[stable.count / 2]
-        return median > 0.05 ? median : nil
+        let mean = stable.reduce(0, +) / Double(stable.count)
+        return mean > 0.05 ? mean : nil
     }
 
     // MARK: Pingers
