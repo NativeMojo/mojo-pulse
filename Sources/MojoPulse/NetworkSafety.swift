@@ -306,7 +306,8 @@ enum NetworkSafetyEngine {
             var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             if getnameinfo(cur.pointee.ai_addr, cur.pointee.ai_addrlen, &buf, socklen_t(buf.count),
                            nil, 0, NI_NUMERICHOST) == 0 {
-                out.append(String(cString: buf))
+                let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+                out.append(String(decoding: bytes, as: UTF8.self))
             }
         }
         return out

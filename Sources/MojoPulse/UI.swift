@@ -180,6 +180,9 @@ struct PopoverView: View {
     /// Called when the user opens the Nearby Bluetooth sonar.
     var onShowBluetooth: () -> Void = {}
 
+    /// Called when the user opens the Speed Test from the Network screen.
+    var onShowSpeedTest: () -> Void = {}
+
     /// Called when the user taps the Disk tile. Opens the Disk Usage tool.
     var onShowDisk: () -> Void = {}
 
@@ -247,7 +250,8 @@ struct PopoverView: View {
                             onShowDomain: onShowDomain,
                             onShowIP: onShowIP,
                             onShowSafety: onShowSafety,
-                            onShowBluetooth: onShowBluetooth
+                            onShowBluetooth: onShowBluetooth,
+                            onShowSpeedTest: onShowSpeedTest
                         )
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                     case .security:
@@ -1145,9 +1149,38 @@ struct PopoverView: View {
             }
             .buttonStyle(.plain)
             .help("Settings")
-            Button("Quit") { NSApp.terminate(nil) }
+            Button("Quit") { Self.confirmQuit() }
                 .keyboardShortcut("q", modifiers: .command)
                 .controlSize(.small)
+        }
+    }
+
+    /// The Quit button sits right under the drill-in rows, so it catches
+    /// stray clicks while navigating — confirm before actually terminating.
+    /// A centered alert (not an in-popover dialog) because the transient
+    /// popover closes the moment anything else takes key focus anyway.
+    /// "Don't ask again" restores one-click quit for people who want it.
+    private static func confirmQuit() {
+        let suppressKey = "ui.quitConfirmSuppressed"
+        if UserDefaults.standard.bool(forKey: suppressKey) {
+            NSApp.terminate(nil)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Quit Mojo Pulse?"
+        alert.informativeText = "Monitoring, alerts, and the menu bar icon stop until you open it again."
+        let quitButton = alert.addButton(withTitle: "Quit")
+        quitButton.hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Don't ask again"
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if alert.suppressionButton?.state == .on {
+            UserDefaults.standard.set(true, forKey: suppressKey)
+        }
+        if response == .alertFirstButtonReturn {
+            NSApp.terminate(nil)
         }
     }
 

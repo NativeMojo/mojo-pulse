@@ -11,7 +11,9 @@ enum ProcessPath {
     static func resolve(pid: Int, fallback: String) -> String {
         var buf = [CChar](repeating: 0, count: 4096)
         let n = proc_pidpath(Int32(pid), &buf, UInt32(buf.count))
-        return n > 0 ? String(cString: buf) : fallback
+        guard n > 0 else { return fallback }
+        let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     /// Like `resolve`, but mapped back to the app's REAL bundle when the

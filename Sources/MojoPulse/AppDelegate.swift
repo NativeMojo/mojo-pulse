@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var systemEventsCollector: SystemEventsCollector?
     private var arpCollector: ARPCollector?
     private var connectionWatcher: ConnectionWatcher?
+    private var speedTestEngine: SpeedTestEngine?
     private var detectorEngine: DetectorEngine?
     private var signalAggregator: SignalAggregator?
     private var networkInfo: NetworkInfo?
@@ -142,6 +143,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // it sends destination IPs to mojoverify for reputation checks.
         let connectionWatch = ConnectionWatcher(settings: settings)
         self.connectionWatcher = connectionWatch
+        // Speed Test engine: on-demand path diagnostic (never runs by itself).
+        // App-side rather than window-side so a finished test always persists
+        // and journals, whatever the window lifecycle does.
+        let speedTest = SpeedTestEngine(database: db, wifi: wifi)
+        self.speedTestEngine = speedTest
         self.thermalCollector = thermal
         self.reachabilityMonitor = reach
         self.systemCollector = system
@@ -242,6 +248,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         history.refresh()
         self.historyStore = history
 
+        // A finished speed test writes a journal entry; surface it in Recent
+        // activity without waiting for the next engine tick.
+        speedTest.onJournal = { [weak history] in history?.refresh() }
+
         // Auto-update (Sparkle). Holds the updater alive for the app's
         // lifetime; the popover's "Check for Updates…" routes here.
         let updater = Updater()
@@ -265,6 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings: settings,
             updater: updater,
             database: db,
+            speedTest: speedTest,
             notifications: notifications
         )
 

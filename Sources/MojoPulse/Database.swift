@@ -184,6 +184,69 @@ final class Database: @unchecked Sendable {
                 PRIMARY KEY (scope, mac)
             );
         """)
+        // Speed test history. Scalar columns cover listing/trending cheaply;
+        // `payload` carries the full Codable result so every metric the window
+        // shows survives without a schema change per field.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS speed_tests (
+                id TEXT PRIMARY KEY,
+                ts INTEGER NOT NULL,
+                down_mbps REAL,
+                up_mbps REAL,
+                rpm INTEGER,
+                verdict TEXT,
+                culprit TEXT,
+                payload TEXT NOT NULL
+            );
+        """)
+        try exec("""
+            CREATE INDEX IF NOT EXISTS idx_speed_tests_ts ON speed_tests(ts);
+        """)
+    }
+
+    // MARK: - Speed tests
+
+    /// Persist one finished speed test, pruning to a rolling 200-test window.
+    func insertSpeedTest(_ result: SpeedTestResult) throws {
+        let payload = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+        let sql = """
+            INSERT OR REPLACE INTO speed_tests
+                (id, ts, down_mbps, up_mbps, rpm, verdict, culprit, payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, result.id.uuidString, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, Int64(result.at.timeIntervalSince1970))
+        if let v = result.downMbps { sqlite3_bind_double(stmt, 3, v) } else { sqlite3_bind_null(stmt, 3) }
+        if let v = result.upMbps { sqlite3_bind_double(stmt, 4, v) } else { sqlite3_bind_null(stmt, 4) }
+        if let v = result.rpm { sqlite3_bind_int64(stmt, 5, Int64(v)) } else { sqlite3_bind_null(stmt, 5) }
+        sqlite3_bind_text(stmt, 6, result.verdictStatus, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 7, result.culprit, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 8, payload, -1, Database.SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw DBError.execFailed }
+        try exec("DELETE FROM speed_tests WHERE id NOT IN (SELECT id FROM speed_tests ORDER BY ts DESC LIMIT 200);")
+    }
+
+    /// Most-recent-first speed test history — feeds the window's History list
+    /// and the "below your usual" verdict rule. Undecodable rows (from some
+    /// future schema) are skipped rather than failing the whole read.
+    func fetchSpeedTests(limit: Int) throws -> [SpeedTestResult] {
+        let sql = "SELECT payload FROM speed_tests ORDER BY ts DESC LIMIT ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(limit))
+        let decoder = JSONDecoder()
+        var out: [SpeedTestResult] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let c = sqlite3_column_text(stmt, 0) else { continue }
+            if let result = try? decoder.decode(SpeedTestResult.self, from: Data(String(cString: c).utf8)) {
+                out.append(result)
+            }
+        }
+        return out
     }
 
     // MARK: - LAN devices (passive ARP baseline)

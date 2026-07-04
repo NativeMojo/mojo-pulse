@@ -18,6 +18,7 @@ struct NetworkScreen: View {
     var onShowIP: () -> Void = {}
     var onShowSafety: () -> Void = {}
     var onShowBluetooth: () -> Void = {}
+    var onShowSpeedTest: () -> Void = {}
 
     @StateObject private var model = NetworkVisibilityModel()
     @State private var showRename = false
@@ -29,6 +30,7 @@ struct NetworkScreen: View {
             identityCard
             VStack(spacing: 0) {
                 row("checkmark.shield", "Network safety", breakout: true, action: onShowSafety)
+                row("speedometer", "Speed test", breakout: true, action: onShowSpeedTest)
                 row("globe", "Activity map", breakout: true, action: onShowActivity)
                 row("rectangle.connected.to.line.below", "Devices on network", breakout: true, action: onShowDevices)
                 row("dot.radiowaves.left.and.right", "Nearby Bluetooth", breakout: true, action: onShowBluetooth)

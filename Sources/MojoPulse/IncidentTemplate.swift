@@ -93,6 +93,16 @@ enum IncidentTemplates {
                 actionURL: wifiSettingsURL
             )
 
+        case "network.speedtest":
+            let rates = [ctx["down"].map { "\($0) ↓" }, ctx["up"].map { "\($0) ↑" }]
+                .compactMap { $0 }
+                .joined(separator: " / ")
+            return IncidentCopy(
+                title: rates.isEmpty ? "Speed test" : "Speed test: \(rates) Mbps",
+                what: ctx["headline"] ?? "Speed test completed.",
+                why: ctx["detail"]
+            )
+
         // MARK: Security
 
         case "security.insecureWifi":
@@ -617,6 +627,10 @@ enum IncidentTemplates {
             return v("when")
         case "system.updatesPending":
             return v("count").map { "\($0) ready to install" }
+
+        case "network.speedtest":
+            return join(v("down").map { "\($0) ↓" }, v("up").map { "\($0) ↑" },
+                        v("rpm").map { "RPM \($0)" })
 
         // Local network
         case "network.lan.newDevice":

@@ -110,6 +110,7 @@ final class MenuBarController: NSObject {
     private var batteryWindow: NSWindow?
     private var domainWindow: NSWindow?
     private var ipLookupWindow: NSWindow?
+    private var speedTestWindow: NSWindow?
     private var bluetoothWindow: NSWindow?
     // Owned here (not by the view) so windowWillClose can stop the radio even
     // though the window is kept alive across closes. Creating it is cheap and
@@ -124,6 +125,10 @@ final class MenuBarController: NSObject {
     private lazy var networkSafety = NetworkSafetyModel(wifi: wifi, security: security)
     /// Unlocks the Wi-Fi network name (Location permission) on explicit opt-in.
     private let locationAuth = LocationAuthorizer()
+
+    /// Speed Test engine — created in AppDelegate (it persists results and
+    /// journals into Recent activity), rendered by the window we own here.
+    private let speedTest: SpeedTestEngine
 
     /// Retained reference to the single event-detail window (content replaced
     /// per click rather than spawning one window per event).
@@ -167,6 +172,7 @@ final class MenuBarController: NSObject {
         settings: Settings,
         updater: Updater,
         database: Database?,
+        speedTest: SpeedTestEngine,
         notifications: NotificationManager
     ) {
         self.engine = engine
@@ -183,6 +189,7 @@ final class MenuBarController: NSObject {
         self.settings = settings
         self.updater = updater
         self.database = database
+        self.speedTest = speedTest
         self.notifications = notifications
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
@@ -225,6 +232,7 @@ final class MenuBarController: NSObject {
                 onShowIP: { [weak self] in self?.showIPLookupWindow() },
                 onShowSafety: { [weak self] in self?.showNetworkSafetyWindow() },
                 onShowBluetooth: { [weak self] in self?.showBluetoothWindow() },
+                onShowSpeedTest: { [weak self] in self?.showSpeedTestWindow() },
                 onShowDisk: { [weak self] in self?.showDiskWindow() },
                 onShowBattery: { [weak self] in self?.showBatteryWindow() }
             )
@@ -1129,6 +1137,56 @@ final class MenuBarController: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Speed Test — saturating throughput + per-hop latency-under-load
+    /// diagnostic. The engine lives app-side; closing the window cancels any
+    /// running test (windowWillClose) so we never saturate a line unwatched.
+    private func showSpeedTestWindow() {
+        popover.performClose(nil)
+        if let existing = speedTestWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let hosting = NSHostingController(rootView: DialogChrome { SpeedTestView(
+            engine: speedTest,
+            onHeight: { [weak self] height in
+                Task { @MainActor [weak self] in
+                    self?.sizeSpeedTestWindow(contentHeight: height)
+                }
+            }
+        ) })
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Speed Test"
+        // Fixed width, height follows content: the drill-in rows expand in
+        // place and the window grows to fit — never a hidden scroll fold.
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.setContentSize(NSSize(width: 640, height: 430))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        speedTestWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Resize the Speed Test window to exactly fit its content (reported via
+    /// a SwiftUI preference), keeping the title bar pinned so growth happens
+    /// downward. Clamped to the screen so a huge section can't push offscreen.
+    private func sizeSpeedTestWindow(contentHeight: CGFloat) {
+        guard let window = speedTestWindow, window.isVisible || window.isMiniaturized == false else { return }
+        let chrome: CGFloat = 42   // DialogChrome footer: divider + padded Done row
+        let maxContent = ((window.screen ?? NSScreen.main)?.visibleFrame.height ?? 900) - 60
+        let target = min(max(contentHeight + chrome, 220), maxContent)
+        let current = window.contentRect(forFrameRect: window.frame).height
+        guard abs(target - current) > 2 else { return }
+        var frame = window.frame
+        let delta = target - current
+        frame.size.height += delta
+        frame.origin.y -= delta
+        window.setFrame(frame, display: true, animate: true)
+    }
+
     /// Nearby Bluetooth sonar. Scanning is on-demand inside the view (the
     /// window closing stops the radio via onDisappear).
     private func showBluetoothWindow() {
@@ -1346,6 +1404,10 @@ extension MenuBarController: NSWindowDelegate {
             // onDisappear doesn't fire because the window is kept alive).
             bluetoothScanner.stopScan()
             bluetoothWindow = nil
+        } else if closing === speedTestWindow {
+            // Never leave a test saturating the line with no UI watching it.
+            speedTest.cancelAndReset()
+            speedTestWindow = nil
         } else if closing === safetyWindow {
             safetyWindow = nil
         } else if closing === diskWindow {
