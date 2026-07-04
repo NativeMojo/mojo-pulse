@@ -189,6 +189,46 @@ final class ICMPPinger: @unchecked Sendable {
         }
     }
 
+    /// Fire-and-collect: send `count` echoes at a fixed cadence and return the
+    /// per-echo outcomes (nil = lost). The sentinel's low-cadence probes use
+    /// this instead of the streaming start/stop lifecycle the Speed Test needs.
+    static func oneShot(host: String, count: Int, intervalMs: Int, timeoutMs: Int = 1500) async -> [Double?] {
+        await withCheckedContinuation { cont in
+            guard let pinger = ICMPPinger(host: host) else {
+                cont.resume(returning: Array(repeating: nil, count: count))
+                return
+            }
+            final class Box: @unchecked Sendable {
+                let lock = NSLock()
+                var results: [Double?] = []
+                var resumed = false
+            }
+            let box = Box()
+            let finish: @Sendable () -> Void = {
+                pinger.stop()
+                box.lock.lock()
+                let already = box.resumed
+                box.resumed = true
+                var results = box.results
+                box.lock.unlock()
+                guard !already else { return }
+                while results.count < count { results.append(nil) }
+                cont.resume(returning: Array(results.prefix(count)))
+            }
+            pinger.start(intervalMs: intervalMs) { sample in
+                box.lock.lock()
+                box.results.append(sample.rttMs)
+                let done = box.results.count >= count
+                box.lock.unlock()
+                if done { finish() }
+            }
+            // Hard deadline covers losses that never produce a timeout sample
+            // once pinging stops.
+            let deadline = DispatchTime.now() + .milliseconds(count * intervalMs + timeoutMs + 300)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: deadline) { finish() }
+        }
+    }
+
     private func tick() {
         guard !stopped else { return }
         // Sweep timeouts first so a stalled path reports losses at cadence.

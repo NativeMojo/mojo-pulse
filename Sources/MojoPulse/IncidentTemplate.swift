@@ -36,6 +36,9 @@ enum IncidentTemplates {
     /// everything these cards ask (signer, posture, connections, trust), so
     /// process-related actions stay in-app instead of bouncing to Apple's.
     static let processViewerURL = URL(string: "mojopulse://processes")!
+    /// Pulse's own Speed Test window — the sentinel's degradation cards offer
+    /// it as the "pinpoint which hop" follow-up.
+    static let speedTestURL = URL(string: "mojopulse://speedtest")!
     static let batterySettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.battery")
     static let storageSettingsURL = URL(string: "x-apple.systempreferences:com.apple.settings.Storage")
     static let wifiSettingsURL = URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")
@@ -91,6 +94,60 @@ enum IncidentTemplates {
                 why: "This usually means a flaky Wi-Fi link, a captive portal, or an ISP-side issue.",
                 action: "Try reloading a known site. If it still doesn't work, toggle Wi-Fi or check your router.",
                 actionURL: wifiSettingsURL
+            )
+
+        case "network.degrade.latency":
+            return IncidentCopy(
+                title: "Internet latency climbing",
+                what: "Round-trips to the internet have been running well above your usual on \(ctx["net"] ?? "this network") for \(ctx["mins"] ?? "several") minutes (\(ctx["from"] ?? "—") → \(ctx["to"] ?? "—") ms).",
+                why: "Latency creeping up while nothing changed on your Mac usually means congestion — on your Wi-Fi, at your router, or at your provider.",
+                action: "Run a Speed Test to pinpoint which hop is queuing.",
+                actionURL: speedTestURL
+            )
+
+        case "network.degrade.loss":
+            return IncidentCopy(
+                title: "Packets going missing",
+                what: "\(ctx["pct"] ?? "?")% of probes to the internet are being lost on \(ctx["net"] ?? "this network") (sustained \(ctx["mins"] ?? "?") min).",
+                why: "Loss at this level makes calls garble and pages stall — usually Wi-Fi interference or an unhappy link upstream.",
+                action: "Run a Speed Test to see which hop is dropping.",
+                actionURL: speedTestURL
+            )
+
+        case "network.degrade.bloat":
+            return IncidentCopy(
+                title: "Line queues under load",
+                what: "When your own traffic runs, latency on \(ctx["net"] ?? "this network") jumps by about \(ctx["delta"] ?? "?") ms — measured passively from your normal usage.",
+                why: "That's bufferbloat: a buffer ahead of you fills up and everything waits behind it. It's why calls stutter while something uploads or downloads.",
+                action: "Run a Speed Test to pinpoint the queue (router SQM usually fixes it).",
+                actionURL: speedTestURL
+            )
+
+        case "network.degrade.gateway":
+            return IncidentCopy(
+                title: "Your router hop is slowing",
+                what: "Round-trips to your own router have climbed to \(ctx["to"] ?? "—") ms on \(ctx["net"] ?? "this network") (usually \(ctx["from"] ?? "—") ms).",
+                why: "The first hop lives inside your home — Wi-Fi interference, a busy router, or radio congestion, before your ISP is even involved.",
+                action: "Run a Speed Test to confirm, or try another Wi-Fi band/channel.",
+                actionURL: speedTestURL
+            )
+
+        case "network.degrade.rough":
+            return IncidentCopy(
+                title: "This network runs rough",
+                what: "\(ctx["net"] ?? "This network") is like this by nature — about \(ctx["rtt"] ?? "?") ms round-trips\((ctx["loss"].flatMap(Double.init).map { $0 >= 1 } == true) ? " and \(ctx["loss"] ?? "?")% packet loss" : "") since you joined. Nothing is degrading; it's just a slow network.",
+                why: "Expect laggy video calls and slow page starts here. Downloads may still run fine — latency and bandwidth are different things.",
+                action: "Run a Speed Test for the full picture, or Always Ignore to never hear about this network again.",
+                actionURL: speedTestURL
+            )
+
+        case "network.degrade.dns":
+            return IncidentCopy(
+                title: "DNS answers slowing",
+                what: "Your DNS resolver is taking \(ctx["to"] ?? "—") ms to answer (usually \(ctx["from"] ?? "—") ms).",
+                why: "Every new site name waits on DNS before anything loads — slow answers make browsing feel laggy even when bandwidth is fine.",
+                action: "A Speed Test times DNS along the way; switching to 1.1.1.1 or 9.9.9.9 usually cures a slow resolver.",
+                actionURL: speedTestURL
             )
 
         case "network.speedtest":
@@ -631,6 +688,20 @@ enum IncidentTemplates {
         case "network.speedtest":
             return join(v("down").map { "\($0) ↓" }, v("up").map { "\($0) ↑" },
                         v("rpm").map { "RPM \($0)" })
+
+        // Sentinel degradation notes
+        case "network.degrade.latency", "network.degrade.gateway", "network.degrade.dns":
+            if let from = v("from"), let to = v("to") {
+                return join(v("net"), "\(from) → \(to) ms")
+            }
+            return v("net")
+        case "network.degrade.loss":
+            return join(v("net"), v("pct").map { "\($0)% loss" })
+        case "network.degrade.bloat":
+            return join(v("net"), v("delta").map { "+\($0) ms under load" })
+        case "network.degrade.rough":
+            return join(v("net"), v("rtt").map { "\($0) ms" },
+                        v("loss").flatMap { Double($0).map { $0 >= 1 ? "\(Int($0))% loss" : nil } ?? nil })
 
         // Local network
         case "network.lan.newDevice":

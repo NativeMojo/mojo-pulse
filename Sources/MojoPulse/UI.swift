@@ -110,6 +110,7 @@ struct PopoverView: View {
     @ObservedObject var networkSafety: NetworkSafetyModel
     @ObservedObject var processes: ProcessCollector
     @ObservedObject var arp: ARPCollector
+    @ObservedObject var sentinel: NetworkSentinel
     @ObservedObject var settings: Settings
     @ObservedObject var navigation: PopoverNavigation
 
@@ -163,6 +164,10 @@ struct PopoverView: View {
     /// Called when the user clicks the Thermal tile. Opens the thermal detail
     /// window (live temperatures + fans). Window plumbing in MenuBarController.
     var onShowThermal: () -> Void = {}
+
+    /// Called when the user clicks the Network tile. Opens Network Health
+    /// (sentinel verdict + history charts + speed tests).
+    var onShowNetworkHealth: () -> Void = {}
 
     /// Called when the user opens the Network Visibility panel (what this Mac
     /// broadcasts + exposes to others). Window plumbing in MenuBarController.
@@ -692,11 +697,58 @@ struct PopoverView: View {
         let up = rateParts(system.current.netBytesOutPerSec)
         let value = netRun("arrow.down", SeverityColors.info, down, trailing: "   ")
             + netRun("arrow.up", netUpColor, up, trailing: "")
+        // The label-row dot: an actual firing incident wins; otherwise the
+        // sentinel's sustained judgment (green normal / quiet learning). It
+        // mirrors state that's already hysteresis'd, so it can't flicker.
         return tile(icon: "network", label: "Network",
              value: value,
-             firing: firingColor(for: .network),
-             tap: { onShowDetail(.net) }) {
+             firing: firingColor(for: .network) ?? sentinelDotColor,
+             labelDetail: sentinelRTTDetail,
+             tap: { onShowNetworkHealth() }) {
             EmptyView()
+        }
+        .help(sentinelTooltip)
+    }
+
+    private var sentinelRTTDetail: String? {
+        switch sentinel.quality.state {
+        case .normal, .degraded, .rough:
+            return sentinel.quality.rttMs.map { "\(Int($0)) ms" }
+        default:
+            return nil
+        }
+    }
+
+    private var sentinelDotColor: Color? {
+        switch sentinel.quality.state {
+        case .off: return nil
+        case .learning: return SeverityColors.quiet.opacity(0.55)
+        case .normal: return SeverityColors.good
+        case .degraded, .rough: return SeverityColors.watch
+        case .offline: return SeverityColors.issue
+        }
+    }
+
+    private var sentinelTooltip: String {
+        let q = sentinel.quality
+        let net = q.network.isEmpty ? "this network" : q.network
+        switch q.state {
+        case .off:
+            return "Network quality watch is off (Settings → Network sentinel)."
+        case .learning:
+            return "Network quality: learning — memorizing what's usual on \(net) before judging (~30 min on a new network)."
+        case .normal:
+            let rtt = q.rttMs.map { "\(Int($0)) ms round-trip" } ?? "measuring"
+            let usual = q.baselineMs.map { " (your usual: \(Int($0)) ms)" } ?? ""
+            let loss = q.lossPct.map { $0 < 0.05 ? " · 0% loss" : String(format: " · %.1f%% loss", $0) } ?? ""
+            return "Network quality: normal. \(rtt)\(usual)\(loss) on \(net) — judged passively by the sentinel."
+        case .degraded:
+            return "Network quality: degraded — a sustained drift from your usual on \(net). The card in Recent activity has the details and a one-click Speed Test."
+        case .rough:
+            let rtt = q.rttMs.map { "\(Int($0)) ms round-trips" } ?? "high latency"
+            return "Network quality: rough by nature — \(net) runs \(rtt)\(q.lossPct.map { $0 >= 1 ? String(format: " with %.0f%% loss", $0) : "" } ?? ""). Not degrading; it's just like this here."
+        case .offline:
+            return "Network quality: no internet — probes are failing."
         }
     }
 
@@ -762,6 +814,7 @@ struct PopoverView: View {
 
     private func tile<Indicator: View>(
         icon: String, label: String, value: Text, firing: Color?,
+        labelDetail: String? = nil,
         tap: (() -> Void)?, @ViewBuilder indicator: () -> Indicator
     ) -> some View {
         let content = VStack(alignment: .leading, spacing: 9) {
@@ -770,6 +823,16 @@ struct PopoverView: View {
                     .font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
                 Text(label).font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
+                // Tiny metric prefix to the status dot (e.g. the Network
+                // tile's live RTT) — lives up here so it never squeezes the
+                // value row's numbers.
+                if let labelDetail {
+                    Text(labelDetail)
+                        .font(.system(size: 9.5).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
                 if let firing { Circle().fill(firing).frame(width: 7, height: 7) }
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -1575,6 +1638,17 @@ struct SettingsView: View {
             toggleRow("Watch where apps connect",
                       "Alert if an app keeps a connection to a server flagged as an attacker or abuser, and quietly note when an app first talks to a new country. Checks destination addresses (public IPs only, never content) against mojoverify; results are cached on this Mac. Off by default.",
                       $settings.connectionAlertsEnabled)
+        }
+
+        group("Network sentinel") {
+            toggleRow("Watch for network degradation",
+                      "Passively learns this network's usual latency, loss, and queueing from tiny pings (~2 MB/day) and quietly flags when things drift well above it — before \u{201C}slow\u{201D} becomes \u{201C}down\u{201D}. Nothing leaves your Mac beyond the pings.",
+                      $settings.sentinelEnabled)
+            if settings.sentinelEnabled {
+                toggleRow("Pause on battery",
+                          "Skip sentinel probes while running on battery power.",
+                          $settings.sentinelPauseOnBattery)
+            }
         }
 
         group("Network watch") {
@@ -3078,6 +3152,7 @@ extension Notification.Name {
     /// string (an executable path or process name) to narrow straight to one
     /// process — so an event can point at exactly what it flagged.
     static let pulseShowProcessViewer = Notification.Name("mojopulse.showProcessViewer")
+    static let pulseShowSpeedTest = Notification.Name("mojopulse.showSpeedTest")
     /// Re-target an already-open explorer window to a new filter string.
     static let pulseSetProcessFilter = Notification.Name("mojopulse.setProcessFilter")
 }
@@ -3475,6 +3550,11 @@ struct IncidentDetailView: View {
         }
         guard let url = copy.actionURL else { return nil }
         if url.scheme == "mojopulse" {
+            if url.host == "speedtest" {
+                return PrimaryAction(icon: "gauge.with.needle", label: "Run a Speed Test") {
+                    NotificationCenter.default.post(name: .pulseShowSpeedTest, object: nil)
+                }
+            }
             // Process ended (or never resolved): fall back to the explorer,
             // filtered to this executable path so it's not a needle-in-haystack.
             let target = subjectPath ?? subjectName
@@ -3490,7 +3570,9 @@ struct IncidentDetailView: View {
     /// Whether this event is about a specific process (so "process details" and
     /// the explorer deep-link apply) — the templates route those to the
     /// mojopulse:// process viewer.
-    private var isProcessEvent: Bool { copy.actionURL?.scheme == "mojopulse" }
+    private var isProcessEvent: Bool {
+        copy.actionURL?.scheme == "mojopulse" && copy.actionURL?.host != "speedtest"
+    }
 
     /// Open the full process inspector for a running PID, as a sheet over the
     /// event. Fetches live CPU/memory (which the inspector's header shows)

@@ -111,6 +111,7 @@ final class MenuBarController: NSObject {
     private var domainWindow: NSWindow?
     private var ipLookupWindow: NSWindow?
     private var speedTestWindow: NSWindow?
+    private var networkHealthWindow: NSWindow?
     private var bluetoothWindow: NSWindow?
     // Owned here (not by the view) so windowWillClose can stop the radio even
     // though the window is kept alive across closes. Creating it is cheap and
@@ -129,6 +130,9 @@ final class MenuBarController: NSObject {
     /// Speed Test engine — created in AppDelegate (it persists results and
     /// journals into Recent activity), rendered by the window we own here.
     private let speedTest: SpeedTestEngine
+
+    /// Network Sentinel — feeds the Network tile's quality dot + RTT.
+    private let sentinel: NetworkSentinel
 
     /// Retained reference to the single event-detail window (content replaced
     /// per click rather than spawning one window per event).
@@ -173,6 +177,7 @@ final class MenuBarController: NSObject {
         updater: Updater,
         database: Database?,
         speedTest: SpeedTestEngine,
+        sentinel: NetworkSentinel,
         notifications: NotificationManager
     ) {
         self.engine = engine
@@ -190,6 +195,7 @@ final class MenuBarController: NSObject {
         self.updater = updater
         self.database = database
         self.speedTest = speedTest
+        self.sentinel = sentinel
         self.notifications = notifications
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
@@ -211,6 +217,7 @@ final class MenuBarController: NSObject {
                 networkSafety: networkSafety,
                 processes: processes,
                 arp: arp,
+                sentinel: sentinel,
                 settings: settings,
                 navigation: popoverNavigation,
                 onShowFullHistory: { [weak self] in self?.showHistoryWindow() },
@@ -227,6 +234,7 @@ final class MenuBarController: NSObject {
                 onShowNetwork: { [weak self] in self?.showNetworkActivityWindow() },
                 onShowDevices: { [weak self] in self?.showLANDevicesWindow() },
                 onShowThermal: { [weak self] in self?.showThermalWindow() },
+                onShowNetworkHealth: { [weak self] in self?.showNetworkHealthWindow() },
                 onShowNetworkVisibility: { [weak self] in self?.showNetworkVisibilityWindow() },
                 onShowDomain: { [weak self] in self?.showDomainLookupWindow() },
                 onShowIP: { [weak self] in self?.showIPLookupWindow() },
@@ -280,6 +288,13 @@ final class MenuBarController: NSObject {
         // Internal card actions (mojopulse:// action URLs): incident cards
         // deep in the view tree post a notification instead of threading a
         // callback through every card site; we own the windows, so we route.
+        // Sentinel degradation cards offer "Run a Speed Test" — route it to
+        // the same window the Network screen opens.
+        NotificationCenter.default.publisher(for: .pulseShowSpeedTest)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.showSpeedTestWindow() }
+            .store(in: &cancellables)
+
         NotificationCenter.default.publisher(for: .pulseShowProcessViewer)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] note in
@@ -1137,6 +1152,40 @@ final class MenuBarController: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Network Health — the Network tile's destination: sentinel verdict +
+    /// live now-strip + history charts (with degradation-event bands) + the
+    /// Speed Test shelf. Sentinel steps up to 15 s cycles while it's open.
+    private func showNetworkHealthWindow() {
+        popover.performClose(nil)
+        if let existing = networkHealthWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        sentinel.setFastMode(true)
+        let hosting = NSHostingController(rootView: DialogChrome { NetworkHealthView(
+            sentinel: sentinel,
+            speedTest: speedTest,
+            system: system,
+            metricHistory: metricHistory,
+            database: database,
+            onRunSpeedTest: { [weak self] in self?.showSpeedTestWindow() }
+        ) })
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Network Health"
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        // Size to the content's real fitting size — a hardcoded 640 clipped
+        // both edges the first time a row came out wider than planned.
+        window.setContentSize(hosting.view.fittingSize)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        networkHealthWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
     /// Speed Test — saturating throughput + per-hop latency-under-load
     /// diagnostic. The engine lives app-side; closing the window cancels any
     /// running test (windowWillClose) so we never saturate a line unwatched.
@@ -1408,6 +1457,10 @@ extension MenuBarController: NSWindowDelegate {
             // Never leave a test saturating the line with no UI watching it.
             speedTest.cancelAndReset()
             speedTestWindow = nil
+        } else if closing === networkHealthWindow {
+            // Back to the quiet 60 s cadence once nobody's watching live.
+            sentinel.setFastMode(false)
+            networkHealthWindow = nil
         } else if closing === safetyWindow {
             safetyWindow = nil
         } else if closing === diskWindow {

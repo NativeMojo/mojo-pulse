@@ -37,6 +37,8 @@ final class Settings: ObservableObject {
         static let menuBarIcon = "ui.menuBarIconStyle"
         static let geoLookup = "network.geoLookupEnabled"
         static let connectionAlerts = "network.connectionAlertsEnabled"
+        static let sentinel = "network.sentinelEnabled"
+        static let sentinelBatteryPause = "network.sentinelPauseOnBattery"
         static let lanWatch = "network.lanWatchEnabled"
         static let lanIdentify = "network.lanIdentifyEnabled"
         static let lanNewDeviceAlerts = "network.lanNewDeviceAlertsEnabled"
@@ -92,6 +94,20 @@ final class Settings: ObservableObject {
     /// and both connection detectors go quiet.
     @Published var connectionAlertsEnabled: Bool {
         didSet { defaults.set(connectionAlertsEnabled, forKey: Key.connectionAlerts) }
+    }
+
+    /// Passive network-degradation watch: tiny pings to the router + rotating
+    /// internet anchors (~1–2 MB/day) that learn this network's usual and warn
+    /// when latency/loss/queueing drift above it. ON by default — it's quieter
+    /// than the reachability probes that always run, and nothing leaves the
+    /// Mac beyond the pings themselves.
+    @Published var sentinelEnabled: Bool {
+        didSet { defaults.set(sentinelEnabled, forKey: Key.sentinel) }
+    }
+
+    /// Pause the sentinel on battery power. ON by default.
+    @Published var sentinelPauseOnBattery: Bool {
+        didSet { defaults.set(sentinelPauseOnBattery, forKey: Key.sentinelBatteryPause) }
     }
 
     /// Master switch for the passive LAN watcher (ARP-based device inventory +
@@ -170,6 +186,8 @@ final class Settings: ObservableObject {
             Key.menuBarIcon: MenuBarIconStyle.heartbeat.rawValue,
             Key.geoLookup: false,
             Key.connectionAlerts: false,
+            Key.sentinel: true,
+            Key.sentinelBatteryPause: true,
             Key.lanWatch: false,
             Key.lanIdentify: false,
             Key.lanNewDeviceAlerts: false,
@@ -187,6 +205,8 @@ final class Settings: ObservableObject {
             ?? .heartbeat
         self.geoLookupEnabled = defaults.bool(forKey: Key.geoLookup)
         self.connectionAlertsEnabled = defaults.bool(forKey: Key.connectionAlerts)
+        self.sentinelEnabled = defaults.bool(forKey: Key.sentinel)
+        self.sentinelPauseOnBattery = defaults.bool(forKey: Key.sentinelBatteryPause)
         self.lanWatchEnabled = defaults.bool(forKey: Key.lanWatch)
         self.lanIdentifyEnabled = defaults.bool(forKey: Key.lanIdentify)
         self.lanNewDeviceAlertsEnabled = defaults.bool(forKey: Key.lanNewDeviceAlerts)

@@ -202,6 +202,48 @@ final class Database: @unchecked Sendable {
         try exec("""
             CREATE INDEX IF NOT EXISTS idx_speed_tests_ts ON speed_tests(ts);
         """)
+        // Network Sentinel baselines: the learned "usual" per (network, metric)
+        // — e.g. ("FARGO", "rtt.inet") → 21.4. EWMA value + how many samples
+        // trained it (the learn-only cold-start gate reads the count).
+        try exec("""
+            CREATE TABLE IF NOT EXISTS net_baselines (
+                network TEXT NOT NULL,
+                metric TEXT NOT NULL,
+                value REAL NOT NULL,
+                samples INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (network, metric)
+            );
+        """)
+    }
+
+    // MARK: - Sentinel baselines
+
+    func sentinelBaseline(network: String, metric: String) throws -> (value: Double, samples: Int)? {
+        let sql = "SELECT value, samples FROM net_baselines WHERE network = ? AND metric = ? LIMIT 1;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, network, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, metric, -1, Database.SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return (sqlite3_column_double(stmt, 0), Int(sqlite3_column_int64(stmt, 1)))
+    }
+
+    func setSentinelBaseline(network: String, metric: String, value: Double, samples: Int) throws {
+        let sql = """
+            INSERT OR REPLACE INTO net_baselines (network, metric, value, samples, updated_at)
+            VALUES (?, ?, ?, ?, ?);
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, network, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, metric, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_double(stmt, 3, value)
+        sqlite3_bind_int64(stmt, 4, Int64(samples))
+        sqlite3_bind_int64(stmt, 5, Int64(Date().timeIntervalSince1970))
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw DBError.execFailed }
     }
 
     // MARK: - Speed tests
@@ -709,6 +751,60 @@ final class Database: @unchecked Sendable {
                 context = parsed
             }
 
+            results.append(IncidentRecord(
+                id: uuid,
+                signature: String(cString: sigCStr),
+                category: category,
+                severity: severity,
+                detectorID: String(cString: detCStr),
+                templateKey: String(cString: tplCStr),
+                startedAt: startedAt,
+                endedAt: endedAt,
+                context: context
+            ))
+        }
+        return results
+    }
+
+    /// Sentinel degradation episodes overlapping a time window — the Network
+    /// Health charts paint these as shaded bands so "what happened at 3 PM"
+    /// answers itself on the latency line.
+    func fetchDegradeIncidents(since: Date) throws -> [IncidentRecord] {
+        let sql = """
+            SELECT id, signature, category, severity, detector_id, template_key,
+                   started_at, ended_at, context
+            FROM incidents
+            WHERE template_key LIKE 'network.degrade.%'
+              AND (ended_at IS NULL OR ended_at >= ?)
+            ORDER BY started_at ASC;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(since.timeIntervalSince1970))
+
+        var results: [IncidentRecord] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard
+                let idCStr = sqlite3_column_text(stmt, 0),
+                let sigCStr = sqlite3_column_text(stmt, 1),
+                let catCStr = sqlite3_column_text(stmt, 2),
+                let detCStr = sqlite3_column_text(stmt, 4),
+                let tplCStr = sqlite3_column_text(stmt, 5),
+                let uuid = UUID(uuidString: String(cString: idCStr)),
+                let category = IncidentCategory(rawValue: String(cString: catCStr)),
+                let severity = IncidentSeverity(rawValue: Int(sqlite3_column_int(stmt, 3)))
+            else { continue }
+            let startedAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 6)))
+            let endedAt: Date? = sqlite3_column_type(stmt, 7) == SQLITE_NULL
+                ? nil
+                : Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 7)))
+            var context: [String: String] = [:]
+            if let ctxCStr = sqlite3_column_text(stmt, 8),
+               let data = String(cString: ctxCStr).data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+                context = parsed
+            }
             results.append(IncidentRecord(
                 id: uuid,
                 signature: String(cString: sigCStr),

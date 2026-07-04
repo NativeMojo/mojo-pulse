@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var systemEventsCollector: SystemEventsCollector?
     private var arpCollector: ARPCollector?
     private var connectionWatcher: ConnectionWatcher?
+    private var networkSentinel: NetworkSentinel?
     private var speedTestEngine: SpeedTestEngine?
     private var detectorEngine: DetectorEngine?
     private var signalAggregator: SignalAggregator?
@@ -148,6 +149,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // and journals, whatever the window lifecycle does.
         let speedTest = SpeedTestEngine(database: db, wifi: wifi)
         self.speedTestEngine = speedTest
+        // Network Sentinel: the passive degradation watch (~1–2 MB/day of tiny
+        // pings). Pauses itself while a Speed Test saturates the line.
+        let sentinel = NetworkSentinel(settings: settings, wifi: wifi,
+                                       system: system, reachability: reach,
+                                       database: db)
+        sentinel.isSpeedTestActive = { [weak speedTest] in
+            speedTest?.phase.isRunning ?? false
+        }
+        self.networkSentinel = sentinel
         self.thermalCollector = thermal
         self.reachabilityMonitor = reach
         self.systemCollector = system
@@ -191,7 +201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             XProtectDetectionDetector(),
             RunawayProcessDetector(settings: settings),
             CrashDetector(),
-            NewDeviceDetector(settings: settings)
+            NewDeviceDetector(settings: settings),
+            DegradationDetector()
         ]
 
         // Engine and aggregator. Persistence flows straight into SQLite when
@@ -229,6 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             events: events,
             arp: arp,
             connectionWatch: connectionWatch,
+            sentinel: sentinel,
             history: metricHistory
         )
         self.detectorEngine = engine
@@ -276,6 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updater: updater,
             database: db,
             speedTest: speedTest,
+            sentinel: sentinel,
             notifications: notifications
         )
 
@@ -317,6 +330,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         arp.start()
         // Connection watcher last, same rationale. Idles unless enabled.
         connectionWatch.start()
+        // Sentinel probes on its own 60 s loop; first cycle waits ~10 s so
+        // the collectors it reads (system, wifi, reachability) are warm.
+        sentinel.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -328,5 +344,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         systemEventsCollector?.stop()
         arpCollector?.stop()
         connectionWatcher?.stop()
+        networkSentinel?.stop()
     }
 }

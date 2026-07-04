@@ -33,6 +33,7 @@ final class SignalAggregator {
     private let events: SystemEventsCollector
     private let arp: ARPCollector
     private let connectionWatch: ConnectionWatcher
+    private let sentinel: NetworkSentinel
     private let history: MetricHistoryStore
 
     private var task: Task<Void, Never>?
@@ -49,6 +50,7 @@ final class SignalAggregator {
         events: SystemEventsCollector,
         arp: ARPCollector,
         connectionWatch: ConnectionWatcher,
+        sentinel: NetworkSentinel,
         history: MetricHistoryStore,
         slowInterval: TimeInterval = 5.0,
         fastInterval: TimeInterval = 2.0
@@ -63,6 +65,7 @@ final class SignalAggregator {
         self.events = events
         self.arp = arp
         self.connectionWatch = connectionWatch
+        self.sentinel = sentinel
         self.history = history
         self.slowInterval = slowInterval
         self.fastInterval = fastInterval
@@ -178,7 +181,8 @@ final class SignalAggregator {
             processes: processes.current,
             events: events.current,
             lan: arp.current,
-            connections: connectionWatch.current
+            connections: connectionWatch.current,
+            sentinel: sentinel.current
         )
         engine.tick(signals: signals)
     }
