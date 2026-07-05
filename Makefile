@@ -14,7 +14,7 @@ DIST_DIR         := dist
 # per release. CFBundleVersion is the auto-incrementing build counter below —
 # that's what Sparkle compares to decide "is there a newer build?", so the
 # display version can stay fixed across builds without breaking auto-update.
-MARKETING_VERSION := 1.16.2
+MARKETING_VERSION := 1.16.3
 BUILD_NUMBER_FILE := .build-number
 # Code-signing identity. The Developer ID Application cert for 311 Labs, LLC.
 # (Team 7UURCYAQ8Y) is the default so `make app/install/release` sign for real.
