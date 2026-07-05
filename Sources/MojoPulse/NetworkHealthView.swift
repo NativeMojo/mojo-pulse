@@ -176,7 +176,7 @@ struct NetworkHealthView: View {
     private var chartArea: some View {
         if plot.allSatisfy({ $0.samples.isEmpty })
             && (metric != .bloat || speedTestBloatPoints.isEmpty) {
-            VStack(spacing: 5) {
+            VStack(spacing: 6) {
                 Text(metric == .bloat ? "Needs load to measure" : "Collecting…")
                     .font(.subheadline.weight(.semibold))
                 Text(metric == .bloat
@@ -186,6 +186,16 @@ struct NetworkHealthView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
+                // The empty state must never hide data that's one click away:
+                // Live/Minute only spans 2 h, but Speed Tests from earlier
+                // today (or this week) live in the wider ranges.
+                if metric == .bloat, range != .day, weekBloatTestCount > 0 {
+                    Button("Show the Day view — \(weekBloatTestCount) Speed Test measurement\(weekBloatTestCount == 1 ? "" : "s") this week") {
+                        range = .day
+                    }
+                    .controlSize(.small)
+                    .padding(.top, 4)
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 56)
@@ -194,6 +204,16 @@ struct NetworkHealthView: View {
         } else {
             lineChart
         }
+    }
+
+    /// Speed Tests in the Day range's window that carry a bloat measurement —
+    /// powers the empty state's "your data is one click away" escape hatch.
+    private var weekBloatTestCount: Int {
+        let cutoff = Date().addingTimeInterval(-HistoryRange.day.window)
+        return speedTest.history.filter { result in
+            result.at >= cutoff && result.inetIdleMs != nil
+                && (result.inetLoadedDownMs != nil || result.inetLoadedUpMs != nil)
+        }.count
     }
 
     /// Every Speed Test already measured true loaded-vs-idle latency — those

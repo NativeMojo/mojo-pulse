@@ -17,10 +17,13 @@
 # parsed DMG/sha256) without touching git, GitHub, or the Homebrew tap.
 #
 # Assumes: the change being released is already committed on a clean `main`;
-# this script's first commit is the version bump itself. Requires `gh` to be
-# authenticated, the notary .p8 and Sparkle EdDSA key under
-# ~/mojopulse-signing/, and a homebrew-tap checkout as a sibling directory
-# (override with TAP_DIR=/path env var).
+# this script's first commit is the version bump itself. Requires the notary
+# .p8 and Sparkle EdDSA key under ~/mojopulse-signing/, a homebrew-tap
+# checkout as a sibling directory (override with TAP_DIR=/path env var), and
+# a `gh` login isolated to GH_CONFIG_DIR below (see setup note there) — this
+# script never depends on or touches your machine's default `gh` session, so
+# switching accounts for other projects can't break (or be broken by) a
+# mojo-pulse release.
 
 set -euo pipefail
 
@@ -31,6 +34,13 @@ TAP_DIR="${TAP_DIR:-$REPO_ROOT/../homebrew-tap}"
 NOTARY_KEY_FILE="$HOME/mojopulse-signing/AuthKey_D56868A4PH.p8"
 SPARKLE_KEY_FILE="$HOME/mojopulse-signing/sparkle_eddsa_private_key.txt"
 GH_REPO="NativeMojo/mojo-pulse"
+
+# Isolated gh CLI identity for this repo only — never the machine's shared
+# default `gh` login/active-account (this repo's account is `iamojo`; other
+# projects on this machine use their own accounts and must never see this one,
+# or be seen by it). One-time setup, outside this script:
+#   GH_CONFIG_DIR="$HOME/mojopulse-signing/gh-config" gh auth login -h github.com --web
+export GH_CONFIG_DIR="$HOME/mojopulse-signing/gh-config"
 
 BUMP=""
 EXPLICIT_VERSION=""
@@ -86,7 +96,8 @@ CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 command -v gh >/dev/null || { echo "gh CLI not found"; exit 1; }
 # `gh auth status` exits 1 if ANY configured account has a stale token, even an
 # inactive one — not what we want. Exercise the active credential directly.
-gh api user >/dev/null 2>&1 || { echo "gh not authenticated (active account can't reach the API)"; exit 1; }
+# (GH_CONFIG_DIR above already scopes this to the isolated per-repo login.)
+gh api user >/dev/null 2>&1 || { echo "gh not authenticated in \$GH_CONFIG_DIR ($GH_CONFIG_DIR) — see the setup note above"; exit 1; }
 [[ -f "$NOTARY_KEY_FILE" ]] || { echo "Missing notary key: $NOTARY_KEY_FILE"; exit 1; }
 [[ -f "$SPARKLE_KEY_FILE" ]] || { echo "Missing Sparkle EdDSA key: $SPARKLE_KEY_FILE"; exit 1; }
 [[ -d "$TAP_DIR/.git" ]] || { echo "Homebrew tap not found at $TAP_DIR (override with TAP_DIR=)"; exit 1; }
