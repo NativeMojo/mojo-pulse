@@ -35,6 +35,22 @@
   "license": "https://www.apache.org/licenses/LICENSE-2.0"
 }
 </script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {"@type":"Question","name":"Is Mojo Pulse really free?","acceptedAnswer":{"@type":"Answer","text":"Yes. Free as in $0, and free as in open source (Apache 2.0). There's no trial period, no locked features, and no ads."}},
+    {"@type":"Question","name":"Is it safe to install?","acceptedAnswer":{"@type":"Answer","text":"Every release is signed with an Apple Developer ID and notarized by Apple, so macOS itself verifies the app hasn't been tampered with. The source code is public if you want to read exactly what it does."}},
+    {"@type":"Question","name":"Will it slow my Mac down?","acceptedAnswer":{"@type":"Answer","text":"It's a native Swift app, not a web wrapper. In the background it samples every 5 seconds and steps up to 2 only while you're actually looking; heavier checks are cost-gated. The whole download is under 10 MB."}},
+    {"@type":"Question","name":"What data does it send off my Mac?","acceptedAnswer":{"@type":"Answer","text":"By default: nothing except checking GitHub for app updates. Optional map lookups send only public IP addresses. There is no analytics or telemetry of any kind."}},
+    {"@type":"Question","name":"What permissions does it ask for?","acceptedAnswer":{"@type":"Answer","text":"None to start — no admin password, ever. Some features ask in context: Location (to read Wi-Fi network names), Local Network (to name LAN devices), Bluetooth (for the sonar). Each is optional."}},
+    {"@type":"Question","name":"How is this different from Activity Monitor or iStat Menus?","acceptedAnswer":{"@type":"Answer","text":"Those are dashboards that show numbers and leave the judgment to you. Pulse leads with the judgment — is anything wrong, how bad, what to do — and adds security posture, Wi-Fi safety checks, path-aware speed tests, and Bluetooth tracker detection."}},
+    {"@type":"Question","name":"How do updates work?","acceptedAnswer":{"@type":"Answer","text":"In-app via the standard Sparkle framework. Each update is cryptographically signed, and you approve installs. Homebrew works too."}},
+    {"@type":"Question","name":"How do I uninstall it?","acceptedAnswer":{"@type":"Answer","text":"Quit it and drag it from Applications to the Trash. Pulse installs no background helpers, daemons, or kernel extensions, so nothing keeps running after it's gone."}}
+  ]
+}
+</script>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
