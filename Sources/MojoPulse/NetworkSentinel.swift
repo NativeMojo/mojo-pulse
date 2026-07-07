@@ -92,6 +92,12 @@ final class NetworkSentinel: ObservableObject {
     /// deliberate saturation would poison the passive samples.
     var isSpeedTestActive: @MainActor () -> Bool = { false }
 
+    /// Wired by AppDelegate: the in-memory tick series (2–5 s samples) that
+    /// the busy tag averages over. An instantaneous read kept landing in
+    /// streaming's burst gaps — field data: 3 h of video, only 2 minutes ever
+    /// averaged over the old threshold.
+    weak var metricHistory: MetricHistoryStore?
+
     private var loop: Task<Void, Never>?
     private var cycleCount = 0
     /// Cycles spent on the CURRENT network — gates the first-impressions
@@ -212,14 +218,12 @@ final class NetworkSentinel: ObservableObject {
             gatewayIP = await GatewayFinder.defaultGateway()?.ip
         }
         // Organic-load tag: is the Mac's own traffic meaningful right now?
-        // Per-direction absolute floors — a call, a stream, a backup. (An
-        // earlier %-of-capacity rule needed ~100 Mbps of organic traffic to
-        // count as busy, which starved the bloat signal completely.) Moderate
-        // loads dilute the busy median toward idle, which only ever
-        // under-reports bloat — the safe direction for the 150 ms alarm.
-        let downOrganic = Double(system.current.netBytesInPerSec) * 8 / 1_000_000
-        let upOrganic = Double(system.current.netBytesOutPerSec) * 8 / 1_000_000
-        let busy = downOrganic > 8 || upOrganic > 2
+        // MEAN over the last minute of tick samples, per direction, with
+        // floors sized to real usage (streaming video averages 2–5 Mbps).
+        // Two earlier designs failed in the field: a %-of-capacity bar
+        // (~100 Mbps) and then an 8 Mbps instantaneous read that sampled the
+        // burst gaps — zero bloat data ever recorded under hours of video.
+        let busy = isOrganicallyBusy()
 
         // Probe: 4 echoes to the router, 3 to this cycle's anchor. The FIRST
         // router echo is discarded: it pays the Wi-Fi radio's power-save
@@ -413,14 +417,35 @@ final class NetworkSentinel: ObservableObject {
         return (Double(lost) / Double(all.count) * 100, all.count)
     }
 
-    /// Busy-vs-idle internet RTT gap — the passive bufferbloat estimate.
+    /// Whether the Mac's own traffic is meaningful right now, judged over the
+    /// last ~60 s of tick samples (never a single instantaneous read).
+    private func isOrganicallyBusy() -> Bool {
+        func meanMbps(_ samples: [MetricSample]) -> Double {
+            let cutoff = Date().addingTimeInterval(-60)
+            let recent = samples.filter { $0.timestamp >= cutoff }.map(\.value)
+            guard !recent.isEmpty else { return 0 }
+            return recent.reduce(0, +) / Double(recent.count) * 8 / 1_000_000
+        }
+        if let history = metricHistory {
+            return meanMbps(history.netIn.samples) > 3 || meanMbps(history.netOut.samples) > 1
+        }
+        // Fallback if the history store isn't wired: the instantaneous read.
+        let down = Double(system.current.netBytesInPerSec) * 8 / 1_000_000
+        let up = Double(system.current.netBytesOutPerSec) * 8 / 1_000_000
+        return down > 3 || up > 1
+    }
+
+    /// Busy-median vs the LEARNED idle baseline — the passive bufferbloat
+    /// estimate. The baseline (folded from idle samples only, persisted per
+    /// network) IS the network at rest, so no contemporaneous idle samples
+    /// are needed. (v1 required busy and idle samples to coexist inside one
+    /// 10-min window — sustained load starved the idle side and the metric
+    /// never produced a single value.)
     private func bloatDelta() -> Double? {
-        let all = anchorSamples.values.flatMap { $0 }
-        let busyRTTs = all.filter(\.busy).compactMap(\.ms)
-        let idleRTTs = all.filter { !$0.busy }.compactMap(\.ms)
-        guard busyRTTs.count >= 12, idleRTTs.count >= 8,
-              let busyMed = median(busyRTTs), let idleMed = median(idleRTTs) else { return nil }
-        return max(0, busyMed - idleMed)
+        guard let base = baselines["rtt.inet"], base.count >= Self.learnSamplesRTT else { return nil }
+        let busyRTTs = anchorSamples.values.flatMap { $0 }.filter(\.busy).compactMap(\.ms)
+        guard busyRTTs.count >= 9, let busyMed = median(busyRTTs) else { return nil }
+        return max(0, busyMed - base.value)
     }
 
     // MARK: Rules
@@ -457,16 +482,15 @@ final class NetworkSentinel: ObservableObject {
                  to: loss.pct)
         }
 
-        // bloat — busy−idle > 150 ms (the busy-sample gate is the sustain).
-        if let delta = bloatDelta() {
-            let all = anchorSamples.values.flatMap { $0 }
-            let idleMed = median(all.filter { !$0.busy }.compactMap(\.ms)) ?? 0
+        // bloat — busy-median exceeds the learned idle baseline by > 150 ms
+        // (the ≥9-busy-samples gate inside bloatDelta is the sustain).
+        if let delta = bloatDelta(), let base = baselines["rtt.inet"] {
             step(.bloat, now: now,
                  bad: delta > 150,
                  clear: delta < 60,
                  sustain: 0,
-                 from: idleMed,
-                 to: idleMed + delta)
+                 from: base.value,
+                 to: base.value + delta)
         }
 
         // gateway — 5-min median above max(3× base, absolute floor).

@@ -217,6 +217,20 @@ final class Database: @unchecked Sendable {
         """)
     }
 
+    /// Total for a rate metric over a window: each rollup row is a one-minute
+    /// average in units/sec, so Σ(avg × 60) = total units. Powers the Network
+    /// Health "Data used" panel (netIn/netOut → bytes moved).
+    func metricRollupTotal(metric: String, since: Date) throws -> Double {
+        let sql = "SELECT COALESCE(SUM(avg), 0) * 60 FROM metric_rollups WHERE metric = ? AND ts >= ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw DBError.prepareFailed }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, metric, -1, Database.SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, Int64(since.timeIntervalSince1970))
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+        return sqlite3_column_double(stmt, 0)
+    }
+
     // MARK: - Sentinel baselines
 
     func sentinelBaseline(network: String, metric: String) throws -> (value: Double, samples: Int)? {

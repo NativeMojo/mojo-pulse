@@ -264,6 +264,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // activity without waiting for the next engine tick.
         speedTest.onJournal = { [weak history] in history?.refresh() }
 
+        // The sentinel's organic-load ("busy") tag averages the last minute
+        // of tick samples from the history store — never one instant read.
+        sentinel.metricHistory = metricHistory
+
         // Auto-update (Sparkle). Holds the updater alive for the app's
         // lifetime; the popover's "Check for Updates…" routes here.
         let updater = Updater()

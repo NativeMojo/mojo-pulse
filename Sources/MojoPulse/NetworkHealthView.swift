@@ -35,6 +35,13 @@ struct NetworkHealthView: View {
     @State private var range: HistoryRange = .live
     @State private var plot: [PlotSeries] = []
     @State private var bands: [IncidentRecord] = []
+    @State private var usage = Usage()
+
+    struct Usage {
+        var hourDown = 0.0, hourUp = 0.0
+        var todayDown = 0.0, todayUp = 0.0
+        var weekDown = 0.0, weekUp = 0.0
+    }
 
     private let refresh = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
     private static let upColor = Color(red: 0.61, green: 0.48, blue: 0.91)
@@ -368,18 +375,31 @@ struct NetworkHealthView: View {
     private var trafficPanels: some View {
         let down = plot.first { $0.label == "Download" }?.samples ?? []
         let up = plot.first { $0.label == "Upload" }?.samples ?? []
-        return HStack(spacing: 12) {
-            statPanel(tint: SeverityColors.info, icon: "arrow.down", title: "Download", rows: [
-                ("Now", Self.rate(Double(system.current.netBytesInPerSec))),
-                ("Peak", Self.rate(down.map(\.value).max() ?? 0)),
-                ("Total", Self.bytes(integrate(down)))
-            ])
-            statPanel(tint: Self.upColor, icon: "arrow.up", title: "Upload", rows: [
-                ("Now", Self.rate(Double(system.current.netBytesOutPerSec))),
-                ("Peak", Self.rate(up.map(\.value).max() ?? 0)),
-                ("Total", Self.bytes(integrate(up)))
+        return VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                statPanel(tint: SeverityColors.info, icon: "arrow.down", title: "Download", rows: [
+                    ("Now", Self.rate(Double(system.current.netBytesInPerSec))),
+                    ("Peak", Self.rate(down.map(\.value).max() ?? 0)),
+                    ("Total", Self.bytes(integrate(down)))
+                ])
+                statPanel(tint: Self.upColor, icon: "arrow.up", title: "Upload", rows: [
+                    ("Now", Self.rate(Double(system.current.netBytesOutPerSec))),
+                    ("Peak", Self.rate(up.map(\.value).max() ?? 0)),
+                    ("Total", Self.bytes(integrate(up)))
+                ])
+            }
+            // Absolute-time usage — independent of the chart's range picker,
+            // computed from the 7-day rollup store.
+            statPanel(tint: SeverityColors.quiet, icon: "clock.arrow.circlepath", title: "Data used", rows: [
+                ("Last hour", usageLine(usage.hourDown, usage.hourUp)),
+                ("Today", usageLine(usage.todayDown, usage.todayUp)),
+                ("Last 7 days", usageLine(usage.weekDown, usage.weekUp))
             ])
         }
+    }
+
+    private func usageLine(_ down: Double, _ up: Double) -> String {
+        "↓ \(Self.bytes(down))   ↑ \(Self.bytes(up))"
     }
 
     private var latencyPanels: some View {
@@ -515,6 +535,20 @@ struct NetworkHealthView: View {
                 since: Date().addingTimeInterval(-currentWindow))) ?? []
         } else {
             bands = []
+        }
+
+        if metric == .traffic, let database {
+            let now = Date()
+            let hour = now.addingTimeInterval(-3600)
+            let midnight = Calendar.current.startOfDay(for: now)
+            let week = now.addingTimeInterval(-7 * 24 * 3600)
+            func total(_ key: String, _ since: Date) -> Double {
+                (try? database.metricRollupTotal(metric: key, since: since)) ?? 0
+            }
+            usage = Usage(
+                hourDown: total("netIn", hour), hourUp: total("netOut", hour),
+                todayDown: total("netIn", midnight), todayUp: total("netOut", midnight),
+                weekDown: total("netIn", week), weekUp: total("netOut", week))
         }
     }
 
