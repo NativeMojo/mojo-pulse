@@ -2,8 +2,10 @@
 
 **A calm menu bar companion that tells you when your Mac needs attention — and stays out of the way when it doesn't.**
 
+**[mojopulse.io](https://mojopulse.io)** · [Download](https://github.com/NativeMojo/mojo-pulse/releases/latest) · [Screenshots](https://mojopulse.io/#screens) · [FAQ](https://mojopulse.io/#faq)
+
 <p align="center">
-  <img src="screenshots/pulse-in-action.png" alt="Mojo Pulse popover" width="380" />
+  <img src="site/assets/shots/hero-popover.jpg" alt="Mojo Pulse popover under the macOS menu bar" width="380" />
 </p>
 
 Mojo Pulse lives in your menu bar as a single colored dot. When everything's fine, the dot stays quiet. When something deserves your attention — a sustained CPU spike, an open Wi-Fi network without a VPN, a thermal throttle, an offline interface, a near-full disk — the dot changes color and a short label appears next to it ("Hot", "Net", etc.). Click the dot to see what's going on and what to do about it.
@@ -27,7 +29,7 @@ Each incident card explains what's happening, why it matters, and offers a one-c
 ## Live charts
 
 <p align="center">
-  <img src="screenshots/charts.png" alt="Mojo Pulse live metrics window" width="540" />
+  <img src="site/assets/shots/network-health.jpg" alt="Mojo Pulse Network Health window" width="540" />
 </p>
 
 Click any of CPU, RAM, or Net in the popover to expand a 60-second sparkline inline, or hit **Live charts** at the top of the vitals grid to open a standalone window with a five-minute view, a tabbed switcher, and at-a-glance mini charts for the other metrics. While the popover or detail window is visible, sampling bumps to 2 s for smooth lines — otherwise it runs at the quieter 5 s baseline so battery life isn't impacted.
@@ -38,20 +40,19 @@ Activity Monitor and iStat Menus are great at showing you *everything*, all the 
 
 ## Installation
 
-**[Download the latest release →](https://github.com/NativeMojo/mojo-pulse/releases/latest)**
+**[Download the latest release →](https://github.com/NativeMojo/mojo-pulse/releases/latest)** — open the DMG and drag `Mojo Pulse.app` into `/Applications`. Every release is signed with an Apple Developer ID and **notarized by Apple**, so it opens with no Gatekeeper warnings. Verify it yourself:
 
-Open the DMG and drag `Mojo Pulse.app` into `/Applications`. (Or build it yourself, see below.)
+```sh
+spctl -a -vv /Applications/MojoPulse.app   # → accepted · source=Notarized Developer ID
+```
 
-Because the app is **ad-hoc signed** (not notarized by Apple), macOS Gatekeeper will block the first launch with "Mojo Pulse cannot be opened because Apple cannot check it for malicious software." Two ways past it:
+Or with Homebrew:
 
-1. Right-click `Mojo Pulse.app` in `/Applications` → **Open** → confirm. macOS remembers your approval after that.
-2. Or, from a terminal:
-   ```sh
-   xattr -d com.apple.quarantine /Applications/MojoPulse.app
-   open /Applications/MojoPulse.app
-   ```
+```sh
+brew install --cask nativemojo/tap/mojo-pulse
+```
 
-Toggle **Launch at login** inside the popover so it comes back automatically.
+Toggle **Launch at login** inside the popover so it comes back automatically. More at **[mojopulse.io](https://mojopulse.io)**.
 
 ### Requirements
 
@@ -95,7 +96,7 @@ ReachabilityMon. ─┘     (ticks 5 s,         (dedup +
 
 - Event-driven collectors (thermal, network reachability) call `forceTick()` so the UI reacts in milliseconds, not seconds.
 - The detector engine deduplicates incidents, debounces flapping signals, and writes opens/closes through to a local SQLite log.
-- Every incident card has a feedback menu — "Mute for 1 hour" / "Always ignore" / "It's real, thanks" — and those clicks are stored as labeled data, so the suppression rules can be tuned without ever phoning home.
+- Every incident card has a feedback menu — Dismiss / Snooze 1 hour / Always ignore — and those clicks are stored as labeled data, so the suppression rules can be tuned without ever phoning home.
 
 ## License
 
