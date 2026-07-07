@@ -223,6 +223,7 @@ final class MenuBarController: NSObject {
                 onShowFullHistory: { [weak self] in self?.showHistoryWindow() },
                 onShowDetail: { [weak self] kind in self?.showDetailWindow(initial: kind) },
                 onShowAbout: { [weak self] in self?.showAboutWindow() },
+                onShare: { [weak self] in self?.showSharePicker() },
                 onShowMalwareInfo: { [weak self] in self?.showMalwareWindow() },
                 onShowPosture: { [weak self] in self?.showPostureWindow() },
                 onShowSettings: { [weak self] in self?.showSettingsWindow() },
@@ -696,6 +697,22 @@ final class MenuBarController: NSObject {
         guard detailWindowConsumingFastTick else { return }
         detailWindowConsumingFastTick = false
         aggregator.removeFastConsumer()
+    }
+
+    // MARK: - Share
+
+    /// Footer share icon. The share picker can't anchor inside the transient
+    /// popover — the moment it takes key focus the popover would close out
+    /// from under it — so close the popover first and anchor the picker to
+    /// the menu-bar status button, which always exists. Deferred a runloop
+    /// turn so the popover's dismissal animation doesn't race the picker.
+    private func showSharePicker() {
+        popover.performClose(nil)
+        guard let button = statusItem.button else { return }
+        let picker = NSSharingServicePicker(items: [AboutView.shareMessage, AboutView.shareURL])
+        DispatchQueue.main.async {
+            picker.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
     }
 
     // MARK: - About window

@@ -128,6 +128,12 @@ struct PopoverView: View {
     /// window plumbing lives in MenuBarController.
     var onShowAbout: () -> Void = {}
 
+    /// Called when the user taps the footer share icon. The share picker
+    /// can't live inside this transient popover (taking key would close it),
+    /// so MenuBarController closes the popover and anchors the picker to the
+    /// menu-bar status button instead.
+    var onShare: () -> Void = {}
+
     /// Called when the user clicks the malware-scan row. Opens the malware
     /// protection info window (window plumbing in MenuBarController).
     var onShowMalwareInfo: () -> Void = {}
@@ -1206,6 +1212,13 @@ struct PopoverView: View {
         HStack(spacing: 10) {
             Button("About") { onShowAbout() }
                 .controlSize(.small)
+            Button { onShare() } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Share Mojo Pulse")
             Spacer()
             Button { onShowSettings() } label: {
                 Image(systemName: "gearshape")
@@ -1315,6 +1328,16 @@ struct AboutView: View {
 
     private let repoURL = URL(string: "https://github.com/NativeMojo/mojo-pulse")!
 
+    /// What "Share…" hands to the macOS share sheet — the public landing page,
+    /// which introduces Pulse and carries its own download + Homebrew CTAs. A
+    /// friendlier destination for a friend than a raw GitHub releases list.
+    /// Static so the popover footer's share (MenuBarController) shares the
+    /// same link.
+    static let shareURL = URL(string: "https://mojopulse.io")!
+
+    /// The pre-filled note both share surfaces attach alongside the link.
+    static let shareMessage = "I've been using Mojo Pulse to keep an eye on my Mac's health and security — thought you might like it too."
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -1369,6 +1392,13 @@ struct AboutView: View {
                         .foregroundStyle(.tertiary)
                 }
                 Spacer()
+                ShareLink(
+                    "Share…",
+                    item: Self.shareURL,
+                    subject: Text("Mojo Pulse for your Mac"),
+                    message: Text(Self.shareMessage)
+                )
+                .controlSize(.small)
                 Button("View on GitHub") { NSWorkspace.shared.open(repoURL) }
                     .controlSize(.small)
             }
