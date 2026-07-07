@@ -13,3 +13,7 @@ dist/
 
 # macOS resource files
 *.swp
+
+# Claude Code local state (launch.json is shared dev config and IS tracked)
+.claude/worktrees/
+.claude/settings.local.json

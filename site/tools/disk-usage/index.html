@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disk Space Treemap for Mac — see where your storage went · Mojo Pulse</title>
+<meta name="description" content="An interactive treemap of your Mac's storage: drill into folders, find forgotten caches, reveal in Finder, take your disk back. Free and open source.">
+<link rel="canonical" href="https://mojopulse.io/tools/disk-usage/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon-512.png">
+<meta name="theme-color" content="#fafafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1420" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mojopulse.io/tools/disk-usage/">
+<meta property="og:title" content="See where the disk went">
+<meta property="og:description" content="An interactive treemap of your storage — drill in, find the hoarders, reveal in Finder. Free, open source, notarized by Apple.">
+<meta property="og:image" content="https://mojopulse.io/assets/shots/loop-disk-poster.jpg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="split" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="50%" stop-color="#2364b4"/><stop offset="50%" stop-color="#123a63"/>
+    </linearGradient>
+    <symbol id="shield" viewBox="0 0 512 512">
+      <path d="M256 36 L436 100 C452 268 430 388 256 474 C82 388 60 268 76 100 Z" fill="url(#split)"/>
+      <path d="M112 278 H198 L238 150 L282 388 L320 244 H400" fill="none" stroke="#9bcbf2"
+        stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/"><svg><use href="#shield"/></svg> Mojo Pulse</a>
+    <nav class="nav-links">
+      <a href="/#catches">What it catches</a>
+      <a href="/#features">Features</a>
+      <a href="/#tools">Tools</a>
+      <a href="/#faq">FAQ</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+    </nav>
+    <a class="btn btn-primary dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">Download</a>
+  </div>
+</header>
+
+<section class="pagehead">
+  <div class="wrap">
+    <p class="crumb"><a href="/">Mojo Pulse</a> / <a href="/#tools">Tools</a> / Disk usage</p>
+    <span class="kicker">Disk usage</span>
+    <h1>See where the disk went.</h1>
+    <p class="lede">“Disk almost full” is a fact. <em>Where it went</em> is the useful part. Pulse draws your storage as a map — every rectangle a folder, sized by what it's hoarding — and lets you walk straight to the problem.</p>
+  </div>
+</section>
+
+<div class="mediahero">
+  <video class="screenshot" muted loop playsinline preload="metadata" poster="/assets/shots/loop-disk-poster.jpg" width="800" height="624" aria-label="Live recording of the disk usage treemap"><source src="/assets/shots/loop-disk.mp4" type="video/mp4"></video>
+  <p class="shotnote">Live capture from the app.</p>
+
+</div>
+
+<section class="pageblocks">
+  <div class="wrap prose">
+    <h2>A map of your storage</h2>
+    <p>One glance separates the landlords from the tenants: the 80 GB Library, the caches nobody remembers creating, the downloads folder quietly eating a quarter of the drive. The largest-items list rides alongside for the greatest hits.</p>
+
+    <h2>Drill in, zero out</h2>
+    <p>Click any rectangle to descend into it, keep clicking until you're staring at the actual culprit, then Reveal in Finder and deal with it. Scan your home folder or point it anywhere else.</p>
+
+    <h2>Fast, and polite about it</h2>
+    <p>The scan runs in parallel and cancels instantly. It's session-only by design — no persistent index, no filesystem watchers grinding away after you close the window. Your Mac stays fast; that's the whole point of Pulse.</p>
+    <div class="underhood"><b>Under the hood</b>Squarified treemap over a parallel, cancellable scan, held in memory for the session only.</div>
+  </div>
+</section>
+
+<section class="pagecta">
+  <div class="wrap">
+    <h2>Take your disk back tonight.</h2>
+    <p class="sub">Disk usage is one of eighteen tools in the free download. 9.5 MB, notarized by Apple.</p>
+    <div class="dl-cta"><a class="btn btn-primary btn-lg dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">↓ Download free</a></div>
+    <p class="also">Keep exploring: <a href="/tools/battery-health/">Battery health</a> · <a href="/tools/processes/">Processes</a> · <a href="/#tools">all 18 tools</a></p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <div class="foot-brand"><svg><use href="#shield"/></svg> Mojo Pulse, made by NativeMojo LLC</div>
+    <nav class="foot-links">
+      <a href="/#download">Download</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/releases">Releases</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/issues">Report an issue</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/blob/main/LICENSE">License</a>
+    </nav>
+    <span class="ver" id="ver">v1.16.3</span>
+  </div>
+  <div class="wrap" style="margin-top:14px">© <span id="yr">2026</span> NativeMojo LLC. “Mojo Pulse” and “NativeMojo” are trademarks of NativeMojo LLC.</div>
+</footer>
+
+<script src="/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Speed Test for Mac — find where the slowdown lives · Mojo Pulse</title>
+<meta name="description" content="A Mac speed test that watches every hop separately — your Mac, router, ISP, internet — and names the culprit, with bufferbloat grades and evidence for the support call. Free and open source.">
+<link rel="canonical" href="https://mojopulse.io/tools/speed-test/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon-512.png">
+<meta name="theme-color" content="#fafafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1420" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mojopulse.io/tools/speed-test/">
+<meta property="og:title" content="Network Speed Test for Mac — find where the slowdown lives">
+<meta property="og:description" content="Per-hop verdicts instead of one big number: is it your Wi-Fi, your router, or your ISP? Free, open source, notarized by Apple.">
+<meta property="og:image" content="https://mojopulse.io/assets/shots/speed-test.jpg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="split" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="50%" stop-color="#2364b4"/><stop offset="50%" stop-color="#123a63"/>
+    </linearGradient>
+    <symbol id="shield" viewBox="0 0 512 512">
+      <path d="M256 36 L436 100 C452 268 430 388 256 474 C82 388 60 268 76 100 Z" fill="url(#split)"/>
+      <path d="M112 278 H198 L238 150 L282 388 L320 244 H400" fill="none" stroke="#9bcbf2"
+        stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/"><svg><use href="#shield"/></svg> Mojo Pulse</a>
+    <nav class="nav-links">
+      <a href="/#catches">What it catches</a>
+      <a href="/#features">Features</a>
+      <a href="/#tools">Tools</a>
+      <a href="/#faq">FAQ</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+    </nav>
+    <a class="btn btn-primary dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">Download</a>
+  </div>
+</header>
+
+<section class="pagehead">
+  <div class="wrap">
+    <p class="crumb"><a href="/">Mojo Pulse</a> / <a href="/#tools">Tools</a> / Speed test</p>
+    <span class="kicker">Network speed test</span>
+    <h1>When the internet crawls,<br>find out who to blame.</h1>
+    <p class="lede">Every speed test tells you a number. Pulse tells you a <b>verdict</b> — is it your Wi&#8209;Fi, your router, your ISP, or the wider internet — and hands you the evidence to do something about it.</p>
+  </div>
+</section>
+
+<div class="mediahero">
+  <img class="screenshot zoom" src="/assets/shots/speed-test.jpg" alt="Speed test verdict: it's not your gear, the trouble starts at your ISP — with per-hop latency" width="971" height="1042"
+    data-title="A verdict, not just a number" data-info="859 Mbps down and still miserable on calls? The path strip shows each hop idle and under load — clean to the router, +27 ms at the ISP edge. The headline names the culprit and what to do next.">
+  <p class="shotnote">Real result, unretouched — network name and local IPs blurred. Click to zoom.</p>
+</div>
+
+<section class="pageblocks">
+  <div class="wrap prose">
+    <h2>A verdict, not a number</h2>
+    <p>859 Mbps down means nothing if your video call still stutters. When a test finishes, the headline literally answers the question you had: <em>"It's not your gear — the trouble starts at your ISP."</em> Wi&#8209;Fi weak? It says move closer. Router queuing under load? It names bufferbloat and points at SQM. ISP degraded? You now have timestamped evidence for the support call.</p>
+
+    <h2>The path, watched under load</h2>
+    <p>While the line is saturated, Pulse keeps timing every leg separately — your Mac, your router, your ISP's edge, the internet beyond. That's where the truth lives: a connection that's snappy idle and balloons by 200&nbsp;ms under load is why calls fall apart while downloads look fine. You get bufferbloat letter grades for download and upload, responsiveness (RPM), jitter, and per-segment packet loss.</p>
+
+    <h2>It knows your normal</h2>
+    <p>Every test is stored on your Mac, and the verdict engine compares against <b>your own history</b>, not a global average. If today's download is 60% of your usual, the result says so — "below your usual ~880" — which is exactly the sentence that gets an ISP technician dispatched.</p>
+
+    <h2>Honest about what it can't see</h2>
+    <p>A router that ignores ping isn't reported as broken; it's noted as a router that ignores ping. A phase that moved no data shows a dash, never a made-up zero. Numbers you can't trust are worse than no numbers, so Pulse never invents any.</p>
+
+    <div class="underhood"><b>Under the hood</b>Load via parallel HTTPS streams against Apple's measurement infrastructure (Cloudflare fallback), reported as the median of the stable stretch. Latency-under-load via continuous ICMP to gateway, ISP edge, and internet anchors. In-process traceroute, no privileges required. Bufferbloat thresholds follow Waveform's grading; RPM follows Apple's responsiveness metric.</div>
+  </div>
+</section>
+
+<section class="pagecta">
+  <div class="wrap">
+    <h2>Settle the "is it our internet?" argument.</h2>
+    <p class="sub">The speed test is one of eighteen tools in the free download. 9.5 MB, notarized by Apple.</p>
+    <div class="dl-cta"><a class="btn btn-primary btn-lg dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">↓ Download free</a></div>
+    <p class="also">Keep exploring: <a href="/tools/network-health/">Network health</a> · <a href="/tools/security/">Security review</a> · <a href="/#tools">all 18 tools</a></p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <div class="foot-brand"><svg><use href="#shield"/></svg> Mojo Pulse, made by NativeMojo LLC</div>
+    <nav class="foot-links">
+      <a href="/#download">Download</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/releases">Releases</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/issues">Report an issue</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/blob/main/LICENSE">License</a>
+    </nav>
+    <span class="ver" id="ver">v1.16.3</span>
+  </div>
+  <div class="wrap" style="margin-top:14px">© <span id="yr">2026</span> NativeMojo LLC. “Mojo Pulse” and “NativeMojo” are trademarks of NativeMojo LLC.</div>
+</footer>
+
+<script src="/site.js" defer></script>
+</body>
+</html>

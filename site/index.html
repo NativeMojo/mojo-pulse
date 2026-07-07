@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mojo Pulse — free, open-source Mac monitoring in your menu bar</title>
+<meta name="description" content="Mojo Pulse watches your Mac's health and security from the menu bar. Eighteen tools in one: speed test, security posture, connection map, Bluetooth tracker detection, and more. Free, open source, notarized by Apple.">
+<link rel="canonical" href="https://mojopulse.io/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon-512.png">
+<meta name="theme-color" content="#fafafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1420" media="(prefers-color-scheme: dark)">
+<!-- Open Graph / social -->
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mojopulse.io/">
+<meta property="og:title" content="Mojo Pulse — free, open-source Mac monitoring in your menu bar">
+<meta property="og:description" content="Eighteen tools in one quiet menu-bar dot: security posture, speed test, connection map, tracker detection. Free, open source, notarized by Apple.">
+<meta property="og:image" content="https://mojopulse.io/assets/icon.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Mojo Pulse — free Mac monitoring in your menu bar">
+<meta name="twitter:description" content="Eighteen tools in one quiet dot. Free, open source, notarized by Apple.">
+<meta name="twitter:image" content="https://mojopulse.io/assets/icon.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Mojo Pulse",
+  "operatingSystem": "macOS 15.0 or later",
+  "applicationCategory": "UtilitiesApplication",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "softwareVersion": "1.16.3",
+  "downloadUrl": "https://github.com/NativeMojo/mojo-pulse/releases/latest",
+  "url": "https://mojopulse.io",
+  "publisher": { "@type": "Organization", "name": "NativeMojo LLC" },
+  "license": "https://www.apache.org/licenses/LICENSE-2.0"
+}
+</script>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="split" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="50%" stop-color="#2364b4"/><stop offset="50%" stop-color="#123a63"/>
+    </linearGradient>
+    <symbol id="shield" viewBox="0 0 512 512">
+      <path d="M256 36 L436 100 C452 268 430 388 256 474 C82 388 60 268 76 100 Z" fill="url(#split)"/>
+      <path d="M112 278 H198 L238 150 L282 388 L320 244 H400" fill="none" stroke="#9bcbf2"
+        stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/"><svg><use href="#shield"/></svg> Mojo Pulse</a>
+    <nav class="nav-links">
+      <a href="#catches">What it catches</a>
+      <a href="#features">Features</a>
+      <a href="#tools">Tools</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+    </nav>
+    <a class="btn btn-primary" href="#download">Download</a>
+  </div>
+</header>
+
+<!-- ============ HERO ============ -->
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <span class="freeline"><b>100% free</b><span class="sep">·</span>Open source<span class="sep">·</span>Notarized by Apple</span>
+        <h1>A calm companion<br>for your Mac.</h1>
+        <p class="lede">Pulse lives in your menu bar and keeps watch over the things you'd rather not think about: speed, heat, battery, disk, Wi&#8209;Fi safety, and the security settings that should be on. When everything's fine, you see one quiet dot. When something needs you, it says so in plain English.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary btn-lg dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">↓ Download free</a>
+          <span class="brew"><span class="dollar">$</span><code id="brew">brew install --cask nativemojo/tap/mojo-pulse</code><button id="copy" aria-label="Copy install command">Copy</button></span>
+        </div>
+        <p class="fineprint">9.5 MB · macOS 15+ · Apple Silicon &amp; Intel · no account, no ads, no tracking</p>
+      </div>
+      <div class="hero-shot">
+        <img class="screenshot zoom" src="/assets/shots/hero-popover.jpg" alt="Real screenshot of the Mojo Pulse popover open under the macOS menu bar" width="445" height="800" fetchpriority="high"
+          data-title="The whole app, most days" data-info="The real popover under the real macOS menu bar: live vitals for CPU, memory, network, disk, battery and thermals, plus doors into every tool. The dot in the menu bar is all you see until something needs you.">
+        <p class="shotnote">Real screenshot, <span id="heroVer">v1.16.3</span> — network names and IPs blurred.</p>
+      </div>
+    </div>
+    <div class="stats rv">
+      <div class="stat"><b>18</b><span>tools built in</span></div>
+      <div class="stat"><b>25+</b><span>problems watched for</span></div>
+      <div class="stat"><b>9.5 MB</b><span>one small download</span></div>
+      <div class="stat"><b>$0</b><span>free &amp; open source</span></div>
+    </div>
+  </div>
+  <div class="ekgwrap" aria-hidden="true">
+    <svg viewBox="0 0 998 74" preserveAspectRatio="none">
+      <path class="ekg-base" d="M0 37 h70 l14 -6 l14 6 h34 l9 4 l9 -30 l12 42 l10 -16 h130 l14 -6 l14 6 h34 l9 4 l9 -30 l12 42 l10 -16 h130 l14 -6 l14 6 h34 l9 4 l9 -30 l12 42 l10 -16 h130 l14 -6 l14 6 h34 l9 4 l9 -30 l12 42 l10 -16 h130"/>
+      <path class="ekg-pulse" pathLength="1000" d="M0 37 h70 l14 -6 l14 6 h34 l9 4 l9 -30 l12 42 l10 -16 h130 l14 -6 l14 6 h34 l9 4 l9 -30 l12 42 l10 -16 h130 l14 -6 l14 6 h34 l9 4 l9 -30 l12 42 l10 -16 h130 l14 -6 l14 6 h34 l9 4 l9 -30 l12 42 l10 -16 h130"/>
+    </svg>
+  </div>
+</section>
+
+<!-- ============ QUIET BY DESIGN ============ -->
+<section class="band">
+  <div class="wrap band-grid">
+    <div class="rv">
+      <h2>Incidents shout,<br><span class="quote">vitals whisper.</span></h2>
+      <p>Activity Monitor shows you everything and leaves the judgment to you. Pulse leads with the judgment. Most of the time it's a single gray dot in your menu bar. It changes color only when there's something you'd actually want to know, then tells you what it is, why it matters, and what to do about it. No noise until you need to know.</p>
+    </div>
+    <div class="states rv">
+      <div class="state"><span class="dot" style="background:var(--quiet)"></span><b>Quiet</b><span>everything's fine</span></div>
+      <div class="state"><span class="dot dot-pulse" style="background:var(--good)"></span><b>Green</b><span>watched, on a VPN</span></div>
+      <div class="state"><span class="dot" style="background:var(--watch)"></span><b>Yellow</b><span>worth a look</span></div>
+      <div class="state"><span class="dot" style="background:var(--bad)"></span><b>Red</b><span>needs you now</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ WHAT IT CATCHES ============ -->
+<section class="catch" id="catches">
+  <div class="wrap">
+    <div class="catch-head rv">
+      <span class="kicker">Real problems, plain English</span>
+      <h2>It's watching for the stuff that actually goes wrong.</h2>
+      <p>Every one of these is a real detection Pulse ships with today — not a dashboard you have to stare at, but a quiet watcher that speaks up when one of them happens to you.</p>
+    </div>
+    <div class="catch-grid rv">
+      <div class="catch-col">
+        <h3>Performance</h3>
+        <div class="catch-item"><span class="dot" style="background:var(--bad)"></span><div><b>An app keeps crashing</b><span>Timestamped and explained, with the crash report one click away.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>A process runs away with your CPU</b><span>Named and quittable before the fans start screaming.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>Memory pressure builds</b><span>Catches swap storms before the beachballs arrive.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>Your Mac is throttling</b><span>Real sensor temperatures and fan speeds, not guesses.</span></div></div>
+      </div>
+      <div class="catch-col">
+        <h3>Security</h3>
+        <div class="catch-item"><span class="dot" style="background:var(--bad)"></span><div><b>A suspect process appears</b><span>Unsigned code impersonating a brand it isn't, or hiding in odd places.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>Something new launches at login</b><span>Persistence is how malware survives reboots. Pulse baselines yours.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--bad)"></span><div><b>A dev server is open to the network</b><span>The 0.0.0.0 mistake — with the one-line fix quoted.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>Sharing is exposed</b><span>SSH, Screen Sharing, or files listening beyond your own Mac.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>Protections drift off</b><span>FileVault, Gatekeeper, Firewall, SIP — rechecked continuously.</span></div></div>
+      </div>
+      <div class="catch-col">
+        <h3>Network</h3>
+        <div class="catch-item"><span class="dot" style="background:var(--bad)"></span><div><b>The Wi-Fi is hostile</b><span>DNS hijacking, ARP spoofing, TLS interception, weak encryption.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>Your internet quietly degrades</b><span>Latency, loss, and bufferbloat measured against your own baseline.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>A new device joins your network</b><span>And a louder shout if your router's identity suddenly changes.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--bad)"></span><div><b>An app talks to a flagged server</b><span>Sustained connections checked against threat intelligence. Opt-in.</span></div></div>
+      </div>
+      <div class="catch-col">
+        <h3>Hardware &amp; system</h3>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>The disk fills up — or starts failing</b><span>Finder-accurate free space plus SMART health.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>The battery is wearing out</b><span>True capacity vs design, cycle count, service verdicts.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--bad)"></span><div><b>A kernel panic hits</b><span>Explained in plain English with the report attached.</span></div></div>
+        <div class="catch-item"><span class="dot" style="background:var(--watch)"></span><div><b>Security updates are pending</b><span>The quiet macOS patches that actually matter.</span></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FEATURES ============ -->
+<section class="features" id="features">
+  <div class="wrap">
+
+    <div class="feature rv">
+      <div>
+        <span class="kicker">Security posture</span>
+        <h3>Know your Mac has its locks on.</h3>
+        <p>Pulse continuously checks the protections macOS already ships: FileVault encryption, Gatekeeper, the firewall, System Integrity Protection, XProtect scans. It also watches the things nobody looks at, like new login items, file sharing exposed to the network, and running programs that don't add up. Green means checked, not assumed. And when something's off, the button in the card takes you straight to the fix.</p>
+        <div class="underhood"><b>Under the hood</b>Read-only checks of macOS's own state. No kernel extensions, no root helper, no admin password. Suspect-process detection uses code-signing identity, notarization status, and first-seen baselines.</div>
+      </div>
+      <div class="media narrow"><img class="screenshot zoom" loading="lazy" src="/assets/shots/security.jpg" alt="Security screen triaging one thing to fix, two to review, seven passing" width="420" height="646"
+        data-title="Security, triaged" data-info="One to fix, two to review, seven passing. Each needs-attention card carries a button that does the fix — straight to the right System Settings pane, the process explorer, or the open-ports view."></div>
+    </div>
+
+    <div class="feature rv">
+      <div>
+        <span class="kicker">Network diagnosis</span>
+        <h3>When the internet crawls, find out who to blame.</h3>
+        <p>Run a speed test that watches every leg of the path separately: your Mac, your router, your ISP, the wider internet. Instead of one big number, you get a verdict, like <em>"it's not your gear — the trouble starts at your ISP"</em>, and the evidence to back it up on the support call. Between tests, a passive sentinel notices degradation you'd otherwise blame on your Mac.</p>
+        <div class="underhood"><b>Under the hood</b>Latency under load per hop, bufferbloat grades, packet loss, DNS timing, RPM. Passive monitoring costs ~1–2 MB a day and pauses itself on battery.</div>
+      </div>
+      <div class="media"><img class="screenshot zoom" loading="lazy" src="/assets/shots/speed-test.jpg" alt="Speed test verdict naming the ISP as the culprit, with per-hop latency" width="971" height="1042"
+        data-title="A verdict, not just a number" data-info="859 Mbps down means nothing if the queue is upstream. The path strip shows each hop's idle latency and how it balloons under load — here clean to the router, then +27 ms at the ISP edge. That's evidence for the support call."></div>
+    </div>
+
+    <div class="feature rv">
+      <div>
+        <span class="kicker">Connections</span>
+        <h3>See who your Mac talks to.</h3>
+        <p>Every app makes connections you never see. Pulse shows them live, names the process behind each one, and can place them on a map of the world. Hover a pin and you'll see exactly which apps are talking to that corner of the internet. If something on your Mac starts talking to a flagged address, you'll hear about it.</p>
+        <div class="underhood"><b>Under the hood</b>Socket-level process attribution, on device. The map's geo lookup is opt-in and sends only public IP addresses; your LAN never leaves the Mac.</div>
+        <span class="livechip"><span class="dot"></span>Live capture from the app</span>
+      </div>
+      <div class="media"><video class="screenshot" muted loop playsinline preload="metadata" poster="/assets/shots/loop-map-poster.jpg" width="800" height="638" aria-label="Live recording of the connections world map"><source src="/assets/shots/loop-map.mp4" type="video/mp4"></video></div>
+    </div>
+
+    <div class="feature rv">
+      <div>
+        <span class="kicker">Alerts</span>
+        <h3>Alerts that explain themselves.</h3>
+        <p>No cryptic codes, no wall of numbers. Every alert says what's happening, why it matters, and how to handle it, with the evidence attached. Dismiss it, snooze it for an hour, or silence that exact finding forever. Pulse learns what's normal on your Mac and stays quiet about it.</p>
+        <div class="alert-chips" aria-label="Examples of real alerts">
+          <span>Dev server open to your network</span>
+          <span>Suspect process running</span>
+          <span>This network runs rough</span>
+          <span>Memory pressure is high</span>
+        </div>
+      </div>
+      <div class="media narrow"><img class="screenshot zoom" loading="lazy" src="/assets/shots/suspect-process.jpg" alt="A suspect-process alert explaining what happened, why it matters, and how to handle it" width="632" height="796"
+        data-title="Anatomy of an alert" data-info="What's happening, why it matters, the exact location and command line as evidence, and how to handle it — including quitting the process right from the alert or silencing this exact finding forever."></div>
+    </div>
+
+    <div class="feature rv">
+      <div>
+        <span class="kicker">Disk</span>
+        <h3>See where the disk went.</h3>
+        <p>An interactive treemap of your storage: every rectangle is a folder, sized by what it's hoarding. Click to drill in, spot the 30&nbsp;GB cache you forgot existed, reveal it in Finder, and take your disk back.</p>
+        <div class="underhood"><b>Under the hood</b>Squarified treemap over a parallel, cancellable scan. Session-only — no persistent index, no filesystem watchers slowing your Mac.</div>
+        <span class="livechip"><span class="dot"></span>Live capture from the app</span>
+      </div>
+      <div class="media"><video class="screenshot" muted loop playsinline preload="metadata" poster="/assets/shots/loop-disk-poster.jpg" width="800" height="624" aria-label="Live recording of the disk usage treemap"><source src="/assets/shots/loop-disk.mp4" type="video/mp4"></video></div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ TOOLS WALL ============ -->
+<section class="tools" id="tools">
+  <div class="wrap">
+    <div class="tools-head rv">
+      <span class="kicker">Not just another stats bar</span>
+      <h2>Eighteen tools. One quiet dot.</h2>
+      <p>Everything below ships in the one 9.5&nbsp;MB download. No add-ons, no "Pro" unlocks, no upsell screens — the download button at the top of this page is the whole store.</p>
+    </div>
+    <div class="tool-grid rv">
+      <a class="tool" href="/tools/security/"><span class="go">→</span><b>Security review</b><span>Posture checks, suspect processes, exposed services — triaged, with fixes.</span></a>
+      <a class="tool" href="/tools/speed-test/"><span class="go">→</span><b>Network speed test</b><span>Per-hop verdicts, bufferbloat grades, evidence for the ISP call.</span></a>
+      <a class="tool" href="/tools/network-health/"><span class="go">→</span><b>Network health</b><span>A passive sentinel that learns your line and flags degradation.</span></a>
+      <div class="tool"><b>Wi-Fi safety check</b><span>Seven checks including DNS hijack, ARP spoofing, TLS interception.</span></div>
+      <a class="tool" href="/tools/network-activity/"><span class="go">→</span><b>Connections world map</b><span>Every live connection, attributed to its process, placed on the globe.</span></a>
+      <a class="tool" href="/tools/bluetooth-sonar/"><span class="go">→</span><b>Bluetooth sonar</b><span>Nearby devices on a sweep, with separated-tracker detection.</span></a>
+      <a class="tool" href="/tools/devices-on-network/"><span class="go">→</span><b>Devices on your network</b><span>Who's on your LAN, with new-device and router-change alerts.</span></a>
+      <a class="tool" href="/tools/open-ports/"><span class="go">→</span><b>Open ports</b><span>What's listening, split by network-reachable vs local-only.</span></a>
+      <a class="tool" href="/tools/what-you-broadcast/"><span class="go">→</span><b>What you broadcast</b><span>Your Mac exactly as the rest of the network sees it.</span></a>
+      <a class="tool" href="/tools/processes/"><span class="go">→</span><b>Process explorer</b><span>Every process grouped under its app, with verified publishers.</span></a>
+      <a class="tool" href="/tools/processes/"><span class="go">→</span><b>Process inspector</b><span>Connections, open files, signing, and environment of any process.</span></a>
+      <div class="tool"><b>Live metrics &amp; history</b><span>Seven days of CPU, memory, and network, charted.</span></div>
+      <div class="tool"><b>Event journal</b><span>Everything Pulse ever flagged — searchable, exportable, ignorable.</span></div>
+      <a class="tool" href="/tools/domain-lookup/"><span class="go">→</span><b>Domain lookup</b><span>WHOIS, DNS, SSL, and an email-security scorecard for any domain.</span></a>
+      <a class="tool" href="/tools/ip-lookup/"><span class="go">→</span><b>IP lookup</b><span>Location, routing, and threat flags for any address.</span></a>
+      <a class="tool" href="/tools/disk-usage/"><span class="go">→</span><b>Disk usage treemap</b><span>Interactive, drill-in storage map with reveal-in-Finder.</span></a>
+      <a class="tool" href="/tools/battery-health/"><span class="go">→</span><b>Battery health</b><span>True capacity vs design, cycles, and charge history.</span></a>
+      <div class="tool"><b>Thermal monitor</b><span>Real sensor temperatures and fan RPM, live.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ MORE SCREENS ============ -->
+<section class="more" id="screens">
+  <div class="wrap">
+    <h2 class="rv">And that's still not all of it.</h2>
+    <p class="sub rv">Every image on this page is a real, unretouched screenshot from the current release — only network names, IPs, and hostnames are blurred. Click any of them to look closer.</p>
+    <div class="shots rv">
+      <figure class="shot"><img loading="lazy" class="zoom" src="/assets/shots/popover-alert.jpg" alt="Popover with a live alert card: dev server open to your network" width="418" height="826"
+          data-title="When something needs you" data-info="The same popover, the moment there's one thing to know: a dev server bound to 0.0.0.0, open to the whole network. The card names the process and port; clicking it explains the risk and quotes the one-line fix.">
+        <figcaption><b>Incidents, as they happen</b>The quiet dot turns into one clear card. No noise, one thing to know.</figcaption></figure>
+      <figure class="shot"><a href="/tools/bluetooth-sonar/"><img loading="lazy" src="/assets/shots/loop-sonar-poster.jpg" alt="Bluetooth sonar sweep showing nearby devices and a tracker" width="760" height="750"></a>
+        <figcaption><b>Bluetooth sonar</b>Nearby devices on a sweep — including hidden trackers. <a href="/tools/bluetooth-sonar/">Watch it sweep →</a></figcaption></figure>
+      <figure class="shot"><img loading="lazy" class="zoom" src="/assets/shots/network-health.jpg" alt="Network Health window with latency history and speed test log" width="903" height="1004"
+          data-title="Your connection's medical chart" data-info="Round-trip time vs your usual, packet loss, bufferbloat, DNS, and traffic — recorded passively around the clock, with your recent speed tests kept underneath.">
+        <figcaption><b>Network Health</b>Latency, loss, bufferbloat and traffic — versus your own baseline. <a href="/tools/network-health/">More →</a></figcaption></figure>
+      <figure class="shot"><img loading="lazy" class="zoom" src="/assets/shots/processes.jpg" alt="Process explorer grouping helpers under their apps with verified companies" width="1197" height="849"
+          data-title="Every process, by trust" data-info="Chrome and its 106 helpers fold into one row. Columns show the verified publisher behind every binary; tabs cut straight to background daemons or unverified code.">
+        <figcaption><b>Every process, by trust</b>Signed, unverified, or suspect. Sortable, searchable, groupable.</figcaption></figure>
+      <figure class="shot"><img loading="lazy" class="zoom" src="/assets/shots/domain-lookup.jpg" alt="Domain lookup showing registration, DNS and email security for a domain" width="696" height="677"
+          data-title="Domain lookup" data-info="WHOIS registration, name servers, DNSSEC, SSL, and an email-security scorecard (SPF · DMARC · DKIM) for any domain — handy before you trust a link.">
+        <figcaption><b>Domain lookup</b>Registration, DNS, SSL and email security for any domain.</figcaption></figure>
+      <figure class="shot"><img loading="lazy" class="zoom" src="/assets/shots/broadcast.jpg" alt="What You Broadcast window showing network reachability and paired Bluetooth devices" width="630" height="812"
+          data-title="What you broadcast" data-info="Your Mac as the network sees it: reachable services, AirDrop stance, and what Bluetooth pairing reveals. Pulse only reads this — nothing here leaves your Mac.">
+        <figcaption><b>What you broadcast</b>Your Mac, exactly as strangers on the network see it.</figcaption></figure>
+      <figure class="shot"><img loading="lazy" class="zoom" src="/assets/shots/battery-health.jpg" alt="Battery health with capacity, cycles, and charge history" width="639" height="850"
+          data-title="Battery, honestly" data-info="Maximum capacity against the original design, cycle count, temperature, wattage of the charger it's on, and a charge history chart — with a plain-English verdict up top.">
+        <figcaption><b>Battery, honestly</b>Capacity, cycles, and a plain-English verdict.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FREE + SIGNED ============ -->
+<section class="proof" id="trust">
+  <div class="wrap">
+    <div class="proof-head rv">
+      <span class="kicker">The part people don't believe</span>
+      <h2>Free. Actually free. And signed.</h2>
+      <p>A free security tool earns skepticism. Here are the receipts.</p>
+    </div>
+    <div class="proof-grid">
+      <div class="proof-card rv">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>No catch</h3>
+        <p>No price, no trial that expires, no Pro tier, no ads, no account. Download it, use it, share it. The complete source code is public on <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a> under the Apache&nbsp;2.0 license, so you don't have to take our word for anything on this page.</p>
+      </div>
+      <div class="proof-card rv">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>Nothing leaves your Mac</h3>
+        <p>No analytics, no telemetry, no account system. Aside from checking GitHub for updates, Pulse makes no network calls of its own unless you switch on the optional map lookups, and those send only public IP addresses.</p>
+      </div>
+      <div class="proof-card wide rv">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>Signed and notarized by Apple</h3>
+        <p>Every release is signed with an Apple Developer ID and submitted to Apple's notary service before it ships, which means Apple's own malware checks have scanned it and macOS verifies its integrity when you install. That's why there's no scary "unidentified developer" warning. Don't take our word for it — after installing, ask macOS yourself:</p>
+        <div class="term">
+          <button id="vcopy" aria-label="Copy verify command">Copy</button>
+          <div><span class="p">$ </span><span id="vcmd">spctl -a -vv /Applications/MojoPulse.app</span></div>
+          <div class="out">/Applications/MojoPulse.app: <span class="ok">accepted</span></div>
+          <div class="out">source=<span class="ok">Notarized Developer ID</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section class="faq" id="faq">
+  <div class="wrap">
+    <h2 class="rv">Fair questions.</h2>
+    <p class="sub rv">The things people actually ask before installing.</p>
+
+    <details class="qa rv"><summary>Is it really free?</summary>
+      <div class="a">Yes. Free as in $0, and free as in open source (Apache 2.0). There's no trial period, no locked features, and no ads. If it earns a spot in your menu bar, tell a friend.</div>
+    </details>
+    <details class="qa rv"><summary>Is it safe to install?</summary>
+      <div class="a">Every release is signed with an Apple Developer ID and notarized by Apple, so macOS itself verifies the app hasn't been tampered with, and Gatekeeper opens it without warnings. The source code is public if you want to read exactly what it does, and the <a href="#trust">verify command above</a> lets you check the seal yourself.</div>
+    </details>
+    <details class="qa rv"><summary>Will it slow my Mac down?</summary>
+      <div class="a">It's a native Swift app, not a web wrapper. In the background it samples every 5 seconds and steps up to 2 only while you're actually looking; heavier checks are cost-gated so they never pile up. The whole download is under 10 MB.</div>
+    </details>
+    <details class="qa rv"><summary>What data does it send off my Mac?</summary>
+      <div class="a">By default: nothing except checking GitHub for app updates. If you opt in to the connection map's location lookups, it sends public IP addresses (never local ones) to resolve their location, and that's the complete list. There is no analytics or telemetry of any kind.</div>
+    </details>
+    <details class="qa rv"><summary>What permissions does it ask for?</summary>
+      <div class="a">None to start — no admin password, ever. Some features ask in context when you first use them: Location (macOS requires it just to read Wi&#8209;Fi network names), Local Network (to name devices on your LAN), Bluetooth (for the sonar). Each is optional, and the features simply stay off until you want them.</div>
+    </details>
+    <details class="qa rv"><summary>How is this different from Activity Monitor or iStat Menus?</summary>
+      <div class="a">Those are dashboards: they show numbers and leave the judgment to you. Pulse leads with the judgment — is anything wrong, how bad is it, what should you do — and keeps the numbers one click away. It also covers ground they don't: security posture, Wi&#8209;Fi safety checks, path-aware speed tests, and Bluetooth tracker detection.</div>
+    </details>
+    <details class="qa rv"><summary>How do updates work?</summary>
+      <div class="a">In-app, using the standard Sparkle framework macOS apps have trusted for years. Each update is cryptographically signed, and you approve installs. Prefer Homebrew? <code>brew upgrade</code> works too.</div>
+    </details>
+    <details class="qa rv"><summary>How do I uninstall it?</summary>
+      <div class="a">Quit it and drag it from Applications to the Trash. Pulse installs no background helpers, daemons, or kernel extensions, so nothing keeps running after it's gone.</div>
+    </details>
+  </div>
+</section>
+
+<!-- ============ DOWNLOAD ============ -->
+<section class="download" id="download">
+  <div class="wrap">
+    <div class="dl-card">
+      <svg class="shield rv"><use href="#shield"/></svg>
+      <h2 class="rv">Bring the calm to your menu bar.</h2>
+      <p class="sub rv">Free, 9.5 MB, notarized by Apple. Three steps and you're done.</p>
+      <div class="dl-cta rv">
+        <a class="btn btn-primary btn-lg dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">↓ Download for macOS</a>
+      </div>
+      <div class="dl-meta rv">Apple Silicon &amp; Intel · macOS 15 Sequoia+ · <span id="dlver">v1.16.3</span></div>
+      <div class="steps rv">
+        <div class="step"><span class="num">1</span><div><b>Download &amp; open</b><span>Click the button — you'll get <code>MojoPulse.dmg</code>. Double-click to open it.</span></div></div>
+        <div class="step"><span class="num">2</span><div><b>Drag to Applications</b><span>Drag <b>Mojo Pulse</b> onto the <b>Applications</b> folder in the window that appears.</span></div></div>
+        <div class="step"><span class="num">3</span><div><b>Launch it</b><span>Open it from Applications. It lives in your menu bar — look for the dot.</span></div></div>
+      </div>
+      <div class="dl-alt rv">Prefer the terminal? <span class="brew"><span class="dollar">$</span><code id="brew2">brew install --cask nativemojo/tap/mojo-pulse</code><button id="copy2" aria-label="Copy install command">Copy</button></span></div>
+    </div>
+
+    <div class="release rv">
+      <div class="release-in">
+        <span class="tag" id="reltag">v1.16.3</span>
+        <b>Latest release</b>
+        <span>The 1.16 series added Network Sentinel — a passive watch on your connection's quality — plus the Network Health window and a live latency readout on the menu-bar tile.</span>
+        <a href="https://github.com/NativeMojo/mojo-pulse/releases">All releases →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <div class="foot-brand"><svg><use href="#shield"/></svg> Mojo Pulse, made by NativeMojo LLC</div>
+    <nav class="foot-links">
+      <a href="#download">Download</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/releases">Releases</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/issues">Report an issue</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/blob/main/LICENSE">License</a>
+    </nav>
+    <span class="ver" id="ver">v1.16.3</span>
+  </div>
+  <div class="wrap" style="margin-top:14px">© <span id="yr">2026</span> NativeMojo LLC. “Mojo Pulse” and “NativeMojo” are trademarks of NativeMojo LLC.</div>
+</footer>
+
+<!-- lightbox -->
+<div class="lb" id="lb" hidden role="dialog" aria-modal="true" aria-label="Screenshot viewer">
+  <button class="x" id="lbx" aria-label="Close">×</button>
+  <img id="lbimg" src="" alt="">
+  <figcaption><b id="lbt"></b><span id="lbd"></span></figcaption>
+</div>
+
+<script src="/site.js" defer></script>
+</body>
+</html>

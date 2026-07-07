@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mac Battery Health — true capacity, cycles, honest verdicts · Mojo Pulse</title>
+<meta name="description" content="Your MacBook battery's real story: maximum capacity vs design, cycle count, live charge and adapter wattage, and a charge-history chart. Free and open source.">
+<link rel="canonical" href="https://mojopulse.io/tools/battery-health/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon-512.png">
+<meta name="theme-color" content="#fafafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1420" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mojopulse.io/tools/battery-health/">
+<meta property="og:title" content="Your battery, honestly">
+<meta property="og:description" content="True capacity vs design, cycles, live charge, and history — with a plain-English verdict. Free, open source, notarized by Apple.">
+<meta property="og:image" content="https://mojopulse.io/assets/shots/battery-health.jpg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="split" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="50%" stop-color="#2364b4"/><stop offset="50%" stop-color="#123a63"/>
+    </linearGradient>
+    <symbol id="shield" viewBox="0 0 512 512">
+      <path d="M256 36 L436 100 C452 268 430 388 256 474 C82 388 60 268 76 100 Z" fill="url(#split)"/>
+      <path d="M112 278 H198 L238 150 L282 388 L320 244 H400" fill="none" stroke="#9bcbf2"
+        stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/"><svg><use href="#shield"/></svg> Mojo Pulse</a>
+    <nav class="nav-links">
+      <a href="/#catches">What it catches</a>
+      <a href="/#features">Features</a>
+      <a href="/#tools">Tools</a>
+      <a href="/#faq">FAQ</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+    </nav>
+    <a class="btn btn-primary dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">Download</a>
+  </div>
+</header>
+
+<section class="pagehead">
+  <div class="wrap">
+    <p class="crumb"><a href="/">Mojo Pulse</a> / <a href="/#tools">Tools</a> / Battery health</p>
+    <span class="kicker">Battery health</span>
+    <h1>Your battery, honestly.</h1>
+    <p class="lede">macOS buries your battery's real condition three menus deep and rounds off the interesting parts. Pulse puts the whole story on one screen, with a verdict in plain English at the top.</p>
+  </div>
+</section>
+
+<div class="mediahero">
+  <div class="narrowmedia">
+  <img class="screenshot zoom" src="/assets/shots/battery-health.jpg" alt="Battery health: 100% capacity, 22 cycles, charge history chart" width="639" height="850"
+    data-title="The whole story" data-info="Maximum capacity against the original design, cycle count, temperature, voltage, and the exact wattage it's drinking right now — topped with a verdict you don't need a manual to read.">
+  <p class="shotnote">Real screenshot from the current release. Click to zoom.</p>
+  </div>
+
+</div>
+
+<section class="pageblocks">
+  <div class="wrap prose">
+    <h2>The number Apple buries</h2>
+    <p>Maximum capacity as a percentage of the battery's original design, next to the cycle count — the two numbers that actually determine whether a battery is healthy, aging, or due for service. Pulse reads them straight from the hardware and says which.</p>
+
+    <h2>The live story</h2>
+    <p>Current charge, time to full or empty, the adapter's real wattage, temperature and voltage. Useful when a Mac “won't charge” and the answer turns out to be a 5-watt phone brick.</p>
+
+    <h2>History that means something</h2>
+    <p>A charge-history chart built from per-minute samples shows the rhythm of your battery's life — the overnight drains, the all-day-on-power stretches — so changes stand out instead of hiding in the moment.</p>
+    <div class="underhood"><b>Under the hood</b>Read directly from the system's power management on device. History samples roll up locally; nothing leaves the Mac.</div>
+  </div>
+</section>
+
+<section class="pagecta">
+  <div class="wrap">
+    <h2>Get the verdict on your battery.</h2>
+    <p class="sub">Battery health is one of eighteen tools in the free download. 9.5 MB, notarized by Apple.</p>
+    <div class="dl-cta"><a class="btn btn-primary btn-lg dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">↓ Download free</a></div>
+    <p class="also">Keep exploring: <a href="/tools/disk-usage/">Disk usage</a> · <a href="/tools/processes/">Processes</a> · <a href="/#tools">all 18 tools</a></p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <div class="foot-brand"><svg><use href="#shield"/></svg> Mojo Pulse, made by NativeMojo LLC</div>
+    <nav class="foot-links">
+      <a href="/#download">Download</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/releases">Releases</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/issues">Report an issue</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/blob/main/LICENSE">License</a>
+    </nav>
+    <span class="ver" id="ver">v1.16.3</span>
+  </div>
+  <div class="wrap" style="margin-top:14px">© <span id="yr">2026</span> NativeMojo LLC. “Mojo Pulse” and “NativeMojo” are trademarks of NativeMojo LLC.</div>
+</footer>
+
+<script src="/site.js" defer></script>
+</body>
+</html>

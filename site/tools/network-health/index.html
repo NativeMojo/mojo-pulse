@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Health for Mac — passive internet quality monitoring · Mojo Pulse</title>
+<meta name="description" content="A passive sentinel that learns your connection's normal and flags degradation — latency, packet loss, bufferbloat, DNS — before you blame your Mac. Free and open source.">
+<link rel="canonical" href="https://mojopulse.io/tools/network-health/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon-512.png">
+<meta name="theme-color" content="#fafafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1420" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mojopulse.io/tools/network-health/">
+<meta property="og:title" content="Network Health for Mac — passive internet quality monitoring">
+<meta property="og:description" content="It learns your connection's normal and tells you when it degrades — before you blame your Mac. Free, open source, notarized by Apple.">
+<meta property="og:image" content="https://mojopulse.io/assets/shots/network-health.jpg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="split" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="50%" stop-color="#2364b4"/><stop offset="50%" stop-color="#123a63"/>
+    </linearGradient>
+    <symbol id="shield" viewBox="0 0 512 512">
+      <path d="M256 36 L436 100 C452 268 430 388 256 474 C82 388 60 268 76 100 Z" fill="url(#split)"/>
+      <path d="M112 278 H198 L238 150 L282 388 L320 244 H400" fill="none" stroke="#9bcbf2"
+        stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/"><svg><use href="#shield"/></svg> Mojo Pulse</a>
+    <nav class="nav-links">
+      <a href="/#catches">What it catches</a>
+      <a href="/#features">Features</a>
+      <a href="/#tools">Tools</a>
+      <a href="/#faq">FAQ</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+    </nav>
+    <a class="btn btn-primary dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">Download</a>
+  </div>
+</header>
+
+<section class="pagehead">
+  <div class="wrap">
+    <p class="crumb"><a href="/">Mojo Pulse</a> / <a href="/#tools">Tools</a> / Network health</p>
+    <span class="kicker">Network health</span>
+    <h1>It notices your internet degrading — before you do.</h1>
+    <p class="lede">Speed tests are snapshots. Network Health is the <b>movie</b>: a passive sentinel that learns what your connection normally feels like and speaks up when it stops feeling that way.</p>
+  </div>
+</section>
+
+<div class="mediahero">
+  <div class="narrowmedia">
+    <img class="screenshot zoom" src="/assets/shots/network-health.jpg" alt="Network Health window: latency vs your usual, loss, traffic, and recent speed tests" width="903" height="1004"
+      data-title="Your connection's medical chart" data-info="Round-trip time against your usual, packet loss, bufferbloat, DNS, and traffic — recorded passively around the clock. Degradation events paint amber bands on the charts; your recent speed tests sit underneath.">
+    <p class="shotnote">Real screenshot from the current release — network name blurred. Click to zoom.</p>
+  </div>
+</div>
+
+<section class="pageblocks">
+  <div class="wrap prose">
+    <h2>A sentinel, not a speed test</h2>
+    <p>Once a minute, Pulse sends a few tiny probes — to your router, and to well-known internet anchors — and checks DNS every few cycles. That's the whole trick: about 1–2&nbsp;MB a day, invisible in your traffic, yet enough to catch latency creep, packet loss, and bufferbloat as they happen. It pauses itself on battery and during your speed tests, and tells you when it's paused instead of silently going dark.</p>
+
+    <h2>It learns <em>your</em> normal</h2>
+    <p>Every network gets its own baseline — home fiber and hotel Wi&#8209;Fi are different worlds, and Pulse never confuses them. Alerts fire on sustained change against <b>your</b> usual: latency at twice your baseline, loss above 2%, a router that suddenly takes three times longer to answer. Sustained means minutes, not blips — a microwave running for ten seconds doesn't page you.</p>
+
+    <h2>Rough networks get called rough</h2>
+    <p>Baseline-only tools learn a terrible cafe network as "normal" and then gaslight you about it. Pulse also judges against absolute floors: a network that runs at 300&nbsp;ms with 5% loss is labeled <em>"runs rough — normal for here"</em>, so you know it's the venue, not your Mac.</p>
+
+    <h2>At a glance, from the menu bar</h2>
+    <p>The Network tile carries a quality dot and your live round-trip time. Green and quiet means watched and fine. Amber means degraded — click through for the charts, where degradation events paint bands on the timeline and your recent speed tests line up underneath. When something looks off, "Run Speed Test" is one click away for the full diagnosis.</p>
+
+    <div class="underhood"><b>Under the hood</b>Per-network baselines learned with exponential averaging, persisted locally. Internet rules require two independent anchors to agree before alerting. History rolls up to a local database — nothing leaves your Mac.</div>
+  </div>
+</section>
+
+<section class="pagecta">
+  <div class="wrap">
+    <h2>Stop wondering if it's just you.</h2>
+    <p class="sub">Network health is one of eighteen tools in the free download. 9.5 MB, notarized by Apple.</p>
+    <div class="dl-cta"><a class="btn btn-primary btn-lg dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">↓ Download free</a></div>
+    <p class="also">Keep exploring: <a href="/tools/speed-test/">Speed test</a> · <a href="/tools/security/">Security review</a> · <a href="/#tools">all 18 tools</a></p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <div class="foot-brand"><svg><use href="#shield"/></svg> Mojo Pulse, made by NativeMojo LLC</div>
+    <nav class="foot-links">
+      <a href="/#download">Download</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/releases">Releases</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/issues">Report an issue</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/blob/main/LICENSE">License</a>
+    </nav>
+    <span class="ver" id="ver">v1.16.3</span>
+  </div>
+  <div class="wrap" style="margin-top:14px">© <span id="yr">2026</span> NativeMojo LLC. “Mojo Pulse” and “NativeMojo” are trademarks of NativeMojo LLC.</div>
+</footer>
+
+<script src="/site.js" defer></script>
+</body>
+</html>

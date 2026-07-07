@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Who's on my Wi-Fi? See every device on your network · Mojo Pulse</title>
+<meta name="description" content="An inventory of every device on your network — identified by maker, watched for newcomers, with an alarm if your router's identity changes. Free and open source.">
+<link rel="canonical" href="https://mojopulse.io/tools/devices-on-network/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon-512.png">
+<meta name="theme-color" content="#fafafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1420" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mojopulse.io/tools/devices-on-network/">
+<meta property="og:title" content="Who's on your Wi-Fi? Every device, identified">
+<meta property="og:description" content="Your network's guest list — with new-device alerts and an ARP-spoof tripwire. Free, open source, notarized by Apple.">
+<meta property="og:image" content="https://mojopulse.io/assets/shots/devices-on-network.jpg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="split" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="50%" stop-color="#2364b4"/><stop offset="50%" stop-color="#123a63"/>
+    </linearGradient>
+    <symbol id="shield" viewBox="0 0 512 512">
+      <path d="M256 36 L436 100 C452 268 430 388 256 474 C82 388 60 268 76 100 Z" fill="url(#split)"/>
+      <path d="M112 278 H198 L238 150 L282 388 L320 244 H400" fill="none" stroke="#9bcbf2"
+        stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/"><svg><use href="#shield"/></svg> Mojo Pulse</a>
+    <nav class="nav-links">
+      <a href="/#catches">What it catches</a>
+      <a href="/#features">Features</a>
+      <a href="/#tools">Tools</a>
+      <a href="/#faq">FAQ</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+    </nav>
+    <a class="btn btn-primary dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">Download</a>
+  </div>
+</header>
+
+<section class="pagehead">
+  <div class="wrap">
+    <p class="crumb"><a href="/">Mojo Pulse</a> / <a href="/#tools">Tools</a> / Devices on your network</p>
+    <span class="kicker">Devices on your network</span>
+    <h1>Who's on your Wi-Fi?</h1>
+    <p class="lede">Your network has a guest list, and you should get to read it. Pulse inventories every device it can see, identifies the maker behind each one, and tells you when someone new shows up.</p>
+  </div>
+</section>
+
+<div class="mediahero">
+  <div class="narrowmedia">
+  <img class="screenshot zoom" src="/assets/shots/devices-on-network.jpg" alt="Devices on your network: router plus identified devices by manufacturer" width="622" height="688"
+    data-title="The guest list" data-info="Your router up top, then every identified device with the manufacturer behind its hardware address. Name the ones you recognize; watch for the ones you don't.">
+  <p class="shotnote">Real screenshot from the current release — addresses blurred. Click to zoom.</p>
+  </div>
+
+</div>
+
+<section class="pageblocks">
+  <div class="wrap prose">
+    <h2>An inventory that names names</h2>
+    <p>Each device is identified by the manufacturer encoded in its hardware address — the smart TV, the thermostat, the mystery box that turns out to be the vacuum. Give devices your own names and Pulse remembers them per network.</p>
+
+    <h2>A heads-up when someone new joins</h2>
+    <p>Pulse baselines the devices it has seen on each of your networks. Turn on alerts and a newcomer raises a quiet card — useful at home, illuminating on a network you share with strangers.</p>
+
+    <h2>The router tripwire</h2>
+    <p>The nastiest LAN attack is someone impersonating your router to sit in the middle of your traffic. If the gateway's hardware identity suddenly changes — the classic ARP-spoofing fingerprint — Pulse treats it as the serious event it is.</p>
+    <div class="underhood"><b>Under the hood</b>Passive by default: Pulse reads the Mac's own neighbor table — no packets sent. Optional device naming uses Bonjour (asks for Local Network permission), and the active probe is off until you enable it per network. All baselines stay on your Mac.</div>
+  </div>
+</section>
+
+<section class="pagecta">
+  <div class="wrap">
+    <h2>Read your network's guest list.</h2>
+    <p class="sub">Devices on your network is one of eighteen tools in the free download. 9.5 MB, notarized by Apple.</p>
+    <div class="dl-cta"><a class="btn btn-primary btn-lg dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">↓ Download free</a></div>
+    <p class="also">Keep exploring: <a href="/tools/network-activity/">Network activity</a> · <a href="/tools/what-you-broadcast/">What you broadcast</a> · <a href="/#tools">all 18 tools</a></p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <div class="foot-brand"><svg><use href="#shield"/></svg> Mojo Pulse, made by NativeMojo LLC</div>
+    <nav class="foot-links">
+      <a href="/#download">Download</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/releases">Releases</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/issues">Report an issue</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/blob/main/LICENSE">License</a>
+    </nav>
+    <span class="ver" id="ver">v1.16.3</span>
+  </div>
+  <div class="wrap" style="margin-top:14px">© <span id="yr">2026</span> NativeMojo LLC. “Mojo Pulse” and “NativeMojo” are trademarks of NativeMojo LLC.</div>
+</footer>
+
+<script src="/site.js" defer></script>
+</body>
+</html>

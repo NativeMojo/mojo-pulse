@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bluetooth Sonar for Mac — find hidden trackers and nearby devices · Mojo Pulse</title>
+<meta name="description" content="Sweep the room from your Mac: every Bluetooth device in range on a sonar, with honest AirTag-class tracker detection. Part of Mojo Pulse — free, open source, notarized by Apple.">
+<link rel="canonical" href="https://mojopulse.io/tools/bluetooth-sonar/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon-512.png">
+<meta name="theme-color" content="#fafafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1420" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mojopulse.io/tools/bluetooth-sonar/">
+<meta property="og:title" content="Bluetooth Sonar for Mac — find hidden trackers and nearby devices">
+<meta property="og:description" content="Every Bluetooth device in range on a sonar sweep, with honest separated-tracker detection. Free, open source, notarized by Apple.">
+<meta property="og:image" content="https://mojopulse.io/assets/shots/loop-sonar-poster.jpg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="split" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="50%" stop-color="#2364b4"/><stop offset="50%" stop-color="#123a63"/>
+    </linearGradient>
+    <symbol id="shield" viewBox="0 0 512 512">
+      <path d="M256 36 L436 100 C452 268 430 388 256 474 C82 388 60 268 76 100 Z" fill="url(#split)"/>
+      <path d="M112 278 H198 L238 150 L282 388 L320 244 H400" fill="none" stroke="#9bcbf2"
+        stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/"><svg><use href="#shield"/></svg> Mojo Pulse</a>
+    <nav class="nav-links">
+      <a href="/#catches">What it catches</a>
+      <a href="/#features">Features</a>
+      <a href="/#tools">Tools</a>
+      <a href="/#faq">FAQ</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+    </nav>
+    <a class="btn btn-primary dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">Download</a>
+  </div>
+</header>
+
+<section class="pagehead">
+  <div class="wrap">
+    <p class="crumb"><a href="/">Mojo Pulse</a> / <a href="/#tools">Tools</a> / Bluetooth sonar</p>
+    <span class="kicker">Bluetooth sonar</span>
+    <h1>Know what's broadcasting around you.</h1>
+    <p class="lede">Sweep the room from your Mac and see every Bluetooth device in range — your gear, the neighbors' speakers, and the one thing that actually matters: <b>a tracker that isn't yours, traveling with you</b>.</p>
+  </div>
+</section>
+
+<div class="mediahero">
+  <div class="narrowmedia">
+    <video class="screenshot" muted loop playsinline preload="metadata" poster="/assets/shots/loop-sonar-poster.jpg" width="760" height="750" aria-label="Live recording of the Bluetooth sonar sweep"><source src="/assets/shots/loop-sonar.mp4" type="video/mp4"></video>
+    <p class="shotnote">Live capture from the app — a real sweep, real devices.</p>
+  </div>
+</div>
+
+<section class="pageblocks">
+  <div class="wrap prose">
+    <h2>Trackers, without the false alarms</h2>
+    <p>Most "AirTag detector" apps light up for every Find&nbsp;My signal in range — which includes every passing iPhone relaying the network. Pulse reads the frames properly: a phone doing its mesh-relay duty is shown as quiet background, while a genuine <b>separated tracker</b> — an AirTag-class device away from its owner, broadcasting to be found — shows up amber, pulses, and sorts to the front. When Pulse says "1 tracker nearby," it means it.</p>
+
+    <h2>Your room, mapped by signal</h2>
+    <p>Devices land on range bands from <em>arm's reach</em> to <em>faint</em> based on smoothed signal strength, with rough distance when a device advertises its transmit power. The bearing is illustrative — Bluetooth can't sense direction, and Pulse says so on the face of the tool rather than pretending. Filter by kind (trackers, audio, wearables, Apple, other), and gear you've paired is cross-referenced as yours.</p>
+
+    <h2>Ask a device to introduce itself</h2>
+    <p>Select any blip for its dossier: signal history, first and last seen, advertised services, and raw frames for the curious. A voluntary <b>Probe</b> connects and reads only the public identity a device offers anyone — manufacturer, model, firmware, battery — with an eight-second timeout. Nothing invasive, nothing persistent.</p>
+
+    <h2>On-demand, and only on-demand</h2>
+    <p>The radio scans only while the sonar window is open, stops itself after four idle minutes to save power, and macOS asks for Bluetooth permission the first time you press Scan — never before.</p>
+
+    <div class="underhood"><b>Under the hood</b>CoreBluetooth sweep with live RSSI smoothing. Find My frames classified by type and payload length — short mesh-relay frames are never counted as trackers. Distance via path-loss when txPower is advertised. Probe reads public GATT Device Information (180A) and battery (180F) only.</div>
+  </div>
+</section>
+
+<section class="pagecta">
+  <div class="wrap">
+    <h2>Sweep your room tonight.</h2>
+    <p class="sub">Bluetooth sonar is one of eighteen tools in the free download. 9.5 MB, notarized by Apple.</p>
+    <div class="dl-cta"><a class="btn btn-primary btn-lg dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">↓ Download free</a></div>
+    <p class="also">Keep exploring: <a href="/tools/security/">Security review</a> · <a href="/tools/speed-test/">Speed test</a> · <a href="/#tools">all 18 tools</a></p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <div class="foot-brand"><svg><use href="#shield"/></svg> Mojo Pulse, made by NativeMojo LLC</div>
+    <nav class="foot-links">
+      <a href="/#download">Download</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/releases">Releases</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/issues">Report an issue</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/blob/main/LICENSE">License</a>
+    </nav>
+    <span class="ver" id="ver">v1.16.3</span>
+  </div>
+  <div class="wrap" style="margin-top:14px">© <span id="yr">2026</span> NativeMojo LLC. “Mojo Pulse” and “NativeMojo” are trademarks of NativeMojo LLC.</div>
+</footer>
+
+<script src="/site.js" defer></script>
+</body>
+</html>

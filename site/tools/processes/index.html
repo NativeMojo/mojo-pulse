@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mac Process Explorer — every process, grouped and verified · Mojo Pulse</title>
+<meta name="description" content="A process explorer that groups helpers under their apps, shows the verified publisher behind every binary, and inspects any process down to its connections and open files. Free and open source.">
+<link rel="canonical" href="https://mojopulse.io/tools/processes/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon-512.png">
+<meta name="theme-color" content="#fafafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1420" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mojopulse.io/tools/processes/">
+<meta property="og:title" content="Every process, grouped, verified, explained">
+<meta property="og:description" content="Chrome and its 100 helpers as one row, verified publishers, and a deep inspector. Free, open source, notarized by Apple.">
+<meta property="og:image" content="https://mojopulse.io/assets/shots/process-detail.jpg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="split" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="50%" stop-color="#2364b4"/><stop offset="50%" stop-color="#123a63"/>
+    </linearGradient>
+    <symbol id="shield" viewBox="0 0 512 512">
+      <path d="M256 36 L436 100 C452 268 430 388 256 474 C82 388 60 268 76 100 Z" fill="url(#split)"/>
+      <path d="M112 278 H198 L238 150 L282 388 L320 244 H400" fill="none" stroke="#9bcbf2"
+        stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/"><svg><use href="#shield"/></svg> Mojo Pulse</a>
+    <nav class="nav-links">
+      <a href="/#catches">What it catches</a>
+      <a href="/#features">Features</a>
+      <a href="/#tools">Tools</a>
+      <a href="/#faq">FAQ</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+    </nav>
+    <a class="btn btn-primary dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">Download</a>
+  </div>
+</header>
+
+<section class="pagehead">
+  <div class="wrap">
+    <p class="crumb"><a href="/">Mojo Pulse</a> / <a href="/#tools">Tools</a> / Processes</p>
+    <span class="kicker">Processes</span>
+    <h1>Every process, explained.</h1>
+    <p class="lede">Activity Monitor shows you a thousand rows and wishes you luck. Pulse groups the noise, verifies who's really behind each binary, and gives every process a full dossier one click away.</p>
+  </div>
+</section>
+
+<div class="mediahero">
+  <img class="screenshot zoom" src="/assets/shots/process-detail.jpg" alt="Process inspector sheet over the explorer: Chrome's path, command, children with combined cost" width="1164" height="806"
+    data-title="The inspector" data-info="One click on any process: where it runs from, its exact command, who launched it, and its children with their combined cost — Chrome's 46 helpers, one honest subtotal.">
+  <p class="shotnote">Real screenshot from the current release. Click to zoom.</p>
+
+</div>
+
+<section class="pageblocks">
+  <div class="wrap prose">
+    <h2>Grouped like you actually think</h2>
+    <p>Chrome is one thing to you, so it's one row here — helpers folded underneath with a real combined total, instead of a hundred identical rows hiding the truth. Tabs cut to Apps, Background, System, or Unverified when you're hunting.</p>
+
+    <h2>Verified publishers, not self-reported names</h2>
+    <p>A column most tools don't have: the legal name from each binary's code signature. Anything can call itself “Google Chrome Helper”; only Google can sign as Google LLC. App Store apps can be double-checked against Apple's public catalog.</p>
+
+    <h2>A dossier for anything suspicious</h2>
+    <p>The inspector goes as deep as you want: overview, signing and notarization, live connections, open files, loaded modules, environment. And when the verdict is bad, Quit is right there — no round-trip to another app.</p>
+    <div class="underhood"><b>Under the hood</b>Refreshes every 4 seconds, cost-gated so heavy inspection never piles up. Code-signing and notarization checks run on device.</div>
+  </div>
+</section>
+
+<section class="pagecta">
+  <div class="wrap">
+    <h2>Know exactly what's running.</h2>
+    <p class="sub">Processes is one of eighteen tools in the free download. 9.5 MB, notarized by Apple.</p>
+    <div class="dl-cta"><a class="btn btn-primary btn-lg dl" href="https://github.com/NativeMojo/mojo-pulse/releases/latest">↓ Download free</a></div>
+    <p class="also">Keep exploring: <a href="/tools/security/">Security review</a> · <a href="/tools/open-ports/">Open ports</a> · <a href="/#tools">all 18 tools</a></p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <div class="foot-brand"><svg><use href="#shield"/></svg> Mojo Pulse, made by NativeMojo LLC</div>
+    <nav class="foot-links">
+      <a href="/#download">Download</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse">GitHub</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/releases">Releases</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/issues">Report an issue</a>
+      <a href="/privacy/">Privacy</a>
+      <a href="https://github.com/NativeMojo/mojo-pulse/blob/main/LICENSE">License</a>
+    </nav>
+    <span class="ver" id="ver">v1.16.3</span>
+  </div>
+  <div class="wrap" style="margin-top:14px">© <span id="yr">2026</span> NativeMojo LLC. “Mojo Pulse” and “NativeMojo” are trademarks of NativeMojo LLC.</div>
+</footer>
+
+<script src="/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Mojo Pulse">
+  <defs>
+    <linearGradient id="split" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="50%" stop-color="#1F5EAE"/>
+      <stop offset="50%" stop-color="#123A63"/>
+    </linearGradient>
+  </defs>
+  <path d="M256 36 L436 100 C452 268 430 388 256 474 C82 388 60 268 76 100 Z" fill="url(#split)"/>
+  <path d="M112 278 H198 L238 150 L282 388 L320 244 H400"
+        fill="none" stroke="#9BCBF2" stroke-width="26"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
