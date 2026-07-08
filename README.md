@@ -4,6 +4,12 @@
 
 **[mojopulse.io](https://mojopulse.io)** · [Download](https://github.com/NativeMojo/mojo-pulse/releases/latest) · [Screenshots](https://mojopulse.io/#screens) · [FAQ](https://mojopulse.io/#faq)
 
+![Latest release](https://img.shields.io/github/v/release/NativeMojo/mojo-pulse?label=release&color=1e63b8)
+![Downloads](https://img.shields.io/github/downloads/NativeMojo/mojo-pulse/total?color=1e63b8)
+![Platform](https://img.shields.io/badge/macOS-15%2B%20·%20Universal-1e63b8)
+![Notarized](https://img.shields.io/badge/signed-Notarized%20by%20Apple-2e9e5a)
+![License](https://img.shields.io/github/license/NativeMojo/mojo-pulse?color=555)
+
 <p align="center">
   <img src="site/assets/shots/hero-popover.jpg" alt="Mojo Pulse popover under the macOS menu bar" width="380" />
 </p>
