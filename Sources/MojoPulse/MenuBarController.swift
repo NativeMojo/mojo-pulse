@@ -128,7 +128,8 @@ final class MenuBarController: NSObject {
     private let diskModel = DiskUsageModel()
     /// Shared network-safety verdict — drives the top-of-popover strip and the
     /// detail window; refreshed (throttled) when the popover opens.
-    private lazy var networkSafety = NetworkSafetyModel(wifi: wifi, security: security)
+    private lazy var networkSafety = NetworkSafetyModel(wifi: wifi, security: security,
+                                                        networkInfo: networkInfo)
     /// Unlocks the Wi-Fi network name (Location permission) on explicit opt-in.
     private let locationAuth = LocationAuthorizer()
 

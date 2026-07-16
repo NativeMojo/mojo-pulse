@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var systemEventsCollector: SystemEventsCollector?
     private var arpCollector: ARPCollector?
     private var connectionWatcher: ConnectionWatcher?
+    private var egressWatch: EgressWatch?
     private var networkSentinel: NetworkSentinel?
     private var speedTestEngine: SpeedTestEngine?
     private var detectorEngine: DetectorEngine?
@@ -263,6 +264,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A finished speed test writes a journal entry; surface it in Recent
         // activity without waiting for the next engine tick.
         speedTest.onJournal = { [weak history] in history?.refresh() }
+
+        // Journal egress changes ("New public IP — still Free SAS", "Exit
+        // country changed") into Recent activity. The baseline persists
+        // across restarts, so a change that happened while Pulse was closed
+        // surfaces on the next launch. Quiet by design: journal lines only,
+        // never a banner.
+        let egressWatch = EgressWatch(database: db, vpnActive: { [weak wifi] in
+            wifi?.current.vpnActive ?? false
+        })
+        egressWatch.onJournal = { [weak history] in history?.refresh() }
+        info.onEgress = { [weak egressWatch] g in egressWatch?.observe(g) }
+        self.egressWatch = egressWatch
 
         // The sentinel's organic-load ("busy") tag averages the last minute
         // of tick samples from the history store — never one instant read.

@@ -29,6 +29,11 @@ final class NetworkInfo: ObservableObject {
     /// SQLite by GeoIPClient, so it costs one API call per IP *change*.
     @Published private(set) var egress: GeoInfo?
 
+    /// Fired with each fresh enrichment (the IP changed and its lookup
+    /// landed). EgressWatch journals changes through this — NetworkInfo
+    /// itself stays out of the detector pipeline.
+    var onEgress: ((GeoInfo) -> Void)?
+
     private let publicEndpoint = URL(string: "https://mojoverify.com/api/system/geoip/time")!
     private var lastPublicFetchAt: Date?
     private let publicCooldown: TimeInterval = 30  // don't refetch more often than this
@@ -64,6 +69,7 @@ final class NetworkInfo: ObservableObject {
                 // consumer treats that as "no egress info" and falls back to
                 // the plain VPN on/off wording.
                 egress = await GeoIPClient.shared.lookup(ip)
+                if let g = egress { onEgress?(g) }
             }
         }
     }

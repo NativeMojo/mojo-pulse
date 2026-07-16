@@ -160,6 +160,16 @@ enum IncidentTemplates {
                 why: ctx["detail"]
             )
 
+        // Egress changes (EgressWatch) — journal-only entries whose copy is
+        // built at classification time; the context carries the whole story.
+        case "network.egress.change":
+            return IncidentCopy(
+                title: ctx["title"] ?? "Network change",
+                what: ctx["what"] ?? "Your public network address changed.",
+                why: ctx["why"],
+                action: ctx["action"]
+            )
+
         // MARK: Security
 
         case "security.insecureWifi":
@@ -688,6 +698,9 @@ enum IncidentTemplates {
         case "network.speedtest":
             return join(v("down").map { "\($0) ↓" }, v("up").map { "\($0) ↑" },
                         v("rpm").map { "RPM \($0)" })
+
+        case "network.egress.change":
+            return v("detail")
 
         // Sentinel degradation notes
         case "network.degrade.latency", "network.degrade.gateway", "network.degrade.dns":

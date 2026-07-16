@@ -44,13 +44,15 @@ final class NetworkSafetyModel: ObservableObject {
 
     private let wifi: WiFiCollector
     private let security: SecurityCollector
+    private let networkInfo: NetworkInfo
     private var task: Task<Void, Never>?
     private var lastSSID: String?
     private var lastRunAt: Date?
 
-    init(wifi: WiFiCollector, security: SecurityCollector) {
+    init(wifi: WiFiCollector, security: SecurityCollector, networkInfo: NetworkInfo) {
         self.wifi = wifi
         self.security = security
+        self.networkInfo = networkInfo
     }
 
     func run() {
@@ -58,9 +60,10 @@ final class NetworkSafetyModel: ObservableObject {
         isChecking = true
         let snap = wifi.current
         let exposed = security.current.exposedServices
+        let egress = networkInfo.egress
         lastSSID = snap.ssid
         task = Task { [weak self] in
-            let r = await NetworkSafetyEngine.evaluate(wifi: snap, exposed: exposed)
+            let r = await NetworkSafetyEngine.evaluate(wifi: snap, exposed: exposed, egress: egress)
             guard let self, !Task.isCancelled else { return }
             self.report = r
             self.isChecking = false
@@ -80,9 +83,10 @@ final class NetworkSafetyModel: ObservableObject {
 /// The stateless check engine. `evaluate` is nonisolated + async so it runs off
 /// the main thread; the blocking bits (getaddrinfo, arp) are fine there.
 enum NetworkSafetyEngine {
-    static func evaluate(wifi: WiFiSnapshot, exposed: [ExposedService]) async -> NetworkSafetyReport {
+    static func evaluate(wifi: WiFiSnapshot, exposed: [ExposedService],
+                         egress: GeoInfo? = nil) async -> NetworkSafetyReport {
         let enc = encryptionCheck(wifi)
-        let vpn = vpnCheck(wifi)
+        let vpn = vpnCheck(wifi, egress: egress)
         let exposure = exposureCheck(exposed)
 
         async let dns = dnsCheck()
@@ -123,6 +127,9 @@ enum NetworkSafetyEngine {
         case .caution:
             if wifi.security == .none && !wifi.vpnActive {
                 return "Open network with no VPN — turn on your VPN before anything sensitive."
+            }
+            if checks.contains(where: { $0.kind == .vpn && $0.status == .caution }) {
+                return "Your VPN is on, but traffic seems to exit via a regular ISP — check for a split tunnel before anything sensitive."
             }
             if checks.contains(where: { $0.kind == .exposure && $0.status != .pass }) {
                 return "You're sharing services on this network — turn off Sharing if that's unexpected."
@@ -168,8 +175,32 @@ enum NetworkSafetyEngine {
         }
     }
 
-    private static func vpnCheck(_ w: WiFiSnapshot) -> SafetyCheck {
+    /// Interface presence upgraded to evidence when the egress lookup is in:
+    /// tunnel up + exit that reads as a VPN/hosted network = *verified*; tunnel
+    /// up + exit that reads as a plain ISP line = worth a look. The suspect
+    /// state escalates the verdict only on open/WEP networks — that's where
+    /// the user is actually relying on the VPN; on an encrypted network it's
+    /// informational, because corporate VPNs legitimately exit via plain
+    /// office lines and must not paint the header amber every day.
+    private static func vpnCheck(_ w: WiFiSnapshot, egress: GeoInfo?) -> SafetyCheck {
         if w.vpnActive {
+            if let g = egress, g.looksLikeVPNExit {
+                let who = g.carrierName.map { " via \($0)" } ?? ""
+                let place = (g.city ?? g.countryName).map { " in \($0)" } ?? ""
+                return SafetyCheck(kind: .vpn, title: "VPN",
+                                   detail: "Verified — your traffic exits\(who)\(place), not this network.",
+                                   status: .pass)
+            }
+            if let g = egress, let who = g.carrierName {
+                let place = (g.city ?? g.countryName).map { " near \($0)" } ?? ""
+                let openNetwork = w.security == .none || w.security == .wep
+                return SafetyCheck(
+                    kind: .vpn, title: "VPN",
+                    detail: openNetwork
+                        ? "On, but your traffic exits via \(who)\(place) — a regular ISP line, not a VPN exit. On an open network, check for a split tunnel or leak before anything sensitive."
+                        : "On, but the exit (\(who)\(place)) reads like a plain ISP line. Normal for corporate VPNs; if you expect a full tunnel, check for a split tunnel.",
+                    status: openNetwork ? .caution : .info)
+            }
             return SafetyCheck(kind: .vpn, title: "VPN", detail: "On — your traffic is tunneled.", status: .pass)
         }
         if w.security == .none {
