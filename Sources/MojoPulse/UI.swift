@@ -632,11 +632,15 @@ struct PopoverView: View {
     /// firing — at most one dot per row, maps 1:1 to a card above. CPU, RAM
     /// and Net cells are clickable: tap to expand a sparkline + "Open
     /// detail" button, tap again or tap a different cell to swap.
+    ///
+    /// Row order is deliberate: Network + Battery lead because they're the
+    /// most-glanced tiles (and the two dense ones — live RTT hint, per-bud
+    /// battery breakout — so they read as a matched pair).
     private var vitalsGrid: some View {
         VStack(spacing: 8) {
+            HStack(spacing: 8) { networkTile; batteryTile }
             HStack(spacing: 8) { cpuTile; memoryTile }
-            HStack(spacing: 8) { networkTile; diskTile }
-            HStack(spacing: 8) { batteryTile; thermalTile }
+            HStack(spacing: 8) { diskTile; thermalTile }
         }
     }
 
