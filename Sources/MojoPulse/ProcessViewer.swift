@@ -499,7 +499,11 @@ struct ProcessViewerView: View {
                 applyFilter(note.object as? String)
             }
         }
-        .sheet(item: $selected) { ProcessDetailView(proc: $0.asProcInfo) }
+        .onChange(of: selected) { _, row in
+            guard let row else { return }
+            NotificationCenter.default.post(name: .pulseInspectProcess, object: row.asProcInfo)
+            selected = nil
+        }
     }
 
     /// Narrow the explorer to one process. List mode reads cleanly for a single

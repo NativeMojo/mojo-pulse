@@ -92,6 +92,12 @@ final class MenuBarController: NSObject {
     private var processViewerWindow: NSWindow?
     private var processesWindowConsumingFastTick = false
 
+    /// Retained reference to the Process Inspector — the live, re-targetable
+    /// per-process window. Self-sampling (own 1 s loop while open), so it
+    /// needs no aggregator fast tick; clicking another process re-targets the
+    /// same window via `.pulseInspectProcess`.
+    private var inspectorWindow: NSWindow?
+
     /// Retained reference to the Network Activity (map/list connections) window.
     private var networkActivityWindow: NSWindow?
     private var networkWindowConsumingFastTick = false
@@ -314,6 +320,16 @@ final class MenuBarController: NSObject {
                 } else {
                     self?.showProcessViewerWindow(filter: note.object as? String)
                 }
+            }
+            .store(in: &cancellables)
+
+        // Any process row anywhere (Top Processes, All Processes, event cards)
+        // opens the shared Process Inspector window on that process.
+        NotificationCenter.default.publisher(for: .pulseInspectProcess)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard let proc = note.object as? ProcInfo else { return }
+                self?.showProcessInspectorWindow(proc: proc)
             }
             .store(in: &cancellables)
     }
@@ -1030,6 +1046,32 @@ final class MenuBarController: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// The Process Inspector: live per-process window (family CPU/memory,
+    /// per-process network, child drill-in). One window, re-targeted in place
+    /// — a second click lands in the same inspector via the notification the
+    /// view itself observes.
+    private func showProcessInspectorWindow(proc: ProcInfo) {
+        popover.performClose(nil)
+        if let existing = inspectorWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            // The open view re-targets itself from the same notification.
+            return
+        }
+        let hosting = NSHostingController(rootView: ProcessInspectorView(target: proc))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Process Inspector"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.setContentSize(NSSize(width: 700, height: 660))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        inspectorWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
     /// Network Activity — the connections map + list with geo/threat intel.
     /// Standalone resizable window with its own sampler + refresh loop.
     private func showNetworkActivityWindow() {
@@ -1476,6 +1518,10 @@ extension MenuBarController: NSWindowDelegate {
             processesWindow = nil
         } else if closing === processViewerWindow {
             processViewerWindow = nil
+        } else if closing === inspectorWindow {
+            // The view's sampling loop is task-scoped to the hosting view and
+            // cancels on teardown; nothing else to unwind.
+            inspectorWindow = nil
         } else if closing === networkActivityWindow {
             endNetworkFastTick()
             networkActivityWindow = nil

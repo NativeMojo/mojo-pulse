@@ -104,7 +104,7 @@ app: build
 		codesign -f $(CODESIGN_OPTS) -s "$(SIGN_IDENTITY)" "$$SP/Autoupdate"; \
 		codesign -f $(CODESIGN_OPTS) -s "$(SIGN_IDENTITY)" "$$SP/Updater.app"; \
 		codesign -f $(CODESIGN_OPTS) -s "$(SIGN_IDENTITY)" "$(APP_BUNDLE)/Contents/Frameworks/Sparkle.framework"; \
-		codesign -f $(CODESIGN_OPTS) -s "$(SIGN_IDENTITY)" "$(APP_BUNDLE)"
+		codesign -f $(CODESIGN_OPTS) --entitlements Resources/MojoPulse.entitlements -s "$(SIGN_IDENTITY)" "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 	@codesign --verify --strict --verbose=2 "$(APP_BUNDLE)" 2>&1 | tail -1 || true
 
