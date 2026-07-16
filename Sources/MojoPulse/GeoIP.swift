@@ -74,6 +74,45 @@ struct GeoInfo: Sendable, Equatable {
     }
 }
 
+// MARK: - Own-egress reading
+
+/// Helpers for the ONE address that is "us": the Mac's own public IP.
+/// Reading your own egress is a different job from judging a remote host —
+/// the questions are "who carries my traffic" and "does my exit look like
+/// my VPN", and the reputation bar must sit much higher (see `ownReputation`).
+extension GeoInfo {
+    /// Who carries the traffic — ISP first, AS organisation as fallback.
+    var carrierName: String? { isp ?? asnOrg }
+
+    /// "Free SAS · Saint-Julien-du-Sault" — compact carrier + place line.
+    var egressLine: String? {
+        guard let carrierName else { return placeLabel }
+        if let place = city ?? countryName { return "\(carrierName) · \(place)" }
+        return carrierName
+    }
+
+    /// The egress reads as an anonymized/hosted exit rather than a home line.
+    /// Used to *verify* an active VPN: tunnel interface up + exit that looks
+    /// like a VPN. (Absence is NOT proof of a leak — corporate VPNs exit via
+    /// plain office lines — so callers only ever upgrade wording on true.)
+    var looksLikeVPNExit: Bool { isVPN || isProxy || isTor || isDatacenter || isCloud }
+
+    /// Own-IP reputation, deliberately stricter than `risk`/`isFlagged`:
+    /// only concrete flags may alarm. Live data showed a clean residential
+    /// line carrying `threat_level: "high"` + `is_suspicious` with every
+    /// concrete flag false — reputation-list noise that is common on shared
+    /// addresses and must never paint the user's own network red.
+    enum OwnReputation { case clean, mixed, flagged }
+    var ownReputation: OwnReputation {
+        if isKnownAttacker || isKnownAbuser || isThreat { return .flagged }
+        if isSuspicious || threatLevel == "medium" || threatLevel == "high"
+            || (riskScore ?? 0) >= 40 {
+            return .mixed
+        }
+        return .clean
+    }
+}
+
 extension GeoInfo {
     /// Lenient parse from the endpoint's `data` object — every field is
     /// optional/nullable server-side, so we never hard-require one.

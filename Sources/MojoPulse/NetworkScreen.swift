@@ -58,10 +58,30 @@ struct NetworkScreen: View {
             VStack(alignment: .leading, spacing: 3) {
                 detailLine("person.crop.circle", computerLine)
                 detailLine("network", addressLine)
-                detailLine(wifi.current.vpnActive ? "lock.shield.fill" : "lock.shield", connectionLine)
+                if let egress = egressLine {
+                    detailLine(egressIcon, egress)
+                }
+                detailLine(wifi.current.vpnActive ? "lock.shield.fill" : "lock.shield",
+                           connectionLine,
+                           iconTint: vpnVerified ? SeverityColors.good : .secondary)
             }
-            Button { showRename = true } label: {
-                Label("Rename…", systemImage: "pencil")
+            HStack(spacing: 8) {
+                Button { showRename = true } label: {
+                    Label("Rename…", systemImage: "pencil")
+                }
+                if networkInfo.egress != nil {
+                    Button {
+                        onShowIP()
+                        // Next runloop tick, so a freshly created IP Lookup
+                        // window has rendered and subscribed before the ask.
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(name: .pulseLookupMyIP, object: nil)
+                        }
+                    } label: {
+                        Label("Details…", systemImage: "mappin.and.ellipse")
+                    }
+                    .help("Full lookup of your public address — map, provider, reputation")
+                }
             }
             .controlSize(.small)
             .padding(.top, 2)
@@ -84,22 +104,60 @@ struct NetworkScreen: View {
         return parts.isEmpty ? "Address unavailable" : parts.joined(separator: " · ")
     }
 
-    private var connectionLine: String {
+    /// Who carries the traffic — always the *egress*: the real ISP normally,
+    /// the VPN's network when tunneled, the carrier on a hotspot. One slot,
+    /// one honest answer to "who sees my traffic next".
+    private var egressLine: String? {
+        guard let g = networkInfo.egress else { return nil }
+        if g.isMobile, let carrier = g.carrierName { return "\(carrier) · cellular hotspot" }
+        guard let carrier = g.carrierName else { return g.placeLabel }
+        let place = [g.city, g.countryCode].compactMap { $0 }.joined(separator: ", ")
+        return place.isEmpty ? carrier : "\(carrier) · \(place)"
+    }
+
+    private var egressIcon: String {
+        networkInfo.egress?.isMobile == true ? "antenna.radiowaves.left.and.right" : "building.2"
+    }
+
+    /// Tunnel interface up AND the measured exit looks like a VPN. Absence
+    /// never downgrades wording here (corporate VPNs exit via office lines);
+    /// the suspicious case is Wi-Fi Safety's job.
+    private var vpnVerified: Bool {
+        wifi.current.vpnActive && networkInfo.egress?.looksLikeVPNExit == true
+    }
+
+    private var connectionLine: AttributedString {
         let w = wifi.current
-        if w.vpnActive {
-            return w.hasWiFiLink ? "\(w.displaySSID()) · VPN on" : "VPN on"
+        let name = w.hasWiFiLink ? w.displaySSID() : nil
+        if vpnVerified, let g = networkInfo.egress {
+            var line = AttributedString(name.map { "\($0) · " } ?? "")
+            var verified = AttributedString("VPN verified")
+            verified.foregroundColor = SeverityColors.good
+            line += verified
+            if let place = g.city ?? g.countryName {
+                line += AttributedString(" — traffic exits in \(place)")
+            }
+            return line
         }
-        if w.hasWiFiLink { return "\(w.displaySSID()) · no VPN" }
-        return "No Wi-Fi"
+        if w.vpnActive {
+            return AttributedString(name.map { "\($0) · VPN on" } ?? "VPN on")
+        }
+        if let name { return AttributedString("\(name) · no VPN") }
+        return AttributedString("No Wi-Fi")
     }
 
     // MARK: Rows
 
     private func detailLine(_ icon: String, _ text: String) -> some View {
+        detailLine(icon, AttributedString(text))
+    }
+
+    private func detailLine(_ icon: String, _ text: AttributedString,
+                            iconTint: Color = .secondary) -> some View {
         HStack(spacing: 7) {
             Image(systemName: icon)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(iconTint)
                 .frame(width: 15)
             Text(text)
                 .font(.caption)

@@ -258,11 +258,15 @@ struct ProcessInspectorView: View {
     private var scopedMem: MetricSeries { model.scope == .family ? model.memFamily : model.memTarget }
 
     private var tiles: some View {
+        // Row hugs the tallest tile; tiles stretch to match (tileShell's
+        // maxHeight .infinity) — so the Network tile's text-only "no sockets"
+        // variant can't sit shorter than its chart-bearing neighbours.
         HStack(spacing: 8) {
             cpuTile
             memTile
             netTile
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func tileLabel(_ s: String) -> some View {
@@ -273,7 +277,7 @@ struct ProcessInspectorView: View {
     private func tileShell<C: View>(@ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 2) { content() }
             .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
     }
 

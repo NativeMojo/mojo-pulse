@@ -336,7 +336,7 @@ struct NetworkActivityView: View {
             .toggleStyle(.button).controlSize(.small).fixedSize()
             .disabled(!Secrets.hasGeoKey)
             .help(Secrets.hasGeoKey
-                  ? "Look up country, host and threat info for public remote IPs"
+                  ? "Look up country, host and threat info for public remote IPs. (Pulse always looks up its own public IP — the address websites already see — to describe your network.)"
                   : "Geo lookup isn't available in this build")
         }
         .padding(.horizontal, 14).padding(.vertical, 10)

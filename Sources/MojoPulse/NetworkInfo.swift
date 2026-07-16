@@ -19,6 +19,16 @@ final class NetworkInfo: ObservableObject {
     @Published private(set) var publicIP: String?
     @Published private(set) var isRefreshingPublic = false
 
+    /// Geo/carrier intelligence for our OWN public IP — "who carries my
+    /// traffic, where does it exit". Feeds the popover header's egress line,
+    /// the Network screen identity card, and VPN verification. Privacy note:
+    /// fetching the public IP already shows mojoverify the caller's address
+    /// (any HTTP request does), so asking it about that same address
+    /// discloses nothing new — this is why own-IP enrichment rides along
+    /// with the public-IP fetch instead of the map's geo opt-in. Cached in
+    /// SQLite by GeoIPClient, so it costs one API call per IP *change*.
+    @Published private(set) var egress: GeoInfo?
+
     private let publicEndpoint = URL(string: "https://mojoverify.com/api/system/geoip/time")!
     private var lastPublicFetchAt: Date?
     private let publicCooldown: TimeInterval = 30  // don't refetch more often than this
@@ -49,6 +59,12 @@ final class NetworkInfo: ObservableObject {
         lastPublicFetchAt = Date()
         if let ip, !ip.isEmpty {
             publicIP = ip
+            if egress?.ip != ip {
+                // Nil when the build has no key or the lookup fails — every
+                // consumer treats that as "no egress info" and falls back to
+                // the plain VPN on/off wording.
+                egress = await GeoIPClient.shared.lookup(ip)
+            }
         }
     }
 

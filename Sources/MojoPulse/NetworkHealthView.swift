@@ -36,6 +36,10 @@ struct NetworkHealthView: View {
     @State private var plot: [PlotSeries] = []
     @State private var bands: [IncidentRecord] = []
     @State private var usage = Usage()
+    /// Outage intervals folded from the reachability transition log — the
+    /// extreme end of "how has this connection behaved", so it lives here
+    /// with the rest of the history (was its own orphaned window).
+    @State private var outages: [Outage] = []
 
     struct Usage {
         var hourDown = 0.0, hourUp = 0.0
@@ -62,6 +66,8 @@ struct NetworkHealthView: View {
             panels
             Divider()
             speedShelf
+            Divider()
+            outageShelf
         }
         .padding(16)
         .frame(width: 640)
@@ -550,6 +556,12 @@ struct NetworkHealthView: View {
                 todayDown: total("netIn", midnight), todayUp: total("netOut", midnight),
                 weekDown: total("netIn", week), weekUp: total("netOut", week))
         }
+
+        if let database {
+            let since = Date().addingTimeInterval(-30 * 24 * 3600)
+            let samples = (try? database.fetchReachability(since: since)) ?? []
+            outages = ConnectivityAnalysis.outages(from: samples, now: Date())
+        }
     }
 
     private func rollupSamples(_ key: String) -> [MetricSample] {
@@ -640,6 +652,64 @@ struct NetworkHealthView: View {
         case "degraded": return SeverityColors.watch
         default: return SeverityColors.good
         }
+    }
+
+    // MARK: Outage shelf — the drop log, same rows-not-boxes shape
+
+    private var outageShelf: some View {
+        let now = Date()
+        let day = ConnectivityAnalysis.summary(outages, since: now.addingTimeInterval(-24 * 3600), now: now)
+        let week = ConnectivityAnalysis.summary(outages, since: now.addingTimeInterval(-7 * 24 * 3600), now: now)
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("Connection drops")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(dropSummary(day: day, week: week))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if outages.isEmpty {
+                Text("None recorded — the connection has been steady while Pulse was running.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.vertical, 6)
+            } else {
+                ForEach(Array(outages.prefix(3).enumerated()), id: \.element.id) { idx, o in
+                    if idx > 0 { Divider().opacity(0.5) }
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(o.offline ? SeverityColors.issue : SeverityColors.watch)
+                            .frame(width: 7, height: 7)
+                        Text(Self.rel.localizedString(for: o.start, relativeTo: now))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 70, alignment: .leading)
+                        Text(o.offline ? "Offline" : "Degraded")
+                            .font(.caption.weight(.medium))
+                        Spacer(minLength: 4)
+                        Text(o.isOngoing ? "ongoing" : RelativeTime.duration(seconds: Int(o.duration(now: now))))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(o.isOngoing ? SeverityColors.watch : .secondary)
+                    }
+                    .padding(.vertical, 6)
+                }
+                Text("Degraded = link up but the internet unreachable. Recorded from connectivity changes Pulse sees while running.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    private func dropSummary(day: ConnectivitySummary, week: ConnectivitySummary) -> String {
+        func phrase(_ s: ConnectivitySummary) -> String {
+            s.drops == 0 ? "none" :
+                "\(s.drops) · \(RelativeTime.duration(seconds: Int(s.totalDowntime))) down"
+        }
+        return "24 h: \(phrase(day)) · 7 d: \(phrase(week))"
     }
 
     // MARK: Formatting

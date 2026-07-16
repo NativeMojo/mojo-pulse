@@ -6,20 +6,18 @@ import UserNotifications
 
 /// The popover. Layout, top to bottom:
 ///
-///   1. Status line — aggregate dot + headline ("You're good", "2 things to
-///      know"). Severity always wins; green = nothing wrong + VPN active.
-///   2. Security line — small shield + one-line connection summary
-///      ("VPN: utun3 · Home (WPA3)"). The passive equivalent of the
-///      menu-bar dot color.
-///   3. Incident cards — only present when something is firing. Loud,
+///   1. Status line — the network, always: safety shield + network name
+///      (action phrase on Caution/Risky) + verdict-and-egress subline
+///      ("Safe · Free SAS · Paris"). Taps to Network Safety. Incidents
+///      never appear here — their cards below are self-titled.
+///   2. Incident cards — only present when something is firing. Loud,
 ///      action-bearing.
-///   4. Vitals grid — 3×2 of monitored subsystems (CPU, RAM, Net, Disk,
+///   3. Vitals grid — 3×2 of monitored subsystems (CPU, RAM, Net, Disk,
 ///      Batt, Therm). Numbers, not dots, so it scans at a glance even
 ///      when nothing's wrong. A tiny inline dot appears next to a row
 ///      that maps to an active incident. Hover any row for deeper detail.
-///   5. Recent — short scrollback of past events.
-///   6. Connection — click-to-copy local + public IP. Unchanged.
-///   7. Launch at login + Quit.
+///   4. Domain rows (Processes · Network · Security · Recent activity).
+///   5. Footer — About, share, settings, Quit.
 ///
 /// Design ethos (unchanged from prior version, just expanded): incidents
 /// SHOUT, vitals whisper. The popover is calm-by-default; problems make
@@ -160,9 +158,6 @@ struct PopoverView: View {
 
     /// Called when the user opens the Open Ports inventory.
     var onShowPorts: () -> Void = {}
-
-    /// Called when the user opens the connection uptime/outage history.
-    var onShowConnectivity: () -> Void = {}
 
     /// Called when the user opens the Network Activity map/list tool.
     var onShowNetwork: () -> Void = {}
@@ -342,16 +337,19 @@ struct PopoverView: View {
         }
     }
 
-    /// Title: a system incident wins it; otherwise the network name when calm,
-    /// escalating to an action phrase on Caution/Risky.
+    /// Title: always the network — the name when calm, escalating to an
+    /// action phrase on Caution/Risky. Incidents never take the title: they
+    /// have self-titled cards directly below (and the menu-bar count), and
+    /// the whole bar taps to Network Safety, so only network words belong
+    /// here. Wired = online with no Wi-Fi link.
     private var headerTitle: String {
-        if !engine.activeIncidents.isEmpty { return headline }
         if netVerdict == .risky { return "Leave this network" }
         if netVerdict == .caution { return "Review this Wi-Fi" }
-        return wifi.current.ssid ?? (wifi.current.hasWiFiLink ? "Wi-Fi" : headline)
+        if wifi.current.hasWiFiLink { return wifi.current.ssid ?? "Wi-Fi" }
+        return networkInfo.localIP != nil ? "Ethernet" : "Offline"
     }
     private var headerTitleColor: Color {
-        (engine.activeIncidents.isEmpty && networkLoud) ? headerShieldTint : .primary
+        networkLoud ? headerShieldTint : .primary
     }
 
     /// The home dashboard: active incident cards (when loud), the vitals grid,
@@ -493,12 +491,13 @@ struct PopoverView: View {
 
     // MARK: - Status line
 
-    /// Top of popover. Aggregate dot + a headline that maps directly to
-    /// what the user needs to know. The count badge on the right mirrors
-    /// the menu-bar label and is suppressed when there's nothing firing.
-    /// The home status header — now the network-safety surface: a shield (quiet
-    /// when Safe), the network name (escalating to an action phrase on trouble),
-    /// and a chevron. The whole bar taps through to the Network Safety detail.
+    /// The home status header — the network surface, always: a shield (quiet
+    /// when Safe), the network name (escalating to an action phrase on
+    /// trouble), and the egress line. The whole bar taps through to the
+    /// Network Safety detail. Incidents are deliberately absent — their
+    /// cards sit right below with their own tap targets, so repeating them
+    /// here (old "N things to know" + count badge) said everything twice
+    /// and sent the tap somewhere it didn't promise.
     private var statusLine: some View {
         Button { onShowSafety() } label: {
             HStack(alignment: .top, spacing: 10) {
@@ -513,23 +512,13 @@ struct PopoverView: View {
                         .foregroundStyle(headerTitleColor)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    if !statusSubline.isEmpty {
-                        Text(statusSubline)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
+                    Text(statusSubline)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
                 Spacer(minLength: 8)
-                if !engine.activeIncidents.isEmpty {
-                    Text("\(engine.activeIncidents.count)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.primary.opacity(0.08)))
-                }
                 Image(systemName: "chevron.right")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.tertiary)
@@ -540,19 +529,21 @@ struct PopoverView: View {
         .buttonStyle(.plain)
     }
 
-    /// Context line under the headline. When something's firing it names the
-    /// top issue; when calm it carries environment context the vitals tiles
-    /// don't — connection, VPN, and when XProtect last scanned.
-    private var statusSubline: String {
-        if let top = engine.activeIncidents.first {
-            return IncidentTemplates.render(top).title
-        }
+    /// Context line under the network name: the verdict word plus who
+    /// carries the traffic. Egress info comes from the own-IP lookup
+    /// (cached); every branch degrades to today's plain "VPN on/off" when
+    /// it's missing. "VPN verified" only appears when the tunnel interface
+    /// is up AND the measured exit looks like a VPN — never accuses on
+    /// absence (corporate VPNs exit via plain office lines; that wording
+    /// belongs to the Safety checks).
+    private var statusSubline: AttributedString {
         let w = wifi.current
-        let vpn = w.vpnActive ? "VPN on" : "VPN off"
-        // When calm the title is the network name, so the subline states the
-        // verdict; when loud the title carries the alert, so keep the name here.
+        // When loud the title carries the alert, so keep the name here.
         if networkLoud {
-            return "\(w.ssid ?? "This network") · \(vpn)"
+            return AttributedString("\(w.ssid ?? "This network") · \(w.vpnActive ? "VPN on" : "VPN off")")
+        }
+        if !w.hasWiFiLink && networkInfo.localIP == nil {
+            return AttributedString("No internet connection")
         }
         let word: String
         switch netVerdict {
@@ -560,29 +551,26 @@ struct PopoverView: View {
         case nil: word = w.hasWiFiLink ? "Checking…" : "Connected"
         default: word = "Safe"
         }
-        return "\(word) · \(vpn)"
-    }
-
-    private var aggregateDotColor: Color {
-        if let top = engine.activeIncidents.first {
-            return SeverityColors.color(for: top.severity, fallbackQuiet: false)
+        if w.vpnActive, let g = networkInfo.egress, g.looksLikeVPNExit {
+            var line = AttributedString("\(word) · ")
+            var verified = AttributedString("VPN verified")
+            verified.foregroundColor = SeverityColors.good
+            line += verified
+            if let place = g.city ?? g.countryName {
+                line += AttributedString(" — exits \(place)")
+            }
+            return line
         }
-        if wifi.stableVPNActive {
-            return SeverityColors.good
+        if w.vpnActive { return AttributedString("\(word) · VPN on") }
+        if let g = networkInfo.egress {
+            if g.isMobile, let carrier = g.carrierName {
+                return AttributedString("\(word) · \(carrier) · hotspot")
+            }
+            if let egress = g.egressLine {
+                return AttributedString("\(word) · \(egress)")
+            }
         }
-        return SeverityColors.quiet
-    }
-
-    private var headline: String {
-        let issues = engine.activeIncidents.filter { $0.severity == .issue }.count
-        let watches = engine.activeIncidents.filter { $0.severity == .watch }.count
-        if issues > 0 {
-            return issues == 1 ? "1 issue needs attention" : "\(issues) issues need attention"
-        }
-        if watches > 0 {
-            return watches == 1 ? "1 thing to know" : "\(watches) things to know"
-        }
-        return "You're good"
+        return AttributedString("\(word) · VPN off")
     }
 
     // MARK: - Vitals header
@@ -637,10 +625,16 @@ struct PopoverView: View {
     /// most-glanced tiles (and the two dense ones — live RTT hint, per-bud
     /// battery breakout — so they read as a matched pair).
     private var vitalsGrid: some View {
+        // Each row hugs its tallest tile (fixedSize) while the tiles stretch
+        // to fill it (maxHeight .infinity in `tile`) — row-mates always match
+        // heights, whatever mix of sparkline/text content they carry.
         VStack(spacing: 8) {
             HStack(spacing: 8) { networkTile; batteryTile }
+                .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) { cpuTile; memoryTile }
+                .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) { diskTile; thermalTile }
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -931,7 +925,11 @@ struct PopoverView: View {
             }
         }
         .padding(11)
-        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+        // maxHeight .infinity + topLeading: a tile stretches to its row-mate's
+        // height (rows pin theirs with .fixedSize), so a text-only tile never
+        // floats centered beside a taller sparkline tile. Labels align across
+        // the row; slack lands at the bottom.
+        .frame(maxWidth: .infinity, minHeight: 60, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
         .contentShape(Rectangle())
 
@@ -3891,182 +3889,6 @@ struct PortDetailView: View {
     }
 }
 
-// MARK: - Connectivity history panel
-
-/// Uptime / outage history, folded from the reachability transition log. Shows
-/// 24h and 7d drop summaries plus a recent-outages list, with the current
-/// online/offline state. Read-only.
-struct ConnectivityHistoryView: View {
-    @StateObject private var model: ConnectivityHistoryModel
-    @State private var now = Date()
-
-    private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
-
-    @ObservedObject private var networkInfo: NetworkInfo
-    @ObservedObject private var wifi: WiFiCollector
-
-    init(database: Database?, networkInfo: NetworkInfo, wifi: WiFiCollector) {
-        _model = StateObject(wrappedValue: ConnectivityHistoryModel(database: database))
-        _networkInfo = ObservedObject(wrappedValue: networkInfo)
-        _wifi = ObservedObject(wrappedValue: wifi)
-    }
-
-    private var day: ConnectivitySummary {
-        ConnectivityAnalysis.summary(model.outages, since: now.addingTimeInterval(-24 * 3600), now: now)
-    }
-    private var week: ConnectivitySummary {
-        ConnectivityAnalysis.summary(model.outages, since: now.addingTimeInterval(-7 * 24 * 3600), now: now)
-    }
-    private var ongoing: Outage? { model.outages.first(where: \.isOngoing) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Connection").font(.title3.weight(.semibold))
-                Spacer()
-                Button { model.refresh(now: now) } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.borderless).help("Refresh")
-            }
-            .padding(.horizontal, 16).padding(.vertical, 12)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    statusHero
-                    VStack(spacing: 6) {
-                        CopyableInfoRow(label: "Local IP", value: networkInfo.localIP)
-                        CopyableInfoRow(label: "Public IP", value: networkInfo.publicIP)
-                    }
-                    historySection
-                }
-                .padding(16)
-            }
-        }
-        .frame(width: 470, height: 470)
-        .onAppear { networkInfo.refresh(); model.refresh(now: now) }
-        .onReceive(timer) { now = $0; model.refresh(now: $0) }
-    }
-
-    private var statusStyle: (label: String, color: Color, icon: String) {
-        guard let o = ongoing else { return ("Online", SeverityColors.good, "wifi") }
-        return o.offline ? ("Offline", SeverityColors.issue, "wifi.slash")
-                         : ("Degraded", SeverityColors.watch, "wifi.exclamationmark")
-    }
-
-    private var wifiSubtitle: String {
-        let snap = wifi.current
-        guard snap.hasWiFiLink else { return snap.vpnActive ? "VPN tunnel · no Wi-Fi link" : "No Wi-Fi" }
-        var parts = ["\(snap.displaySSID()) · \(snap.security.label)"]
-        if let rssi = snap.rssi { parts.append("\(rssi) dBm") }
-        return parts.joined(separator: " · ")
-    }
-
-    private var statusHero: some View {
-        let s = statusStyle
-        return HStack(spacing: 12) {
-            ZStack {
-                Circle().fill(s.color.opacity(0.14)).frame(width: 44, height: 44)
-                Image(systemName: s.icon).font(.title2).foregroundStyle(s.color)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text(s.label).font(.title3.weight(.semibold))
-                    if wifi.current.vpnActive {
-                        Text("VPN · \(wifi.current.vpnInterface ?? "active")")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(SeverityColors.good)
-                            .padding(.horizontal, 8).padding(.vertical, 2)
-                            .background(Capsule().fill(SeverityColors.good.opacity(0.14)))
-                    }
-                }
-                Text(wifiSubtitle).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 12).fill(s.color.opacity(0.07)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(s.color.opacity(0.2), lineWidth: 0.5))
-    }
-
-    @ViewBuilder
-    private var historySection: some View {
-        Text("Connection history")
-            .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            .textCase(.uppercase).tracking(0.4)
-        if !model.loaded {
-            Text("Loading…").font(.caption).foregroundStyle(.secondary)
-        } else if model.outages.isEmpty {
-            Text("No outages recorded — your connection has been steady.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            HStack(spacing: 12) {
-                summaryCard("Last 24 hours", day)
-                summaryCard("Last 7 days", week)
-            }
-            outageList
-            Text("Recorded from connectivity changes Pulse sees while running. “Degraded” means the link was up but the internet was unreachable.")
-                .font(.caption2).foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func summaryCard(_ title: String, _ s: ConnectivitySummary) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                .textCase(.uppercase).tracking(0.4)
-            Text(s.drops == 0 ? "No drops" : (s.drops == 1 ? "1 drop" : "\(s.drops) drops"))
-                .font(.title3.weight(.semibold))
-            if s.drops > 0 {
-                Text(verbatim: "\(durationText(s.totalDowntime)) total · longest \(durationText(s.longest))")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
-    }
-
-    private var outageList: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Recent outages").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                .textCase(.uppercase).tracking(0.4)
-            ForEach(model.outages.prefix(30)) { o in
-                HStack(spacing: 10) {
-                    Image(systemName: o.offline ? "wifi.slash" : "wifi.exclamationmark")
-                        .font(.callout)
-                        .foregroundStyle(o.offline ? SeverityColors.issue : SeverityColors.watch)
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(o.offline ? "Offline" : "Degraded").font(.subheadline.weight(.medium))
-                        Text(startText(o.start)).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    Text(o.isOngoing ? "ongoing" : durationText(o.duration(now: now)))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(o.isOngoing ? SeverityColors.watch : .secondary)
-                }
-                .padding(10)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
-            }
-        }
-    }
-
-    private func centerNote(_ t: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: "wifi").font(.largeTitle).foregroundStyle(.secondary)
-            Text(t).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 320)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity).padding()
-    }
-
-    private func durationText(_ t: TimeInterval) -> String { RelativeTime.duration(seconds: Int(t)) }
-    private func startText(_ d: Date) -> String {
-        let f = DateFormatter(); f.dateStyle = .short; f.timeStyle = .short
-        return f.string(from: d)
-    }
-}
-
 // MARK: - Relative time helper
 
 /// Tiny helper for human-readable relative timestamps and durations.
@@ -4097,74 +3919,6 @@ enum RelativeTime {
         }
         let d = s / 86400, h = (s % 86400) / 3600
         return "\(d)d \(h)h"
-    }
-}
-
-// MARK: - CopyableInfoRow
-
-/// An info row whose value is click-to-copy. Flashes a green checkmark for
-/// ~1.2 s as feedback, reverts to a doc-on-doc icon. Disabled when the
-/// value is nil (still-loading or unavailable).
-///
-/// Implementation note: the whole row is a Button so clicking anywhere
-/// along its width copies. This matters because the value on the right
-/// can be long (IPv6 addresses) and users naturally click the *label*.
-struct CopyableInfoRow: View {
-    let label: String
-    let value: String?
-    var isLoading: Bool = false
-    @State private var justCopied = false
-
-    var body: some View {
-        Button(action: copy) {
-            HStack {
-                Text(label).foregroundStyle(.secondary)
-                Spacer()
-                HStack(spacing: 5) {
-                    Text(displayValue)
-                        .monospaced()
-                        .foregroundStyle(value == nil ? .secondary : .primary)
-                    trailingIcon
-                }
-            }
-            .font(.caption)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(value == nil)
-        .help(value == nil ? "" : "Click to copy")
-    }
-
-    private var displayValue: String {
-        if let value { return value }
-        return isLoading ? "…" : "—"
-    }
-
-    @ViewBuilder
-    private var trailingIcon: some View {
-        if value != nil {
-            if justCopied {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(Color(red: 0.20, green: 0.72, blue: 0.40))
-                    .transition(.opacity)
-            } else {
-                Image(systemName: "doc.on.doc")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func copy() {
-        guard let value else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
-        withAnimation { justCopied = true }
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            withAnimation { justCopied = false }
-        }
     }
 }
 

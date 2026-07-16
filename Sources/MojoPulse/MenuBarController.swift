@@ -84,7 +84,6 @@ final class MenuBarController: NSObject {
     private var lanDevicesWindow: NSWindow?
 
     /// Retained reference to the "Connection history" window.
-    private var connectivityWindow: NSWindow?
 
     /// Retained reference to the Top Processes window, which bumps the
     /// aggregator into fast-sampling mode (so the list refreshes live) while open.
@@ -245,7 +244,6 @@ final class MenuBarController: NSObject {
                 onShowProcessViewer: { [weak self] in self?.showProcessViewerWindow() },
                 onSelectEvent: { [weak self] record in self?.showEventWindow(record) },
                 onShowPorts: { [weak self] in self?.showOpenPortsWindow() },
-                onShowConnectivity: { [weak self] in self?.showConnectivityWindow() },
                 onShowNetwork: { [weak self] in self?.showNetworkActivityWindow() },
                 onShowDevices: { [weak self] in self?.showLANDevicesWindow() },
                 onShowThermal: { [weak self] in self?.showThermalWindow() },
@@ -284,6 +282,20 @@ final class MenuBarController: NSObject {
         settings.$menuBarIconStyle
             .removeDuplicates()
             .sink { [weak self] _ in self?.render() }
+            .store(in: &cancellables)
+
+        // A VPN connect/disconnect swaps the public egress without necessarily
+        // bouncing reachability — re-fetch the public IP (and its geo
+        // enrichment) when the debounced VPN state flips, so the header's
+        // "VPN verified" / carrier line tells the truth promptly.
+        wifi.$stableVPNActive
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak networkInfo] _ in
+                Task { @MainActor [weak networkInfo] in
+                    await networkInfo?.refreshPublic(force: true)
+                }
+            }
             .store(in: &cancellables)
 
         // Wi-Fi Safety: record network visits, and re-check + alert on a join
@@ -638,21 +650,64 @@ final class MenuBarController: NSObject {
         isAdjustingPopoverFrame = false
     }
 
+    // MARK: - Window presentation
+
+    /// Every standalone dialog funnels through here. Two quirks of being a
+    /// menu-bar (accessory) app are handled in one place:
+    ///
+    ///  1. Spaces/fullscreen: dialogs are plain managed windows that live on
+    ///     normal desktops. Making one key from elsewhere — including from
+    ///     another app's fullscreen Space — pulls the user to the dialog's
+    ///     desktop. That switch is deliberate: floating dialogs over
+    ///     fullscreen apps (`.fullScreenAuxiliary`) proved unreliable — the
+    ///     window server honors it for the first window but strands any
+    ///     follow-up dialog (e.g. Process Inspector opened from a row of an
+    ///     already-floating Top Processes) on some other desktop with no
+    ///     visible cue, whether via `.moveToActiveSpace` or a
+    ///     canJoinAllSpaces-then-pin dance. Reliably seeing the dialog wins.
+    ///  2. ⌘-Tab order: the Dock sorts the switcher by inactive→active
+    ///     transitions. Flipping accessory→regular after the app is already
+    ///     active (the popover click activated it) records no transition,
+    ///     leaving Pulse at the END of the ⌘-Tab list — so flip before
+    ///     activating, and bounce activation once when we were already
+    ///     active so the Dock sees a real transition.
+    private func present(_ window: NSWindow) {
+        window.collectionBehavior = []
+        let becameRegular = NSApp.activationPolicy() != .regular
+        if becameRegular { NSApp.setActivationPolicy(.regular) }
+        window.makeKeyAndOrderFront(nil)
+        if becameRegular && NSApp.isActive { NSApp.deactivate() }
+        NSApp.activate(ignoringOtherApps: true)
+        // A window ordered front while another app's fullscreen Space is
+        // active gets parked on a desktop Space with no Space switch and no
+        // cue — from the user's point of view, nothing happened. macOS only
+        // switches Spaces to reveal a key window on a real inactive→active
+        // app transition, and on this path the app was already active. The
+        // bounce below tries to force that transition once the window
+        // server has committed the placement.
+        //
+        // KNOWN INSUFFICIENT (macOS 26): in user testing dialogs opened from
+        // a fullscreen Space still surface nowhere visible — either the
+        // bounce doesn't trigger the switch or isOnActiveSpace misreports
+        // parked windows, so the guard bails. Kept as harmless best-effort.
+        // Investigation trail + next diagnostic step: memory note
+        // "spaces-fullscreen-dialog-bug". Everything else present() does
+        // (⌘-Tab ordering, policy flip, normal-desktop flows) is verified.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard window.isVisible, !window.isOnActiveSpace else { return }
+            NSApp.deactivate()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
     /// Open (or raise, if already open) the full history window. We dismiss
     /// the popover first because SwiftUI window presentation while a
     /// transient popover is anchored can look jittery.
-    ///
-    /// Because the app is LSUIElement (no dock icon), a plain NSWindow
-    /// won't automatically come to the front when shown. We explicitly
-    /// activate the app, then order-front the window, then makeKey —
-    /// this is the minimum dance that reliably gives the window focus
-    /// for keyboard/scroll input.
     private func showHistoryWindow() {
         popover.performClose(nil)
 
         if let existing = historyWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
 
@@ -667,8 +722,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         historyWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     // MARK: - Detail window
@@ -685,8 +739,7 @@ final class MenuBarController: NSObject {
             // rather than yanking their selected tab back to whatever they
             // clicked on this time. Tab switching is one click away inside
             // the window anyway.
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
 
@@ -708,8 +761,7 @@ final class MenuBarController: NSObject {
         detailWindow = window
 
         beginDetailFastTick()
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     private func beginDetailFastTick() {
@@ -748,8 +800,7 @@ final class MenuBarController: NSObject {
         popover.performClose(nil)
 
         if let existing = aboutWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
 
@@ -764,8 +815,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         aboutWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     // MARK: - Malware protection window
@@ -777,8 +827,7 @@ final class MenuBarController: NSObject {
         popover.performClose(nil)
 
         if let existing = malwareWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
 
@@ -793,8 +842,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         malwareWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     // MARK: - Security posture window
@@ -804,8 +852,7 @@ final class MenuBarController: NSObject {
         popover.performClose(nil)
 
         if let existing = postureWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
 
@@ -824,8 +871,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         postureWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     // MARK: - Settings window
@@ -835,8 +881,7 @@ final class MenuBarController: NSObject {
         popover.performClose(nil)
 
         if let existing = settingsWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
 
@@ -862,39 +907,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         settingsWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-    }
-
-    // MARK: - Connectivity history window
-
-    /// Open (or raise) the connection uptime/outage history panel.
-    private func showConnectivityWindow() {
-        popover.performClose(nil)
-
-        if let existing = connectivityWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        let hosting = NSHostingController(rootView: DialogChrome { ConnectivityHistoryView(
-            database: database,
-            networkInfo: networkInfo,
-            wifi: wifi
-        ) })
-        let window = NSWindow(contentViewController: hosting)
-        window.title = "Connection History"
-        window.styleMask = [.titled, .closable]
-        window.setContentSize(hosting.view.fittingSize)
-        window.center()
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.tabbingMode = .disallowed
-        connectivityWindow = window
-
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     // MARK: - Open ports window
@@ -905,8 +918,7 @@ final class MenuBarController: NSObject {
         popover.performClose(nil)
 
         if let existing = openPortsWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
 
@@ -921,8 +933,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         openPortsWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     // MARK: - LAN devices window
@@ -935,8 +946,7 @@ final class MenuBarController: NSObject {
         popover.performClose(nil)
 
         if let existing = lanDevicesWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
 
@@ -951,8 +961,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         lanDevicesWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     // MARK: - Ignored items window
@@ -961,8 +970,7 @@ final class MenuBarController: NSObject {
     /// lifts the mute/ignore rules they've set on incident cards.
     private func showMutedItemsWindow() {
         if let existing = mutedItemsWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
 
@@ -977,8 +985,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         mutedItemsWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     // MARK: - Top processes window
@@ -990,8 +997,7 @@ final class MenuBarController: NSObject {
         popover.performClose(nil)
 
         if let existing = processesWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
 
@@ -1009,8 +1015,7 @@ final class MenuBarController: NSObject {
         processesWindow = window
 
         beginProcessesFastTick()
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Pulse's own process viewer — a security-lens alternative to Activity
@@ -1019,8 +1024,7 @@ final class MenuBarController: NSObject {
     private func showProcessViewerWindow(filter: String? = nil, tab: ProcTab? = nil) {
         popover.performClose(nil)
         if let existing = processViewerWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             // Re-target the already-open explorer to the requested process/tab.
             if let tab { NotificationCenter.default.post(name: .pulseSetProcessFilter, object: tab) }
             else if let filter { NotificationCenter.default.post(name: .pulseSetProcessFilter, object: filter) }
@@ -1042,8 +1046,7 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         processViewerWindow = window
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// The Process Inspector: live per-process window (family CPU/memory,
@@ -1053,8 +1056,7 @@ final class MenuBarController: NSObject {
     private func showProcessInspectorWindow(proc: ProcInfo) {
         popover.performClose(nil)
         if let existing = inspectorWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             // The open view re-targets itself from the same notification.
             return
         }
@@ -1068,8 +1070,7 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         inspectorWindow = window
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Network Activity — the connections map + list with geo/threat intel.
@@ -1077,8 +1078,7 @@ final class MenuBarController: NSObject {
     private func showNetworkActivityWindow() {
         popover.performClose(nil)
         if let existing = networkActivityWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         let hosting = NSHostingController(rootView: DialogChrome { NetworkActivityView(settings: settings, system: system) })
@@ -1094,8 +1094,7 @@ final class MenuBarController: NSObject {
 
         // Live throughput readout needs the fast sampling cadence while open.
         beginNetworkFastTick()
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Thermal detail — live hardware temperatures + fan RPM. Standalone
@@ -1103,8 +1102,7 @@ final class MenuBarController: NSObject {
     private func showThermalWindow() {
         popover.performClose(nil)
         if let existing = thermalWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         let hosting = NSHostingController(rootView: DialogChrome { ThermalDetailView() })
@@ -1118,8 +1116,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         thermalWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Network Visibility — the outside-in mirror of what this Mac broadcasts
@@ -1129,8 +1126,7 @@ final class MenuBarController: NSObject {
     private func showNetworkVisibilityWindow() {
         popover.performClose(nil)
         if let existing = networkVisibilityWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         let hosting = NSHostingController(rootView: DialogChrome { NetworkVisibilityView(
@@ -1147,8 +1143,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         networkVisibilityWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Domain Lookup tool — DNS / WHOIS / SSL + email-security scorecard for any
@@ -1156,8 +1151,7 @@ final class MenuBarController: NSObject {
     private func showDomainLookupWindow() {
         popover.performClose(nil)
         if let existing = domainWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         let hosting = NSHostingController(rootView: DialogChrome { DomainLookupView() })
@@ -1170,8 +1164,7 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         domainWindow = window
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Wi-Fi / Network Safety — composes encryption / VPN / DNS / ARP / TLS /
@@ -1179,8 +1172,7 @@ final class MenuBarController: NSObject {
     private func showNetworkSafetyWindow() {
         popover.performClose(nil)
         if let existing = safetyWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         let hosting = NSHostingController(rootView: DialogChrome { NetworkSafetyView(model: networkSafety, location: locationAuth, trust: networkTrust) })
@@ -1193,8 +1185,7 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         safetyWindow = window
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// IP Lookup tool — geo + threat/routing intelligence for any public IP,
@@ -1202,8 +1193,7 @@ final class MenuBarController: NSObject {
     private func showIPLookupWindow() {
         popover.performClose(nil)
         if let existing = ipLookupWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         let hosting = NSHostingController(rootView: DialogChrome { IPLookupView(networkInfo: networkInfo) })
@@ -1216,8 +1206,7 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         ipLookupWindow = window
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Network Health — the Network tile's destination: sentinel verdict +
@@ -1226,8 +1215,7 @@ final class MenuBarController: NSObject {
     private func showNetworkHealthWindow() {
         popover.performClose(nil)
         if let existing = networkHealthWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         sentinel.setFastMode(true)
@@ -1250,8 +1238,7 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         networkHealthWindow = window
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Speed Test — saturating throughput + per-hop latency-under-load
@@ -1260,8 +1247,7 @@ final class MenuBarController: NSObject {
     private func showSpeedTestWindow() {
         popover.performClose(nil)
         if let existing = speedTestWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         let hosting = NSHostingController(rootView: DialogChrome { SpeedTestView(
@@ -1283,8 +1269,7 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         speedTestWindow = window
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Resize the Speed Test window to exactly fit its content (reported via
@@ -1316,8 +1301,7 @@ final class MenuBarController: NSObject {
     private func showBluetoothWindow() {
         popover.performClose(nil)
         if let existing = bluetoothWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         let hosting = NSHostingController(rootView: DialogChrome { NearbyBluetoothView(manager: bluetoothScanner) })
@@ -1330,16 +1314,14 @@ final class MenuBarController: NSObject {
         window.delegate = self
         window.tabbingMode = .disallowed
         bluetoothWindow = window
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Disk Usage tool, opened from the Disk tile.
     private func showDiskWindow() {
         popover.performClose(nil)
         if let existing = diskWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         let view = DiskUsageView(system: system, model: diskModel)
@@ -1354,8 +1336,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         diskWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Batteries tool, opened from the Battery tile: every battery around you
@@ -1365,8 +1346,7 @@ final class MenuBarController: NSObject {
         popover.performClose(nil)
         peripherals.refreshIfAllowed()
         if let existing = batteryWindow {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(existing)
             return
         }
         let view = BatteryHealthView(system: system, metricHistory: metricHistory, peripherals: peripherals,
@@ -1384,8 +1364,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         batteryWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     private func beginNetworkFastTick() {
@@ -1417,8 +1396,7 @@ final class MenuBarController: NSObject {
         if let window = eventWindow {
             window.contentViewController = hosting
             window.setContentSize(hosting.view.fittingSize)
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(window)
             return
         }
 
@@ -1432,8 +1410,7 @@ final class MenuBarController: NSObject {
         window.tabbingMode = .disallowed
         eventWindow = window
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     /// Route a clicked notification back to the window that explains it. An
@@ -1511,8 +1488,6 @@ extension MenuBarController: NSWindowDelegate {
             openPortsWindow = nil
         } else if closing === lanDevicesWindow {
             lanDevicesWindow = nil
-        } else if closing === connectivityWindow {
-            connectivityWindow = nil
         } else if closing === processesWindow {
             endProcessesFastTick()
             processesWindow = nil
@@ -1571,6 +1546,10 @@ extension MenuBarController: NSWindowDelegate {
     /// ⌘-Tab entry so the user can always raise it — and revert to `.accessory`
     /// (pure menu-bar) once the last window closes. All managed windows set
     /// `delegate = self`, which is how we detect them.
+    ///
+    /// `present(_:)` flips to `.regular` itself, up front — it has to happen
+    /// before activation for ⌘-Tab ordering — so on the show path this is a
+    /// no-op safety net; its real job is dropping the Dock icon on close.
     private func syncActivationPolicy() {
         let hasWindow = NSApp.windows.contains {
             ($0.delegate as? NSObject) === self && $0.isVisible
@@ -1578,7 +1557,9 @@ extension MenuBarController: NSWindowDelegate {
         let target: NSApplication.ActivationPolicy = hasWindow ? .regular : .accessory
         guard NSApp.activationPolicy() != target else { return }
         NSApp.setActivationPolicy(target)
-        if target == .regular { NSApp.activate(ignoringOtherApps: true) }
+        // Only activate if we somehow aren't already — an unconditional kick
+        // here used to land mid-Space-transition and strand dialogs.
+        if target == .regular && !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
     }
 }
 

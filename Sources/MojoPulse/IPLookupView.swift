@@ -2,6 +2,12 @@ import SwiftUI
 import AppKit
 import Darwin
 
+extension Notification.Name {
+    /// Ask an open IP Lookup window to run the user's own public IP —
+    /// posted by the Network screen's "Details…" button after opening it.
+    static let pulseLookupMyIP = Notification.Name("mojopulse.lookupMyIP")
+}
+
 /// Lightweight IP-address validity check (v4 or v6) via inet_pton.
 enum IPValidator {
     static func isValid(_ s: String) -> Bool {
@@ -73,6 +79,9 @@ struct IPLookupView: View {
         }
         .padding(16)
         .frame(minWidth: 520, minHeight: 540)
+        .onReceive(NotificationCenter.default.publisher(for: .pulseLookupMyIP)) { _ in
+            model.useMyIP(networkInfo.publicIP)
+        }
     }
 
     // MARK: - Search
@@ -132,26 +141,40 @@ struct IPLookupView: View {
 
     // MARK: - Loaded
 
+    /// This lookup is the user's own egress address. Own-IP results read
+    /// through a stricter lens than remote hosts — see `GeoInfo.ownReputation`.
+    private func isMine(_ info: GeoInfo) -> Bool { info.ip == networkInfo.publicIP }
+
     @ViewBuilder
     private func loaded(_ info: GeoInfo) -> some View {
-        let accent = riskColor(info.risk)
+        let mine = isMine(info)
+        let accent = mine ? ownAccent(info.ownReputation) : riskColor(info.risk)
 
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(info.ip).font(.title2.weight(.bold).monospaced()).textSelection(.enabled)
+                HStack(spacing: 8) {
+                    Text(info.ip).font(.title2.weight(.bold).monospaced()).textSelection(.enabled)
+                    if mine {
+                        Text("Your network")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color(red: 0.353, green: 0.659, blue: 1.0))
+                            .padding(.horizontal, 9).padding(.vertical, 3)
+                            .background(Capsule().fill(Color(red: 0.353, green: 0.659, blue: 1.0).opacity(0.13)))
+                    }
+                }
                 if let place = info.placeLabel {
                     Text(place).font(.callout).foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 8)
-            Text(riskLabel(info))
+            Text(mine ? ownLabel(info) : riskLabel(info))
                 .font(.caption.weight(.bold)).foregroundStyle(accent)
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(Capsule().fill(accent.opacity(0.15)))
                 .overlay(Capsule().strokeBorder(accent.opacity(0.35), lineWidth: 0.5))
         }
 
-        Text(verdict(info)).font(.callout).foregroundStyle(.secondary)
+        Text(mine ? ownVerdict(info) : verdict(info)).font(.callout).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
         if !info.tags.isEmpty {
@@ -247,6 +270,36 @@ struct IPLookupView: View {
         }
         if let score = info.riskScore { return "\(base) · \(score)/100" }
         return base
+    }
+
+    // MARK: Own-IP framing — stricter reputation, first-person wording
+
+    private func ownAccent(_ r: GeoInfo.OwnReputation) -> Color {
+        switch r {
+        case .flagged: return SeverityColors.issue
+        case .mixed: return SeverityColors.quiet
+        case .clean: return SeverityColors.good
+        }
+    }
+
+    private func ownLabel(_ info: GeoInfo) -> String {
+        switch info.ownReputation {
+        case .flagged: return "Flagged"
+        case .mixed: return "Mixed"
+        case .clean: return "Clean"
+        }
+    }
+
+    private func ownVerdict(_ info: GeoInfo) -> String {
+        let opening = "This is your Mac's public address — the one websites see."
+        switch info.ownReputation {
+        case .flagged:
+            return "Your public address appears on threat lists (attacker/abuser). Expect blocks and CAPTCHAs — if it persists, ask your ISP for a new address."
+        case .mixed:
+            return "\(opening) Some reputation lists mark it suspicious — common on shared or carrier addresses and can mean extra CAPTCHAs. No concrete threat flags."
+        case .clean:
+            return "\(opening) No routing anonymization or threat flags."
+        }
     }
 
     private func verdict(_ info: GeoInfo) -> String {

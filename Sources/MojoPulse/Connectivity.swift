@@ -69,23 +69,3 @@ enum ConnectivityAnalysis {
     }
 }
 
-/// Observable wrapper that reads the reachability history from the DB and folds
-/// it into outages. Cheap (small, indexed table — transitions are infrequent),
-/// so it runs synchronously on refresh.
-@MainActor
-final class ConnectivityHistoryModel: ObservableObject {
-    @Published private(set) var outages: [Outage] = []
-    @Published private(set) var loaded = false
-
-    private let database: Database?
-
-    init(database: Database?) { self.database = database }
-
-    func refresh(now: Date = Date()) {
-        guard let database else { outages = []; loaded = true; return }
-        let since = now.addingTimeInterval(-30 * 24 * 3600)
-        let samples = (try? database.fetchReachability(since: since)) ?? []
-        outages = ConnectivityAnalysis.outages(from: samples, now: now)
-        loaded = true
-    }
-}
