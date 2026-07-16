@@ -112,6 +112,9 @@ struct PopoverView: View {
     @ObservedObject var arp: ARPCollector
     @ObservedObject var sentinel: NetworkSentinel
     @ObservedObject var settings: Settings
+    /// Accessory batteries (AirPods & friends) — feeds the Battery tile's
+    /// tiny lowest-bud hint. Refreshed by MenuBarController on popover open.
+    @ObservedObject var peripherals: PeripheralBatteryCollector
     @ObservedObject var navigation: PopoverNavigation
 
     /// Called when the user taps "Show all" under Recent. The concrete
@@ -770,14 +773,78 @@ struct PopoverView: View {
         }
     }
 
+    /// Earbuds connected → the tile breaks their batteries out per part
+    /// (left / right / case), because a single collapsed number loses the
+    /// detail that matters; the Mac's % drops to the tiny label-row hint —
+    /// the menu bar already shows it. Otherwise the classic Mac tile, with
+    /// the emptiest single-cell accessory (keyboard, mouse) as the hint.
+    /// The firing dot stays keyed to Mac battery incidents in both states.
     private var batteryTile: some View {
-        let pct = system.current.battery?.percent
-        return tile(icon: batteryIcon, label: "Battery",
-             value: bigValue(pct.map { "\($0)%" } ?? "—"),
-             firing: firingColor(for: .battery),
-             tap: { onShowBattery() }) {
-            batteryIndicator
+        let mac = system.current.battery
+        return Group {
+            if let pods = peripherals.primaryEarbuds {
+                tile(icon: batteryIcon, label: "Battery",
+                     value: earbudsBreakoutValue(pods),
+                     firing: firingColor(for: .battery),
+                     labelDetail: mac.map { "\($0.percent)%" },
+                     labelDetailIcon: mac == nil ? nil : "laptopcomputer",
+                     tap: { onShowBattery() }) {
+                    EmptyView()
+                }
+            } else {
+                let needy = peripherals.neediest
+                tile(icon: batteryIcon, label: "Battery",
+                     value: bigValue(mac.map { "\($0.percent)%" } ?? "—"),
+                     firing: firingColor(for: .battery),
+                     labelDetail: needy.map { "\($0.percent)%" },
+                     labelDetailIcon: needy?.symbol,
+                     tap: { onShowBattery() }) {
+                    batteryIndicator
+                }
+            }
         }
+        .help(batteryTooltip)
+    }
+
+    /// "‹L› 69  ‹R› 74  ‹case› 90" — one glyph + percent pair per component.
+    /// Number tint tells the state: green while charging, amber ≤ 20%, red
+    /// ≤ 10%. The tile's value slot auto-shrinks, so three pairs always fit.
+    private func earbudsBreakoutValue(_ pods: PeripheralBatteryDevice) -> Text {
+        var result = Text(verbatim: "")
+        for (index, part) in pods.components.enumerated() {
+            if index > 0 { result = result + Text(verbatim: "  ") }
+            let symbol = PeripheralBatteryCollector.partSymbol(for: part.label, deviceSymbol: pods.symbol)
+            result = result
+                + Text("\(Image(systemName: symbol)) ")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                + Text("\(part.percent)%")
+                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                    .foregroundColor(partTint(part))
+        }
+        return result
+    }
+
+    private func partTint(_ part: PeripheralBatteryComponent) -> Color {
+        if part.isCharging { return SeverityColors.good }
+        if part.percent <= 10 { return SeverityColors.issue }
+        if part.percent <= 20 { return SeverityColors.watch }
+        return .primary
+    }
+
+    /// Every battery the tile knows about, one per line.
+    private var batteryTooltip: String {
+        var lines: [String] = []
+        if let b = system.current.battery {
+            lines.append("This Mac \(b.percent)%\(b.isCharging ? " · charging" : "")")
+        }
+        for device in peripherals.devices {
+            let parts = device.components.map {
+                "\($0.label ?? "Battery") \($0.percent)%\($0.isCharging ? " ⚡" : "")"
+            }
+            lines.append("\(device.name): \(parts.joined(separator: " · "))")
+        }
+        return lines.isEmpty ? "Battery" : lines.joined(separator: "\n")
     }
 
     @ViewBuilder
@@ -823,6 +890,7 @@ struct PopoverView: View {
     private func tile<Indicator: View>(
         icon: String, label: String, value: Text, firing: Color?,
         labelDetail: String? = nil,
+        labelDetailIcon: String? = nil,
         tap: (() -> Void)?, @ViewBuilder indicator: () -> Indicator
     ) -> some View {
         let content = VStack(alignment: .leading, spacing: 9) {
@@ -834,12 +902,21 @@ struct PopoverView: View {
                 // Tiny metric prefix to the status dot (e.g. the Network
                 // tile's live RTT) — lives up here so it never squeezes the
                 // value row's numbers.
-                if let labelDetail {
-                    Text(labelDetail)
-                        .font(.system(size: 9.5).monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .fixedSize()
+                if labelDetail != nil || labelDetailIcon != nil {
+                    HStack(spacing: 2.5) {
+                        if let labelDetailIcon {
+                            Image(systemName: labelDetailIcon)
+                                .font(.system(size: 8.5, weight: .medium))
+                                .foregroundStyle(.tertiary)
+                        }
+                        if let labelDetail {
+                            Text(labelDetail)
+                                .font(.system(size: 9.5).monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .fixedSize()
                 }
                 if let firing { Circle().fill(firing).frame(width: 7, height: 7) }
             }

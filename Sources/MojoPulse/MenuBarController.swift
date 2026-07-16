@@ -127,6 +127,12 @@ final class MenuBarController: NSObject {
     /// Unlocks the Wi-Fi network name (Location permission) on explicit opt-in.
     private let locationAuth = LocationAuthorizer()
 
+    /// Batteries of connected Bluetooth gear (AirPods, Magic accessories) —
+    /// rows in the Batteries window + the Battery tile's neediest-battery
+    /// readout, with per-device history recorded into the metric rollups.
+    /// Touches nothing until Bluetooth access exists.
+    private let peripherals: PeripheralBatteryCollector
+
     /// Speed Test engine — created in AppDelegate (it persists results and
     /// journals into Recent activity), rendered by the window we own here.
     private let speedTest: SpeedTestEngine
@@ -184,6 +190,7 @@ final class MenuBarController: NSObject {
         self.networkInfo = networkInfo
         self.history = history
         self.metricHistory = metricHistory
+        self.peripherals = PeripheralBatteryCollector(metricHistory: metricHistory)
         self.loginItem = loginItem
         self.wifi = wifi
         self.system = system
@@ -219,6 +226,7 @@ final class MenuBarController: NSObject {
                 arp: arp,
                 sentinel: sentinel,
                 settings: settings,
+                peripherals: peripherals,
                 navigation: popoverNavigation,
                 onShowFullHistory: { [weak self] in self?.showHistoryWindow() },
                 onShowDetail: { [weak self] kind in self?.showDetailWindow(initial: kind) },
@@ -544,6 +552,7 @@ final class MenuBarController: NSObject {
             installPopoverResizeObserver(button: button)
             beginPopoverFastTick()
             networkSafety.refreshIfStale()
+            peripherals.refreshIfAllowed()
         }
     }
 
@@ -1240,7 +1249,14 @@ final class MenuBarController: NSObject {
     /// a SwiftUI preference), keeping the title bar pinned so growth happens
     /// downward. Clamped to the screen so a huge section can't push offscreen.
     private func sizeSpeedTestWindow(contentHeight: CGFloat) {
-        guard let window = speedTestWindow, window.isVisible || window.isMiniaturized == false else { return }
+        sizeWindowToContent(speedTestWindow, contentHeight: contentHeight)
+    }
+
+    /// Follow a self-measuring view's reported height (SpeedTest/Batteries
+    /// pattern): grow or shrink the window in place with the title bar
+    /// pinned, capped to the screen.
+    private func sizeWindowToContent(_ window: NSWindow?, contentHeight: CGFloat) {
+        guard let window, window.isVisible || window.isMiniaturized == false else { return }
         let chrome: CGFloat = 42   // DialogChrome footer: divider + padded Done row
         let maxContent = ((window.screen ?? NSScreen.main)?.visibleFrame.height ?? 900) - 60
         let target = min(max(contentHeight + chrome, 220), maxContent)
@@ -1300,20 +1316,26 @@ final class MenuBarController: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
-    /// Battery Health tool (placeholder for now), opened from the Battery tile.
+    /// Batteries tool, opened from the Battery tile: every battery around you
+    /// (Mac + connected accessories), each a drill-in row. The window follows
+    /// the content's reported height as rows open and close.
     private func showBatteryWindow() {
         popover.performClose(nil)
+        peripherals.refreshIfAllowed()
         if let existing = batteryWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let view = BatteryHealthView(system: system, metricHistory: metricHistory)
+        let view = BatteryHealthView(system: system, metricHistory: metricHistory, peripherals: peripherals,
+                                     onHeight: { [weak self] height in
+                                         self?.sizeWindowToContent(self?.batteryWindow, contentHeight: height)
+                                     })
         let hosting = NSHostingController(rootView: DialogChrome { view })
         let window = NSWindow(contentViewController: hosting)
-        window.title = "Battery Health"
+        window.title = "Batteries"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 520, height: 640))
+        window.setContentSize(NSSize(width: 520, height: 420))
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self

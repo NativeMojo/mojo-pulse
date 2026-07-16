@@ -144,6 +144,20 @@ final class MetricHistoryStore: ObservableObject {
         accumulateRollup(snapshot, at: timestamp)
     }
 
+    /// Direct per-minute rollup write for slow-moving metrics sampled outside
+    /// the SystemCollector tick (peripheral battery levels, sampled ~60 s by
+    /// PeripheralBatteryCollector). One row per (key, minute); re-samples in
+    /// the same minute just replace it, so min == avg == max by construction.
+    func recordSlowMetric(_ key: String, value: Double, at timestamp: Date = Date()) {
+        guard let database else { return }
+        let minute = Int(timestamp.timeIntervalSince1970 / 60) * 60
+        try? database.insertMetricRollup(
+            metric: key,
+            ts: Date(timeIntervalSince1970: TimeInterval(minute)),
+            min: value, avg: value, max: value
+        )
+    }
+
     // MARK: - Rollup accumulation
 
     private func accumulateRollup(_ snapshot: SystemSnapshot, at timestamp: Date) {
