@@ -50,6 +50,22 @@ enum IncidentTemplates {
     static let airDropHandoffURL = URL(string: "x-apple.systempreferences:com.apple.AirDrop-Handoff-Settings.extension")
     static let softwareUpdateURL = URL(string: "x-apple.systempreferences:com.apple.Software-Update-Settings.extension")
 
+    /// Thermal "why": leads with the ENGINE producing the heat (whole-Mac
+    /// power attribution), falls back to the top CPU process. A GPU-bound
+    /// export shows an innocent CPU table — the engine line is what's honest.
+    private static func thermalWhy(_ ctx: [String: String], verb: String) -> String? {
+        switch (ctx["engine"], ctx["topProcess"]) {
+        case let (engine?, top?):
+            return "Most of the heat is coming from the \(engine); \(top) \(verb)."
+        case let (engine?, nil):
+            return "Most of the heat is coming from the \(engine)."
+        case let (nil, top?):
+            return "\(top) \(verb)."
+        case (nil, nil):
+            return nil
+        }
+    }
+
     static func render(_ incident: Incident) -> IncidentCopy {
         let ctx = incident.context
 
@@ -61,7 +77,7 @@ enum IncidentTemplates {
             return IncidentCopy(
                 title: "Mac running hot",
                 what: "Your Mac has entered a serious thermal state — the fans are ramping up and the system is starting to throttle.",
-                why: ctx["topProcess"].map { "\($0) is pushing the CPU hard right now." },
+                why: thermalWhy(ctx, verb: "is pushing hard right now"),
                 action: "Close heavy apps you're not using, or give it a minute to cool down.",
                 actionURL: processViewerURL
             )
@@ -70,9 +86,18 @@ enum IncidentTemplates {
             return IncidentCopy(
                 title: "Mac overheating",
                 what: "Thermal state is critical. macOS is aggressively throttling to protect the hardware.",
-                why: ctx["topProcess"].map { "\($0) is likely the main cause." }
+                why: thermalWhy(ctx, verb: "is likely the main cause")
                     ?? "Something is sustaining very high CPU or GPU load.",
                 action: "Quit heavy apps now, unplug any hot peripherals, and move somewhere cooler if you can.",
+                actionURL: processViewerURL
+            )
+
+        case "engine.neural":
+            return IncidentCopy(
+                title: "Neural Engine busy in the background",
+                what: "Your Mac's Neural Engine has been working for \(ctx["mins"] ?? "several") minutes (\(ctx["watts"] ?? "a steady draw")) while the CPU stays quiet.",
+                why: "Usually harmless background AI — Photos indexing, Spotlight understanding files, or an Apple Intelligence task. It can make an idle Mac feel warm.",
+                action: "Nothing to do — this kind of work pauses when you're active. If it never stops, peek at All Processes for photoanalysisd or mediaanalysisd.",
                 actionURL: processViewerURL
             )
 
@@ -671,7 +696,9 @@ enum IncidentTemplates {
         case "swap.heavy", "swap.severe":
             return v("used").map { "\($0) swapped to disk" }
         case "thermal.serious", "thermal.critical":
-            return v("topProcess")
+            return join(v("engine"), v("topProcess"))
+        case "engine.neural":
+            return join(v("mins").map { "\($0) min" }, v("watts"))
 
         // Battery / disk
         case "battery.low", "battery.critical":

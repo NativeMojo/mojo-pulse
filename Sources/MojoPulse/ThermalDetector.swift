@@ -42,10 +42,17 @@ final class ThermalDetector: Detector {
         }
     }
 
-    /// Names the heaviest CPU process (when clearly dominant) so the thermal
-    /// card can point at a likely cause.
+    /// Names the heaviest CPU process (when clearly dominant) AND the engine
+    /// actually producing the heat — a GPU-bound export shows an innocent CPU
+    /// table, so the engine attribution is what makes the card honest.
     private func context(_ signals: Signals) -> [String: String] {
-        guard let p = signals.processes.topByCPU.first, p.cpuPercent >= 20 else { return [:] }
-        return ["topProcess": "\(p.name) (\(p.cpuDisplay))"]
+        var ctx: [String: String] = [:]
+        if let p = signals.processes.topByCPU.first, p.cpuPercent >= 20 {
+            ctx["topProcess"] = "\(p.name) (\(p.cpuDisplay))"
+        }
+        if let top = signals.system.engines.topEngine {
+            ctx["engine"] = String(format: "%@ (~%.0f W)", top.name, top.watts)
+        }
+        return ctx
     }
 }

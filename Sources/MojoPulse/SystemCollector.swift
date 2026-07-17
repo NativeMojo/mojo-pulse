@@ -85,6 +85,7 @@ final class SystemCollector: ObservableObject {
         let disk = readDisk()
         let net = sampleNet(now: now)
         let thermal = sampleThermal(now: now)
+        let engines = engineSampler.sample()
 
         current = SystemSnapshot(
             cpuPercent: cpu,
@@ -98,9 +99,14 @@ final class SystemCollector: ObservableObject {
             diskTotalBytes: disk.total,
             netBytesInPerSec: net.bytesInPerSec,
             netBytesOutPerSec: net.bytesOutPerSec,
-            thermal: thermal
+            thermal: thermal,
+            engines: engines
         )
     }
+
+    /// Apple Silicon engine telemetry (GPU utilization + per-rail power).
+    /// Degrades to `.empty` fields on Macs without the counters.
+    private let engineSampler = EngineSampler()
 
     // MARK: - Thermal
 
@@ -467,6 +473,10 @@ struct SystemSnapshot: Sendable, Equatable {
     /// first thermal read lands.
     let thermal: ThermalSummary
 
+    /// Apple Silicon engine telemetry: GPU utilization + per-rail power
+    /// (CPU/GPU/Neural/Media/…). `.empty` fields on Macs without counters.
+    let engines: EngineSnapshot
+
     static let empty = SystemSnapshot(
         cpuPercent: 0,
         memoryPressure: .normal,
@@ -479,7 +489,8 @@ struct SystemSnapshot: Sendable, Equatable {
         diskTotalBytes: 0,
         netBytesInPerSec: 0,
         netBytesOutPerSec: 0,
-        thermal: .empty
+        thermal: .empty,
+        engines: .empty
     )
 
     var diskFreePercent: Double {

@@ -39,23 +39,26 @@ private struct PopoverMiddleHeightKey: PreferenceKey {
 struct MiniSparkline: View {
     let values: [Double]
     let color: Color
+    /// Optional second series (e.g. GPU beside CPU). Both series normalize
+    /// against a SHARED min/max — separate scales would make a 3% GPU look
+    /// like a mountain range next to a 60% CPU.
+    var secondary: [Double]? = nil
+    var secondaryColor: Color = .clear
 
     var body: some View {
         GeometryReader { geo in
             let pts = values
+            let pts2 = secondary ?? []
+            let all = pts + pts2
             if pts.count >= 2 {
-                let lo = pts.min() ?? 0
-                let hi = pts.max() ?? 1
-                let range = Swift.max(hi - lo, 0.0001)
-                Path { p in
-                    for (i, v) in pts.enumerated() {
-                        let x = geo.size.width * CGFloat(i) / CGFloat(pts.count - 1)
-                        let y = geo.size.height * (1 - CGFloat((v - lo) / range))
-                        if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
-                        else { p.addLine(to: CGPoint(x: x, y: y)) }
-                    }
+                let lo = all.min() ?? 0
+                let range = Swift.max((all.max() ?? 1) - lo, 0.0001)
+                if pts2.count >= 2 {
+                    line(pts2, in: geo.size, lo: lo, range: range)
+                        .stroke(secondaryColor, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
                 }
-                .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                line(pts, in: geo.size, lo: lo, range: range)
+                    .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
             } else {
                 Path { p in
                     p.move(to: CGPoint(x: 0, y: geo.size.height / 2))
@@ -65,6 +68,17 @@ struct MiniSparkline: View {
             }
         }
         .frame(width: 54, height: 20)
+    }
+
+    private func line(_ series: [Double], in size: CGSize, lo: Double, range: Double) -> Path {
+        Path { p in
+            for (i, v) in series.enumerated() {
+                let x = size.width * CGFloat(i) / CGFloat(series.count - 1)
+                let y = size.height * (1 - CGFloat((v - lo) / range))
+                if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+                else { p.addLine(to: CGPoint(x: x, y: y)) }
+            }
+        }
     }
 }
 
@@ -638,12 +652,43 @@ struct PopoverView: View {
         }
     }
 
+    private var gpuColor: Color { Color(red: 0.0, green: 0.63, blue: 0.68) }
+    private var neuralChipColor: Color { Color(red: 0.61, green: 0.48, blue: 0.91) }
+    private var mediaChipColor: Color { Color(red: 0.85, green: 0.33, blue: 0.56) }
+
+    /// The engine-activity chip: names the Neural/Media engine in the tile's
+    /// label row ONLY during sustained work (hysteresis lives in the sampler).
+    /// Both engines idle at 0 W most of the day, so a permanent readout would
+    /// be a dead gauge — presence, not magnitude, is the signal.
+    private var engineChip: (text: String, color: Color)? {
+        let e = system.current.engines
+        if e.neuralActive { return ("neural", neuralChipColor) }
+        if e.mediaActive { return ("media", mediaChipColor) }
+        return nil
+    }
+
+    /// CPU · GPU: the two compute engines share one story on one 0–100 scale,
+    /// the way ↓/↑ share the Network tile. GPU is whole-Mac (per-process
+    /// needs root); Macs without the driver counter keep the plain CPU tile.
     private var cpuTile: some View {
-        tile(icon: "cpu", label: "CPU",
-             value: bigValue("\(Int(system.current.cpuPercent.rounded()))%"),
+        let gpuPct = system.current.engines.gpuUtilPercent
+        var value = bigValue("\(Int(system.current.cpuPercent.rounded()))%")
+        if let gpuPct {
+            value = value
+                + Text("   GPU ").font(.system(size: 10, weight: .semibold)).foregroundColor(.secondary)
+                + Text("\(Int(gpuPct.rounded()))%").font(.system(size: 14, weight: .semibold)).foregroundColor(gpuColor)
+        }
+        let chip = engineChip
+        return tile(icon: "cpu", label: gpuPct != nil ? "CPU · GPU" : "CPU",
+             value: value,
              firing: firingColor(for: .cpu),
+             labelDetail: chip?.text,
+             labelDetailIcon: chip != nil ? "circle.fill" : nil,
+             labelDetailColor: chip?.color,
              tap: { onShowProcesses() }) {
-            MiniSparkline(values: spark(metricHistory.cpu), color: SeverityColors.info)
+            MiniSparkline(values: spark(metricHistory.cpu), color: SeverityColors.info,
+                          secondary: gpuPct != nil ? spark(metricHistory.gpu) : nil,
+                          secondaryColor: gpuColor)
         }
     }
 
@@ -889,6 +934,7 @@ struct PopoverView: View {
         icon: String, label: String, value: Text, firing: Color?,
         labelDetail: String? = nil,
         labelDetailIcon: String? = nil,
+        labelDetailColor: Color? = nil,
         tap: (() -> Void)?, @ViewBuilder indicator: () -> Indicator
     ) -> some View {
         let content = VStack(alignment: .leading, spacing: 9) {
@@ -898,19 +944,21 @@ struct PopoverView: View {
                 Text(label).font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 // Tiny metric prefix to the status dot (e.g. the Network
-                // tile's live RTT) — lives up here so it never squeezes the
-                // value row's numbers.
+                // tile's live RTT, the CPU·GPU tile's engine-activity chip) —
+                // lives up here so it never squeezes the value row's numbers.
+                // A color turns the hint into a chip (engine names); default
+                // stays the quiet tertiary of the RTT readout.
                 if labelDetail != nil || labelDetailIcon != nil {
                     HStack(spacing: 2.5) {
                         if let labelDetailIcon {
                             Image(systemName: labelDetailIcon)
                                 .font(.system(size: 8.5, weight: .medium))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(labelDetailColor.map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
                         }
                         if let labelDetail {
                             Text(labelDetail)
-                                .font(.system(size: 9.5).monospacedDigit())
-                                .foregroundStyle(.tertiary)
+                                .font(.system(size: 9.5, weight: labelDetailColor != nil ? .semibold : .regular).monospacedDigit())
+                                .foregroundStyle(labelDetailColor.map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
                                 .lineLimit(1)
                         }
                     }
@@ -1063,9 +1111,21 @@ struct PopoverView: View {
     private func sparkline(for kind: MetricKind) -> some View {
         switch kind {
         case .cpu:
+            // GPU rides along when readable — same 0–100 scale, direct labels
+            // carry identity (the blue/teal pair never relies on hue alone).
             InlineSparkline(
                 series: [
-                    .init(id: "CPU", samples: metricHistory.cpu.samples, color: SeverityColors.info)
+                    .init(id: "CPU", samples: metricHistory.cpu.samples, color: SeverityColors.info),
+                ] + (system.current.engines.gpuUtilPercent != nil
+                     ? [.init(id: "GPU", samples: metricHistory.gpu.samples, color: gpuColor)]
+                     : []),
+                window: 60,
+                valueFormatter: { String(format: "%.0f%%", $0) }
+            )
+        case .gpu:
+            InlineSparkline(
+                series: [
+                    .init(id: "GPU", samples: metricHistory.gpu.samples, color: gpuColor)
                 ],
                 window: 60,
                 valueFormatter: { String(format: "%.0f%%", $0) }

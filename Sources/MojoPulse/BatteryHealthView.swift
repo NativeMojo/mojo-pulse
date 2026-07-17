@@ -70,6 +70,21 @@ struct BatteryHealthView: View {
                 severity: .watch, title: "Mac battery is running low",
                 detail: "\(b.percent)% left and not plugged in.")
         }
+        // A heavy sustained draw on battery is the "why is it melting" case —
+        // name the engine responsible instead of letting the percent surprise.
+        if let b = battery, !b.isPluggedIn,
+           let total = system.current.engines.totalWatts, total >= 25 {
+            var detail = "The SoC is drawing ~\(Self.wattsText(total))"
+            if let top = system.current.engines.topEngine, top.watts >= total * 0.4 {
+                detail += " — mostly the \(top.name) (\(Self.wattsText(top.watts)))"
+            }
+            detail += "."
+            if let mins = b.timeToEmptyMinutes, mins > 0 {
+                detail += String(format: " About %d:%02d left at this rate.", mins / 60, mins % 60)
+            }
+            return BatteriesVerdict(
+                severity: .watch, title: "On battery, draining fast", detail: detail)
+        }
         if let b = battery, let h = b.healthPercent, h < 80 {
             return BatteriesVerdict(
                 severity: .watch, title: "Mac battery is aging",
@@ -235,7 +250,20 @@ struct BatteryHealthView: View {
     private func macCaption(_ b: BatterySnapshot) -> String {
         var caption = stateText(b)
         if let t = timeText(b) { caption += " · \(t)" }
+        // Live draw makes a fast drain explainable at a glance. On battery
+        // only — while charging, engine watts aren't what the battery feels.
+        if !b.isPluggedIn, let total = system.current.engines.totalWatts, total >= 1 {
+            var draw = "drawing ~\(Self.wattsText(total))"
+            if let top = system.current.engines.topEngine, top.watts >= total * 0.4 {
+                draw += " — mostly \(top.name)"
+            }
+            caption += " · \(draw)"
+        }
         return caption
+    }
+
+    private static func wattsText(_ w: Double) -> String {
+        w >= 10 ? String(format: "%.0f W", w) : String(format: "%.1f W", w)
     }
 
     private func macExpanded(_ b: BatterySnapshot) -> some View {

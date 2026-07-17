@@ -175,6 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // change-watcher, and the exposed-sharing-service detector.
         let detectors: [Detector] = [
             ThermalDetector(),
+            NeuralActivityDetector(),
             NetworkDetector(),
             CPUDetector(),
             MemoryDetector(),

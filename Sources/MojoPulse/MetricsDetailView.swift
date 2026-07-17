@@ -29,11 +29,21 @@ struct MetricsDetailView: View {
     @State private var selected: MetricKind
     @State private var range: HistoryRange = .live
 
-    /// Order shown in the metric picker (mockup: CPU · Memory · Network).
-    private let metricOrder: [MetricKind] = [.cpu, .memory, .net]
+    /// Order shown in the metric picker. GPU appears only on Macs whose
+    /// graphics driver publishes utilization (Apple Silicon) — an Intel Mac
+    /// keeps the original three segments rather than a dead tab.
+    private var metricOrder: [MetricKind] {
+        system.current.engines.gpuUtilPercent != nil
+            ? [.cpu, .gpu, .memory, .net]
+            : [.cpu, .memory, .net]
+    }
 
     private static let downColor = SeverityColors.info
     private static let upColor = Color(red: 0.61, green: 0.48, blue: 0.91)
+    /// GPU accent — teal, so flipping CPU↔GPU tabs never reads as the same
+    /// metric (pair validated CVD-safe against blue in light + dark).
+    private static let gpuColor = Color(red: 0.0, green: 0.63, blue: 0.68)
+    private static let mediaColor = Color(red: 0.85, green: 0.33, blue: 0.56)
 
     init(metricHistory: MetricHistoryStore, system: SystemCollector,
          initialKind: MetricKind, totalMemoryBytes: UInt64) {
@@ -96,6 +106,8 @@ struct MetricsDetailView: View {
         switch selected {
         case .cpu:
             bigMetric(nil, .primary, pctParts(system.current.cpuPercent))
+        case .gpu:
+            bigMetric(nil, .primary, pctParts(system.current.engines.gpuUtilPercent ?? 0))
         case .memory:
             bigMetric(nil, .primary, memParts(Double(system.current.memoryUsedBytes)))
         case .net:
@@ -133,6 +145,12 @@ struct MetricsDetailView: View {
                 downColor: Self.downColor,
                 upColor: Self.upColor
             )
+        } else if selected == .gpu {
+            HistoryChart(
+                points: points(MetricHistoryStore.Key.gpu),
+                color: Self.gpuColor,
+                capFormatter: { capPct($0) }
+            )
         } else {
             let key = selected == .cpu ? MetricHistoryStore.Key.cpu : MetricHistoryStore.Key.mem
             HistoryChart(
@@ -155,11 +173,14 @@ struct MetricsDetailView: View {
     }
 
     private var rangeSubtitle: String {
+        // GPU is a whole-Mac number (per-process needs root) — say so where
+        // the eye already reads context.
+        let scope = selected == .gpu ? "whole Mac · " : ""
         switch range {
-        case .live: return "live, last 5 minutes"
-        case .minute: return "last 2 hours, per minute"
-        case .hour: return "last 7 days, hourly"
-        case .day: return "last 7 days, daily"
+        case .live: return scope + "live, last 5 minutes"
+        case .minute: return scope + "last 2 hours, per minute"
+        case .hour: return scope + "last 7 days, hourly"
+        case .day: return scope + "last 7 days, daily"
         }
     }
 
@@ -175,6 +196,26 @@ struct MetricsDetailView: View {
                 gauge("Average", fmtPct(s.avg))
                 gauge("Peak", fmtPct(s.peak), accent: SeverityColors.watch)
                 gauge("Load", String(format: "%.2f", loadAverage()))
+            }
+        case .gpu:
+            let s = stats(MetricHistoryStore.Key.gpu)
+            let e = system.current.engines
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    gauge("Now", fmtPct(e.gpuUtilPercent ?? 0))
+                    gauge("Average", fmtPct(s.avg))
+                    gauge("Peak", fmtPct(s.peak), accent: SeverityColors.watch)
+                }
+                // The other engines live here as power readouts — activity is
+                // estimated from each engine's measured draw (idle = 0 W).
+                HStack(spacing: 10) {
+                    gauge("Renderer", fmtPct(e.rendererPercent ?? 0))
+                    gauge("Tiler", fmtPct(e.tilerPercent ?? 0))
+                    gauge("Neural", e.aneWatts.map(fmtWatts) ?? "—",
+                          accent: (e.aneWatts ?? 0) >= 0.4 ? Self.upColor : nil)
+                    gauge("Media", e.mediaWatts.map(fmtWatts) ?? "—",
+                          accent: (e.mediaWatts ?? 0) >= 0.4 ? Self.mediaColor : nil)
+                }
             }
         case .memory:
             let used = Double(system.current.memoryUsedBytes)
@@ -302,6 +343,10 @@ struct MetricsDetailView: View {
     // MARK: - Formatters
 
     private func fmtPct(_ v: Double) -> String { String(format: "%.0f%%", v) }
+
+    private func fmtWatts(_ w: Double) -> String {
+        w < 0.05 ? "0 W" : String(format: "%.1f W", w)
+    }
     private func pctParts(_ v: Double) -> (String, String) { (String(format: "%.0f", v), "%") }
 
     private func memParts(_ bytes: Double) -> (String, String) {

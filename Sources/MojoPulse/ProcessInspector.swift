@@ -512,6 +512,7 @@ enum VerdictEngine {
         memTrendBytesPerMin: Double?,
         netInRate: Double?,
         netOutRate: Double?,
+        systemGPUUtil: Double?,
         exited: Bool
     ) -> InspectorVerdict {
         let targetName = family.proc(targetPID)?.name ?? "This process"
@@ -548,7 +549,14 @@ enum VerdictEngine {
         } else {
             netPart = "Network measuring…"
         }
-        let line2 = memPart + " · " + netPart
+        var line2 = memPart + " · " + netPart
+        // Graphics correlation: this family has a GPU helper working AND the
+        // whole Mac's GPU is hot → say so. Honest phrasing ("whole-Mac",
+        // "likely") — macOS exposes no per-process GPU without root.
+        if let util = systemGPUUtil, util >= 60,
+           family.procs.contains(where: { $0.role == .gpu && $0.cpu >= 5 }) {
+            line2 += " · whole-Mac GPU at \(Int(util.rounded()))% — likely graphics-bound"
+        }
 
         // Busy: over ~1.2 cores' worth, or over 30% of the whole machine.
         let busyThreshold = min(120.0, Double(cores) * 100.0 * 0.30)
@@ -696,6 +704,7 @@ final class ProcessInspectorModel: ObservableObject {
     @Published var selectedTab: Tab = .overview
 
     private var hotSince: [Int: Date] = [:]
+    private var systemGPUUtil: Double?
     private var roleByPID: [Int: HelperRole] = [:]
     private var roleProbed = Set<Int>()
     private var prevNet: NetSample?
@@ -852,6 +861,15 @@ final class ProcessInspectorModel: ObservableObject {
         }
 
         if tick % 5 == 2 { await refreshTabsIfWatching() }
+
+        // Whole-Mac GPU utilization for the graphics-bound verdict line —
+        // one registry read, only bothered with when the family has a GPU
+        // helper to correlate against.
+        if tick % 2 == 1, snap.procs.contains(where: { $0.role == .gpu }) {
+            systemGPUUtil = await Task.detached(priority: .utility) {
+                GPUStatistics.utilization()?.device
+            }.value
+        }
 
         tick += 1
     }
@@ -1186,6 +1204,7 @@ final class ProcessInspectorModel: ObservableObject {
             memTrendBytesPerMin: trend,
             netInRate: netInRate,
             netOutRate: netOutRate,
+            systemGPUUtil: systemGPUUtil,
             exited: exited)
     }
 }

@@ -23,6 +23,7 @@ struct ThermalDetailView: View {
             heroRow
             gaugesRow
             fansSection
+            powerSection
             trendChart
             allSensorsButton
             Spacer(minLength: 0)
@@ -49,12 +50,106 @@ struct ThermalDetailView: View {
                 Text(stateExplanation(state))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // Attribution, not just a state: under pressure, name the
+                // engine actually producing the heat.
+                if state.isConcerning, let top = model.engines.topEngine {
+                    Text("Main heat source right now: \(top.name) (~\(Self.watts(top.watts)))")
+                        .font(.caption.weight(.medium))
+                }
             }
             Spacer(minLength: 0)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(stateColor(state).opacity(0.10)))
+    }
+
+    // MARK: - Where the heat comes from (per-engine power)
+
+    private static let engineCPUColor = SeverityColors.info
+    private static let engineGPUColor = Color(red: 0.0, green: 0.63, blue: 0.68)
+    private static let engineNeuralColor = Color(red: 0.61, green: 0.48, blue: 0.91)
+    private static let engineMediaColor = Color(red: 0.85, green: 0.33, blue: 0.56)
+    private static let engineOtherColor = Color(red: 0.55, green: 0.60, blue: 0.65)
+
+    private struct EngineShare: Identifiable {
+        let name: String
+        let color: Color
+        let watts: Double
+        var id: String { name }
+    }
+
+    /// Fixed engine order (color follows the entity, never its rank) — the
+    /// bar's segments grow and shrink in place instead of reshuffling.
+    private var engineShares: [EngineShare] {
+        let e = model.engines
+        let rest = (e.dramWatts ?? 0) + (e.displayWatts ?? 0) + (e.otherWatts ?? 0)
+        return [
+            EngineShare(name: "CPU", color: Self.engineCPUColor, watts: e.cpuWatts ?? 0),
+            EngineShare(name: "GPU", color: Self.engineGPUColor, watts: e.gpuWatts ?? 0),
+            EngineShare(name: "Neural Engine", color: Self.engineNeuralColor, watts: e.aneWatts ?? 0),
+            EngineShare(name: "Media Engine", color: Self.engineMediaColor, watts: e.mediaWatts ?? 0),
+            EngineShare(name: "Memory & everything else", color: Self.engineOtherColor, watts: rest),
+        ]
+    }
+
+    /// The heat-attribution section: which engines the watts (and therefore
+    /// the heat) are coming from, whole-Mac. Collapses to one quiet line when
+    /// there's nothing to attribute; absent entirely on Macs without the
+    /// energy counters (Intel).
+    @ViewBuilder
+    private var powerSection: some View {
+        if let total = model.engines.totalWatts {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    sectionHeader("Where the heat comes from")
+                    Spacer(minLength: 8)
+                    Text("drawing ~\(Self.watts(total)) total")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                if total < 10, !model.thermalState.isConcerning {
+                    Text("Cool and quiet — the whole SoC is drawing ~\(Self.watts(total)).")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    let shares = engineShares
+                    GeometryReader { geo in
+                        HStack(spacing: 2) {
+                            ForEach(shares) { s in
+                                if s.watts > 0.05 {
+                                    Rectangle()
+                                        .fill(s.color)
+                                        .frame(width: max(3, geo.size.width * s.watts / max(total, 0.1)))
+                                }
+                            }
+                        }
+                        .clipShape(Capsule())
+                    }
+                    .frame(height: 12)
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
+                              alignment: .leading, spacing: 4) {
+                        ForEach(engineShares) { s in
+                            HStack(spacing: 6) {
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(s.color).frame(width: 8, height: 8)
+                                Text(s.name).font(.caption)
+                                Spacer(minLength: 4)
+                                Text(Self.watts(s.watts))
+                                    .font(.caption.monospacedDigit().weight(.medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Text("Whole-Mac readings from the engines' own energy counters — the heat map behind the temperatures above.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private static func watts(_ w: Double) -> String {
+        w >= 10 ? String(format: "%.0f W", w) : String(format: "%.1f W", w)
     }
 
     // MARK: - Hero
@@ -335,6 +430,8 @@ final class ThermalDetailModel: ObservableObject {
     @Published private(set) var readout: ThermalReadout = .empty
     @Published private(set) var thermalState: ThermalState = .nominal
     @Published private(set) var history: [TempPoint] = []
+    /// Per-engine power (whole Mac) — the heat-attribution data.
+    @Published private(set) var engines: EngineSnapshot = .empty
 
     /// A trend sample. `id` is a monotonic counter (not a timestamp) so it
     /// doubles as the chart's x value and stays unique.
@@ -344,6 +441,9 @@ final class ThermalDetailModel: ObservableObject {
     }
 
     private let sensors = ThermalSensors()
+    /// Own engine sampler (window-scoped, independent of the aggregator's) —
+    /// powers the "where the heat comes from" split while the window is open.
+    private let engineSampler = EngineSampler()
     private var timer: Timer?
     private var tick = 0
     private static let maxPoints = 160   // ~4 min at 1.5 s
@@ -365,6 +465,7 @@ final class ThermalDetailModel: ObservableObject {
     private func refresh() {
         readout = sensors.read()
         thermalState = Self.mapState(ProcessInfo.processInfo.thermalState)
+        engines = engineSampler.sample()
         if let c = readout.headlineTempC {
             history.append(TempPoint(id: tick, celsius: c))
             tick += 1

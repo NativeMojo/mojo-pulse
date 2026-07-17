@@ -108,6 +108,8 @@ final class MetricHistoryStore: ObservableObject {
     @Published private(set) var netIn = MetricSeries()
     @Published private(set) var netOut = MetricSeries()
     @Published private(set) var memoryUsed = MetricSeries()
+    /// GPU utilization (%). Empty on Macs whose driver doesn't publish it.
+    @Published private(set) var gpu = MetricSeries()
 
     /// DB metric keys (stable identifiers for the rollup table).
     enum Key {
@@ -115,6 +117,8 @@ final class MetricHistoryStore: ObservableObject {
         /// Battery charge level (%). Persisted for the Battery Health charge
         /// history; only accumulated on Macs that actually have a battery.
         static let batt = "batt"
+        /// Whole-Mac GPU utilization (%); only accumulated when readable.
+        static let gpu = "gpu"
     }
 
     private let database: Database?
@@ -127,7 +131,7 @@ final class MetricHistoryStore: ObservableObject {
         mutating func add(_ v: Double) { sum += v; n += 1; lo = Swift.min(lo, v); hi = Swift.max(hi, v) }
     }
     private var accCPU = Acc(), accMem = Acc(), accIn = Acc(), accOut = Acc()
-    private var accBatt = Acc()
+    private var accBatt = Acc(), accGPU = Acc()
     private var currentMinute: Int?
     private var lastPruneAt: Date?
 
@@ -140,6 +144,9 @@ final class MetricHistoryStore: ObservableObject {
         netIn.append(MetricSample(timestamp: timestamp, value: Double(snapshot.netBytesInPerSec)))
         netOut.append(MetricSample(timestamp: timestamp, value: Double(snapshot.netBytesOutPerSec)))
         memoryUsed.append(MetricSample(timestamp: timestamp, value: Double(snapshot.memoryUsedBytes)))
+        if let g = snapshot.engines.gpuUtilPercent {
+            gpu.append(MetricSample(timestamp: timestamp, value: g))
+        }
 
         accumulateRollup(snapshot, at: timestamp)
     }
@@ -165,7 +172,7 @@ final class MetricHistoryStore: ObservableObject {
         let minute = Int(timestamp.timeIntervalSince1970 / 60) * 60
         if let cm = currentMinute, cm != minute {
             flush(minute: cm)
-            accCPU = Acc(); accMem = Acc(); accIn = Acc(); accOut = Acc(); accBatt = Acc()
+            accCPU = Acc(); accMem = Acc(); accIn = Acc(); accOut = Acc(); accBatt = Acc(); accGPU = Acc()
             currentMinute = minute
             pruneIfNeeded(now: timestamp)
         } else if currentMinute == nil {
@@ -179,6 +186,10 @@ final class MetricHistoryStore: ObservableObject {
         // 0% series for Macs without a battery.
         if let b = snapshot.battery {
             accBatt.add(Double(b.percent))
+        }
+        // Same rule for GPU: only Macs whose driver publishes utilization.
+        if let g = snapshot.engines.gpuUtilPercent {
+            accGPU.add(g)
         }
     }
 
@@ -194,6 +205,7 @@ final class MetricHistoryStore: ObservableObject {
         write(Key.netIn, accIn)
         write(Key.netOut, accOut)
         write(Key.batt, accBatt)
+        write(Key.gpu, accGPU)
     }
 
     private func pruneIfNeeded(now: Date) {
@@ -239,6 +251,7 @@ final class MetricHistoryStore: ObservableObject {
         case Key.mem: return memoryUsed.samples
         case Key.netIn: return netIn.samples
         case Key.netOut: return netOut.samples
+        case Key.gpu: return gpu.samples
         default: return []
         }
     }

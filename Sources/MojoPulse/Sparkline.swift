@@ -6,6 +6,7 @@ import Charts
 /// identifier in the detail window.
 enum MetricKind: String, CaseIterable, Identifiable {
     case cpu
+    case gpu
     case net
     case memory
 
@@ -14,6 +15,7 @@ enum MetricKind: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .cpu: return "CPU"
+        case .gpu: return "GPU"
         case .net: return "Network"
         case .memory: return "Memory"
         }
