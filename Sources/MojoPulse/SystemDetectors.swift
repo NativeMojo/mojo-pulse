@@ -388,7 +388,10 @@ final class RunawayProcessDetector: MultiDetector {
                 severity: .watch,
                 detectorID: id,
                 templateKey: "cpu.runaway",
-                context: ["name": p.name, "pct": p.cpuDisplay],
+                // Raw number, matching every other "pct" context slot — the
+                // template layer owns the % suffix (cpuDisplay already has
+                // one, which rendered "741%%" on the card).
+                context: ["name": p.name, "pct": String(format: "%.0f", p.cpuPercent)],
                 signature: "cpu:runaway:\(p.name)",
                 startedAt: signals.timestamp
             ))

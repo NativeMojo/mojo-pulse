@@ -37,9 +37,12 @@ struct EngineSnapshot: Sendable, Equatable {
     let otherWatts: Double?    // ISP + fabric + misc named rails
 
     /// Sustained-activity flags (hysteresis lives in the sampler, so these
-    /// can drive UI chips without flicker).
+    /// can drive UI chips without flicker), plus when each activation began
+    /// (for "busy 12 min" phrasing).
     let neuralActive: Bool
     let mediaActive: Bool
+    let neuralActiveSince: Date?
+    let mediaActiveSince: Date?
 
     /// Sum of the rails above — "~SoC power". Nil until energy data flows.
     var totalWatts: Double? {
@@ -64,7 +67,8 @@ struct EngineSnapshot: Sendable, Equatable {
         gpuUtilPercent: nil, rendererPercent: nil, tilerPercent: nil,
         cpuWatts: nil, gpuWatts: nil, aneWatts: nil, mediaWatts: nil,
         dramWatts: nil, displayWatts: nil, otherWatts: nil,
-        neuralActive: false, mediaActive: false)
+        neuralActive: false, mediaActive: false,
+        neuralActiveSince: nil, mediaActiveSince: nil)
 }
 
 // MARK: - GPU utilization (IOAccelerator)
@@ -245,6 +249,8 @@ final class EngineSampler {
     private var mediaCoolTicks = 0
     private var neuralActive = false
     private var mediaActive = false
+    private var neuralSince: Date?
+    private var mediaSince: Date?
 
     /// Activity thresholds: ≥ activeWatts for ≥ 2 samples turns a chip on;
     /// < idleWatts for 2 samples turns it off. Watts, not utilization — the
@@ -266,6 +272,9 @@ final class EngineSampler {
             step(watts: power.ane, hot: &aneHotTicks, cool: &aneCoolTicks, active: &neuralActive)
             step(watts: power.media, hot: &mediaHotTicks, cool: &mediaCoolTicks, active: &mediaActive)
         }
+        // Track activation edges for "busy N min" phrasing.
+        if neuralActive { if neuralSince == nil { neuralSince = Date() } } else { neuralSince = nil }
+        if mediaActive { if mediaSince == nil { mediaSince = Date() } } else { mediaSince = nil }
 
         return EngineSnapshot(
             gpuUtilPercent: util?.device,
@@ -279,7 +288,9 @@ final class EngineSampler {
             displayWatts: power?.display,
             otherWatts: power?.other,
             neuralActive: neuralActive,
-            mediaActive: mediaActive)
+            mediaActive: mediaActive,
+            neuralActiveSince: neuralSince,
+            mediaActiveSince: mediaSince)
     }
 
     private func step(watts: Double, hot: inout Int, cool: inout Int, active: inout Bool) {

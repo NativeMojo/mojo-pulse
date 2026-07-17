@@ -153,10 +153,19 @@ struct MetricsDetailView: View {
             )
         } else {
             let key = selected == .cpu ? MetricHistoryStore.Key.cpu : MetricHistoryStore.Key.mem
+            // Memory carries an amber swap line, but only when the range
+            // actually saw swapping — a flat zero would just be noise.
+            let swapOverlay: [MetricRollupRow]? = {
+                guard selected == .memory else { return nil }
+                let s = points(MetricHistoryStore.Key.swap)
+                return s.contains { $0.max > 0 } ? s : nil
+            }()
             HistoryChart(
                 points: points(key),
                 color: Self.downColor,
-                capFormatter: selected == .cpu ? { capPct($0) } : { capMemory($0) }
+                capFormatter: selected == .cpu ? { capPct($0) } : { capMemory($0) },
+                overlayPoints: swapOverlay,
+                overlayColor: SeverityColors.watch
             )
         }
     }
@@ -428,11 +437,16 @@ struct HistoryChart: View {
     let color: Color
     /// Formats the top scale cap (e.g. "100%", "32 GB").
     let capFormatter: (Double) -> String
+    /// Optional second series drawn as a bare line on the same axis (the
+    /// Memory chart's swap) — passed only when it has nonzero data.
+    var overlayPoints: [MetricRollupRow]? = nil
+    var overlayColor: Color = .clear
 
     private var isEmpty: Bool { points.isEmpty }
 
     private var yDomainMax: Double {
-        let peak = points.map(\.max).max() ?? 0
+        let peak = max(points.map(\.max).max() ?? 0,
+                       overlayPoints?.map(\.max).max() ?? 0)
         return peak > 0 ? niceCeil(peak) : 1
     }
 
@@ -462,11 +476,24 @@ struct HistoryChart: View {
                         ForEach(points) { p in
                             LineMark(
                                 x: .value("Time", p.ts),
-                                y: .value("value", p.avg)
+                                y: .value("value", p.avg),
+                                series: .value("series", "main")
                             )
                             .foregroundStyle(color)
                             .interpolationMethod(.monotone)
                             .lineStyle(StrokeStyle(lineWidth: 2))
+                        }
+                        if let overlayPoints {
+                            ForEach(overlayPoints) { p in
+                                LineMark(
+                                    x: .value("Time", p.ts),
+                                    y: .value("value", p.avg),
+                                    series: .value("series", "overlay")
+                                )
+                                .foregroundStyle(overlayColor)
+                                .interpolationMethod(.monotone)
+                                .lineStyle(StrokeStyle(lineWidth: 1.6))
+                            }
                         }
                     }
                     .chartYScale(domain: 0...yDomainMax)

@@ -67,7 +67,8 @@ struct MiniSparkline: View {
                 .stroke(color.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
             }
         }
-        .frame(width: 54, height: 20)
+        // Sizes to its container — callers pin a frame (the vitals ghost
+        // stretches across the row; standalone uses set their own).
     }
 
     private func line(_ series: [Double], in size: CGSize, lo: Double, range: Double) -> Path {
@@ -79,6 +80,147 @@ struct MiniSparkline: View {
                 else { p.addLine(to: CGPoint(x: x, y: y)) }
             }
         }
+    }
+}
+
+// MARK: - Vitals row expansion charts
+
+/// One or two 60-second lines on a shared 0-max scale (CPU + GPU). No axes —
+/// the stats line under it carries the numbers.
+struct RowLineChart: View {
+    let primary: [MetricSample]
+    let primaryColor: Color
+    var secondary: [MetricSample]? = nil
+    var secondaryColor: Color = .clear
+
+    var body: some View {
+        let cutoff = Date().addingTimeInterval(-60)
+        let a = primary.filter { $0.timestamp >= cutoff }
+        let b = (secondary ?? []).filter { $0.timestamp >= cutoff }
+        let peak = max(a.map(\.value).max() ?? 1, b.map(\.value).max() ?? 0, 1)
+        Chart {
+            ForEach(a) { s in
+                LineMark(x: .value("t", s.timestamp), y: .value("v", s.value), series: .value("s", "a"))
+                    .foregroundStyle(primaryColor)
+                    .lineStyle(StrokeStyle(lineWidth: 1.6))
+                    .interpolationMethod(.monotone)
+            }
+            ForEach(b) { s in
+                LineMark(x: .value("t", s.timestamp), y: .value("v", s.value), series: .value("s", "b"))
+                    .foregroundStyle(secondaryColor)
+                    .lineStyle(StrokeStyle(lineWidth: 1.6))
+                    .interpolationMethod(.monotone)
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartLegend(.hidden)
+        .chartYScale(domain: 0...(peak * 1.15))
+    }
+}
+
+/// Download above the zero line, upload mirrored below — position separates
+/// the series, so the blue/purple pair never rests on hue alone. Each half
+/// carries its own ↓/↑ marker (user request: make the convention legible in
+/// the chart itself), matching the big Metrics chart's gutter language.
+struct RowMirroredChart: View {
+    let down: [MetricSample]
+    let up: [MetricSample]
+    let downColor: Color
+    let upColor: Color
+
+    var body: some View {
+        chart.overlay(alignment: .topLeading) { halfMarker("arrow.down", downColor) }
+             .overlay(alignment: .bottomLeading) { halfMarker("arrow.up", upColor) }
+    }
+
+    private func halfMarker(_ symbol: String, _ color: Color) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(color.opacity(0.75))
+            .padding(.horizontal, 3)
+            .padding(.vertical, 2)
+            .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private var chart: some View {
+        let cutoff = Date().addingTimeInterval(-60)
+        let d = down.filter { $0.timestamp >= cutoff }
+        let u = up.filter { $0.timestamp >= cutoff }
+        let peak = max(d.map(\.value).max() ?? 1, u.map(\.value).max() ?? 1, 1024)
+        Chart {
+            ForEach(d) { s in
+                AreaMark(x: .value("t", s.timestamp), y: .value("v", s.value), series: .value("s", "d"))
+                    .foregroundStyle(LinearGradient(
+                        colors: [downColor.opacity(0.3), downColor.opacity(0.02)],
+                        startPoint: .top, endPoint: .bottom))
+                    .interpolationMethod(.monotone)
+                LineMark(x: .value("t", s.timestamp), y: .value("v", s.value), series: .value("s", "d"))
+                    .foregroundStyle(downColor)
+                    .lineStyle(StrokeStyle(lineWidth: 1.4))
+                    .interpolationMethod(.monotone)
+            }
+            ForEach(u) { s in
+                AreaMark(x: .value("t", s.timestamp), y: .value("v", -s.value), series: .value("s", "u"))
+                    .foregroundStyle(LinearGradient(
+                        colors: [upColor.opacity(0.02), upColor.opacity(0.3)],
+                        startPoint: .top, endPoint: .bottom))
+                    .interpolationMethod(.monotone)
+                LineMark(x: .value("t", s.timestamp), y: .value("v", -s.value), series: .value("s", "u"))
+                    .foregroundStyle(upColor)
+                    .lineStyle(StrokeStyle(lineWidth: 1.4))
+                    .interpolationMethod(.monotone)
+            }
+            RuleMark(y: .value("zero", 0))
+                .foregroundStyle(Color.primary.opacity(0.15))
+                .lineStyle(StrokeStyle(lineWidth: 0.5))
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartLegend(.hidden)
+        .chartYScale(domain: (-peak * 1.15)...(peak * 1.15))
+    }
+}
+
+/// Filled area for slow accumulators (memory used), with an optional second
+/// line (swap) that callers pass only when it has something to say — a flat
+/// zero line would just be noise on healthy days.
+struct RowAreaChart: View {
+    let samples: [MetricSample]
+    let color: Color
+    var secondary: [MetricSample]? = nil
+    var secondaryColor: Color = .clear
+
+    var body: some View {
+        let cutoff = Date().addingTimeInterval(-60)
+        let visible = samples.filter { $0.timestamp >= cutoff }
+        let second = (secondary ?? []).filter { $0.timestamp >= cutoff }
+        let peak = max(visible.map(\.value).max() ?? 1,
+                       second.map(\.value).max() ?? 0, 1)
+        Chart {
+            ForEach(visible) { s in
+                AreaMark(x: .value("t", s.timestamp), y: .value("v", s.value))
+                    .foregroundStyle(LinearGradient(
+                        colors: [color.opacity(0.28), color.opacity(0.03)],
+                        startPoint: .top, endPoint: .bottom))
+                    .interpolationMethod(.monotone)
+                LineMark(x: .value("t", s.timestamp), y: .value("v", s.value), series: .value("s", "main"))
+                    .foregroundStyle(color)
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+                    .interpolationMethod(.monotone)
+            }
+            ForEach(second) { s in
+                LineMark(x: .value("t", s.timestamp), y: .value("v", s.value), series: .value("s", "second"))
+                    .foregroundStyle(secondaryColor)
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+                    .interpolationMethod(.monotone)
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartLegend(.hidden)
+        .chartYScale(domain: 0...(peak * 1.2))
     }
 }
 
@@ -218,7 +360,18 @@ struct PopoverView: View {
 
     /// Which expandable vital (if any) is currently showing its sparkline.
     /// Cleared by tapping the same cell again or expanding a different one.
-    @State private var expanded: MetricKind? = nil
+    /// Sticky per-row graph disclosure (Network / CPU·GPU / Memory) — the
+    /// user's popover, the user's depth. Persisted across opens.
+    @AppStorage("vitals.expand.network") private var expandNetworkRow = false
+    @AppStorage("vitals.expand.cpu") private var expandCPURow = false
+    @AppStorage("vitals.expand.memory") private var expandMemoryRow = false
+    /// Engine-row membership is frozen per popover-open: a row never inserts
+    /// or removes itself while the user is looking (the layout must not
+    /// shift under the cursor) — values inside stay live.
+    @State private var showNeuralRow = false
+    @State private var showMediaRow = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     /// Disclosure state for the lower reference sections — collapsed by default
     /// so the popover stays glanceable; the detail is one tap away.
@@ -321,10 +474,6 @@ struct PopoverView: View {
             networkInfo.refresh()
             history.refresh()
             localBonjour = NetworkVisibilityModel.localBonjourName()
-            autoExpandForIncident()
-        }
-        .onChange(of: engine.activeIncidents.map(\.category)) { _, _ in
-            autoExpandForIncident()
         }
     }
 
@@ -386,7 +535,7 @@ struct PopoverView: View {
             }
 
             vitalsHeader
-            vitalsGrid
+            vitalsRows
 
             domainRows
                 .padding(.top, 2)
@@ -487,21 +636,6 @@ struct PopoverView: View {
         return malware.isEmpty ? posture : "\(posture) · \(malware)"
     }
 
-    /// If the popover opens with an active incident that maps to a chartable
-    /// metric (CPU / Net / RAM), expand that cell automatically so the user
-    /// sees the spike that triggered it without having to click. Doesn't
-    /// override a manual expansion — only sets `expanded` when it's nil.
-    private func autoExpandForIncident() {
-        guard expanded == nil else { return }
-        for incident in engine.activeIncidents {
-            switch incident.category {
-            case .cpu: expanded = .cpu; return
-            case .memory: expanded = .memory; return
-            case .network: expanded = .net; return
-            default: continue
-            }
-        }
-    }
 
     // MARK: - Status line
 
@@ -627,98 +761,550 @@ struct PopoverView: View {
         }
     }
 
-    // MARK: - Vitals grid
+    // MARK: - Vitals rows
 
-    /// 3 rows × 2 cells. Numbers in monospaced digits so the columns line
-    /// up. Inline dot on the right of any cell whose category is currently
-    /// firing — at most one dot per row, maps 1:1 to a card above. CPU, RAM
-    /// and Net cells are clickable: tap to expand a sparkline + "Open
-    /// detail" button, tap again or tap a different cell to swap.
-    ///
-    /// Row order is deliberate: Network + Battery lead because they're the
-    /// most-glanced tiles (and the two dense ones — live RTT hint, per-bud
-    /// battery breakout — so they read as a matched pair).
-    private var vitalsGrid: some View {
-        // Each row hugs its tallest tile (fixedSize) while the tiles stretch
-        // to fill it (maxHeight .infinity in `tile`) — row-mates always match
-        // heights, whatever mix of sparkline/text content they carry.
-        VStack(spacing: 8) {
-            HStack(spacing: 8) { networkTile; batteryTile }
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) { cpuTile; memoryTile }
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) { diskTile; thermalTile }
-                .fixedSize(horizontal: false, vertical: true)
+    /// Six slim rows, one dialect: icon · name · answer-line · value ·
+    /// status dot · chevron. Two kinds of rows, honestly marked:
+    ///   · Network / CPU·GPU / Memory disclose a full-width graph that STAYS
+    ///     open (each independently sticky — the shape of these metrics IS
+    ///     the answer). Chevron rotates ▾ when open; ⌥-click jumps straight
+    ///     to the window instead.
+    ///   · Battery / Disk / Thermal answer fully in one line; their click
+    ///     opens their window directly (chevron stays ›).
+    /// Engine rows (Neural / Media) exist only while that engine is doing
+    /// sustained work; membership is frozen while the popover is open.
+    /// Quiet status dots render small + dim — the all-clear is calm texture;
+    /// only amber/red get full saturation.
+    private var vitalsRows: some View {
+        VStack(spacing: 7) {
+            graphRowSection(isExpanded: $expandNetworkRow,
+                            ghost: spark(metricHistory.netIn),
+                            jump: { onShowNetworkHealth() },
+                            row: { networkRowLabel },
+                            expansion: { networkExpansion })
+                .help(sentinelTooltip)
+
+            graphRowSection(isExpanded: $expandCPURow,
+                            ghost: spark(metricHistory.cpu),
+                            jump: { onShowDetail(.cpu) },
+                            row: { cpuRowLabel },
+                            expansion: { cpuExpansion })
+
+            if showNeuralRow { engineRow(neural: true) }
+            if showMediaRow { engineRow(neural: false) }
+
+            graphRowSection(isExpanded: $expandMemoryRow,
+                            ghost: nil,
+                            jump: { onShowProcesses() },
+                            row: { memoryRowLabel },
+                            expansion: { memoryExpansion })
+
+            windowRow(action: { onShowBattery() }, help: batteryTooltip) { batteryRowLabel }
+            windowRow(action: { onShowDisk() }, help: nil) { diskRowLabel }
+            windowRow(action: { onShowThermal() }, help: thermalTooltip) { thermalRowLabel }
+        }
+        .onAppear {
+            showNeuralRow = system.current.engines.neuralActive
+            showMediaRow = system.current.engines.mediaActive
+        }
+    }
+
+    // MARK: Row shells
+
+    /// Disclosure section: row + sticky expansion in one shell. ⌥-click is
+    /// the power path straight to the metric's window. The ghost trend line
+    /// rides BEHIND the collapsed row — the user picked this look explicitly
+    /// (build-233 vs 234 comparison): it reads fine to them and costs no row
+    /// width. Do not swap it for an inline slot again without asking.
+    private func graphRowSection<R: View, E: View>(
+        isExpanded: Binding<Bool>,
+        ghost: [Double]?,
+        jump: @escaping () -> Void,
+        @ViewBuilder row: () -> R,
+        @ViewBuilder expansion: () -> E
+    ) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                if NSEvent.modifierFlags.contains(.option) {
+                    jump()
+                } else if reduceMotion {
+                    isExpanded.wrappedValue.toggle()
+                } else {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                        isExpanded.wrappedValue.toggle()
+                    }
+                }
+            } label: {
+                row().contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if isExpanded.wrappedValue {
+                Divider().opacity(0.4).padding(.horizontal, 10)
+                expansion()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+            }
+        }
+        .background {
+            if let ghost, !isExpanded.wrappedValue, ghost.count >= 2 {
+                MiniSparkline(values: ghost, color: SeverityColors.info)
+                    .padding(.leading, 96)
+                    .padding(.trailing, 92)
+                    .padding(.vertical, 8)
+                    .opacity(colorScheme == .dark ? 0.25 : 0.18)
+                    .allowsHitTesting(false)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Color.primary.opacity(0.05), lineWidth: 1))
+    }
+
+    /// One-line row whose click opens a window (Battery / Disk / Thermal).
+    private func windowRow<R: View>(
+        action: @escaping () -> Void,
+        help: String?,
+        @ViewBuilder row: () -> R
+    ) -> some View {
+        Button(action: action) {
+            row().contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Color.primary.opacity(0.05), lineWidth: 1))
+        .help(help ?? "")
+    }
+
+    /// The one row template: icon · fixed-width name · flexing answer-line ·
+    /// value · dot · chevron. Quiet dots are small and dim; alerts are full.
+    private func vitalRowLabel(
+        icon: String, label: String, sub: String, value: Text,
+        dot: Color?, dotQuiet: Bool, disclosed: Bool?
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .frame(width: 74, alignment: .leading)
+            Text(sub)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            value
+                .lineLimit(1)
+                .fixedSize()
+            if let dot {
+                Circle()
+                    .fill(dot)
+                    .frame(width: dotQuiet ? 5 : 7, height: dotQuiet ? 5 : 7)
+                    .opacity(dotQuiet ? 0.5 : 1)
+            }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(disclosed == true ? 90 : 0))
+                .frame(width: 9)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 34)
+    }
+
+    // MARK: Row contents
+
+    private var networkRowLabel: some View {
+        let down = rateParts(system.current.netBytesInPerSec)
+        let up = rateParts(system.current.netBytesOutPerSec)
+        // One shared trailing unit when both directions agree ("↓12 ↑47
+        // KB/s") — paying for the unit twice was squeezing the answer-line
+        // into "9 m…" territory.
+        let value: Text
+        if down.1 == up.1 {
+            value = rowRate("arrow.down", SeverityColors.info, down.0)
+                + Text("  ")
+                + rowRate("arrow.up", netUpColor, up.0)
+                + Text(" \(down.1)").font(.system(size: 9)).foregroundColor(.secondary)
+        } else {
+            value = rowRate("arrow.down", SeverityColors.info, down.0)
+                + Text(" \(down.1)").font(.system(size: 9)).foregroundColor(.secondary)
+                + Text("  ")
+                + rowRate("arrow.up", netUpColor, up.0)
+                + Text(" \(up.1)").font(.system(size: 9)).foregroundColor(.secondary)
+        }
+        let firing = firingColor(for: .network)
+        return vitalRowLabel(
+            icon: "network", label: "Network", sub: networkRowSub,
+            value: value,
+            dot: firing ?? sentinelDotColor,
+            dotQuiet: firing == nil && !sentinelIsLoud,
+            disclosed: expandNetworkRow)
+    }
+
+    private func rowRate(_ arrow: String, _ color: Color, _ number: String) -> Text {
+        Text(Image(systemName: arrow)).font(.system(size: 9, weight: .bold)).foregroundColor(color)
+        + Text(" \(number)").font(.system(size: 13.5, weight: .semibold).monospacedDigit()).foregroundColor(.primary)
+    }
+
+    /// KISS (user, build-234 review): just the round-trip time. The dot and
+    /// tooltip carry the sentinel's judgment — the only words that earn a
+    /// place here are the two alarm states.
+    private var networkRowSub: String {
+        switch sentinel.quality.state {
+        case .degraded: return "degraded"
+        case .offline: return "offline"
+        default: return sentinelRTTDetail ?? ""
+        }
+    }
+
+    /// Degraded/offline deserve a loud dot; everything else stays dim.
+    private var sentinelIsLoud: Bool {
+        switch sentinel.quality.state {
+        case .degraded, .offline: return true
+        default: return false
+        }
+    }
+
+    private var cpuRowLabel: some View {
+        let cpu = Int(system.current.cpuPercent.rounded())
+        let gpuPct = system.current.engines.gpuUtilPercent.map { Int($0.rounded()) }
+        var value = Text("\(cpu)%")
+            .font(.system(size: 13.5, weight: .semibold).monospacedDigit())
+            .foregroundColor(.primary)
+        if let gpuPct {
+            value = value
+                + Text(" · ").font(.system(size: 11)).foregroundColor(.secondary)
+                + Text("\(gpuPct)%")
+                    .font(.system(size: 12.5, weight: .semibold).monospacedDigit())
+                    .foregroundColor(gpuColor)
+        }
+        let firing = firingColor(for: .cpu)
+        return vitalRowLabel(
+            icon: "cpu", label: gpuPct != nil ? "CPU · GPU" : "CPU",
+            sub: cpuRowSub, value: value,
+            dot: firing ?? SeverityColors.good,
+            dotQuiet: firing == nil,
+            disclosed: expandCPURow)
+    }
+
+    /// The answer-line does attribution, not just adjectives: when the CPU
+    /// is genuinely busy, name who (the folded app family the user thinks
+    /// in), because "what is eating my machine" is the whole question.
+    private var cpuRowSub: String {
+        let cpu = system.current.cpuPercent
+        let gpu = system.current.engines.gpuUtilPercent ?? 0
+        if cpu >= 150 {
+            if let top = processes.current.topGroupsByCPU.first, top.cpuPercent >= cpu * 0.4 {
+                return "\(top.name) is most of it"
+            }
+            return "working hard"
+        }
+        if gpu >= 60 { return "GPU busy" }
+        return system.current.engines.gpuUtilPercent != nil ? "both quiet" : "quiet"
+    }
+
+    private var memoryRowLabel: some View {
+        let totalBytes = Double(system.current.memoryTotalBytes)
+        let pct = totalBytes > 0
+            ? Int((Double(system.current.memoryUsedBytes) / totalBytes * 100).rounded())
+            : 0
+        let value = Text("\(pct)")
+            .font(.system(size: 13.5, weight: .semibold).monospacedDigit())
+            .foregroundColor(.primary)
+            + Text("%").font(.system(size: 9)).foregroundColor(.secondary)
+        let firing = firingColor(for: .memory)
+        let pressure = system.current.memoryPressure
+        return vitalRowLabel(
+            icon: "memorychip", label: "Memory", sub: memoryRowSub,
+            value: value,
+            dot: firing ?? memoryPressureColor,
+            dotQuiet: firing == nil && pressure == .normal,
+            disclosed: expandMemoryRow)
+    }
+
+    private var memoryRowSub: String {
+        let swap = system.current.swapUsedBytes
+        let swapPart = swap > 0 ? "swap \(memSwapText(swap))" : "no swap"
+        switch system.current.memoryPressure {
+        case .normal: return "normal · \(swapPart)"
+        case .warn: return "pressure warn · \(swapPart)"
+        case .critical: return "pressure critical · \(swapPart)"
+        }
+    }
+
+    /// The battery row grows a second line when earbuds are connected — the
+    /// original glyph-per-part breakout (L / R / case icons, charge-state
+    /// tinting) the user asked back. Devices detected → the row gets taller;
+    /// no devices → the classic one-liner.
+    private var batteryRowLabel: some View {
+        let mac = system.current.battery
+        let value = Text(mac.map { "\($0.percent)" } ?? "—")
+            .font(.system(size: 13.5, weight: .semibold).monospacedDigit())
+            .foregroundColor(.primary)
+            + Text(mac != nil ? "%" : "").font(.system(size: 9)).foregroundColor(.secondary)
+        let firing = firingColor(for: .battery)
+        let low = (mac?.percent ?? 100) <= 15 && !(mac?.isCharging ?? false)
+        return VStack(alignment: .leading, spacing: 0) {
+            vitalRowLabel(
+                icon: batteryIcon, label: "Battery", sub: batteryRowSub,
+                value: value,
+                dot: firing ?? (low ? SeverityColors.watch : SeverityColors.good),
+                dotQuiet: firing == nil && !low,
+                disclosed: nil)
+            if let pods = peripherals.primaryEarbuds {
+                HStack(spacing: 8) {
+                    Text(pods.name)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    budsPairs(pods)
+                        .lineLimit(1)
+                        .fixedSize()   // the name yields first, never the levels
+                }
+                .padding(.leading, 34)   // starts at the "Battery" label column
+                .padding(.trailing, 10)
+                .padding(.top, -5)
+                .padding(.bottom, 7)
+            }
+        }
+    }
+
+    /// "‹L› 100  ‹R› 100  ‹case› 87" — one glyph + percent per component,
+    /// tinted green while charging, amber ≤ 20%, red ≤ 10%.
+    private func budsPairs(_ pods: PeripheralBatteryDevice) -> Text {
+        var result = Text(verbatim: "")
+        for (index, part) in pods.components.enumerated() {
+            if index > 0 { result = result + Text(verbatim: "   ") }
+            let symbol = PeripheralBatteryCollector.partSymbol(for: part.label, deviceSymbol: pods.symbol)
+            result = result
+                + Text("\(Image(systemName: symbol)) ")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundColor(.secondary)
+                + Text("\(part.percent)%")
+                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                    .foregroundColor(partTint(part))
+        }
+        return result
+    }
+
+    private func partTint(_ part: PeripheralBatteryComponent) -> Color {
+        if part.isCharging { return SeverityColors.good }
+        if part.percent <= 10 { return SeverityColors.issue }
+        if part.percent <= 20 { return SeverityColors.watch }
+        return .primary
+    }
+
+    /// The Mac's charge story (earbud levels live on their own line now).
+    private var batteryRowSub: String {
+        guard let b = system.current.battery else {
+            return peripherals.neediest.map { "\($0.deviceName) \($0.percent)%" } ?? "no battery"
+        }
+        if b.isCharging {
+            if let m = b.timeToFullMinutes, m > 0 { return "charging · full in \(hoursMinutes(m))" }
+            return "charging"
+        }
+        if b.isPluggedIn { return "on power" }
+        if let m = b.timeToEmptyMinutes, m > 0 {
+            let fast = (system.current.engines.totalWatts ?? 0) >= 25
+            return fast ? "draining fast · ~\(hoursMinutes(m)) left" : "~\(hoursMinutes(m)) left"
+        }
+        return "on battery"
+    }
+
+    private func hoursMinutes(_ minutes: Int) -> String {
+        minutes >= 60 ? String(format: "%d:%02d", minutes / 60, minutes % 60) : "\(minutes)m"
+    }
+
+    private var diskRowLabel: some View {
+        let parts = sizeParts(system.current.diskFreeBytes)
+        let value = Text(parts.0)
+            .font(.system(size: 13.5, weight: .semibold).monospacedDigit())
+            .foregroundColor(.primary)
+            + Text(" \(parts.1) free").font(.system(size: 9)).foregroundColor(.secondary)
+        let firing = firingColor(for: .disk)
+        let tight = (diskFillRatio ?? 0) >= 0.9
+        let total = sizeParts(system.current.diskTotalBytes)
+        return vitalRowLabel(
+            icon: "internaldrive", label: "Disk",
+            sub: "of \(total.0) \(total.1)" + (tight ? " · getting full" : ""),
+            value: value,
+            dot: firing ?? (tight ? SeverityColors.watch : SeverityColors.good),
+            dotQuiet: firing == nil && !tight,
+            disclosed: nil)
+    }
+
+    private var thermalRowLabel: some View {
+        let c = system.current.thermal.cpuTempC
+        let value: Text
+        if let c {
+            value = Text("\(Int(c.rounded()))")
+                .font(.system(size: 13.5, weight: .semibold).monospacedDigit())
+                .foregroundColor(.primary)
+                + Text("°C").font(.system(size: 9)).foregroundColor(.secondary)
+        } else {
+            value = Text(thermalValue)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.primary)
+        }
+        let firing = firingColor(for: .thermal)
+        let glance = thermalGlanceColor
+        return vitalRowLabel(
+            icon: thermalIcon, label: "Thermal", sub: thermalRowSub,
+            value: value,
+            dot: firing ?? glance,
+            dotQuiet: firing == nil && glance == SeverityColors.good,
+            disclosed: nil)
+    }
+
+    private var thermalRowSub: String {
+        guard let c = system.current.thermal.cpuTempC else { return thermalValue }
+        let word = c >= 80 ? "hot" : (c >= 60 ? "warm" : "cool")
+        // Warm or worse → attribution beats fan trivia.
+        if c >= 60, let top = system.current.engines.topEngine {
+            let short = top.name
+                .replacingOccurrences(of: "Neural Engine", with: "Neural")
+                .replacingOccurrences(of: "Media Engine", with: "Media")
+            return "\(word) · \(short) is the heat"
+        }
+        switch system.current.thermal.fanRPM {
+        case .some(0): return "\(word) · fans silent"
+        case .some(let rpm): return "\(word) · fans \(rpm) rpm"
+        case .none: return word
+        }
+    }
+
+    /// A visitor, not a resident: exists only while the engine works.
+    private func engineRow(neural: Bool) -> some View {
+        let e = system.current.engines
+        let color = neural ? neuralChipColor : mediaChipColor
+        let watts = (neural ? e.aneWatts : e.mediaWatts) ?? 0
+        let since = neural ? e.neuralActiveSince : e.mediaActiveSince
+        let minutes = since.map { max(1, Int(Date().timeIntervalSince($0) / 60)) }
+        let sub = (neural ? "AI work" : "video work") + (minutes.map { " · busy \($0)m" } ?? "")
+        let value = Text(String(format: "%.1f", watts))
+            .font(.system(size: 13.5, weight: .semibold).monospacedDigit())
+            .foregroundColor(color)
+            + Text(" W").font(.system(size: 9)).foregroundColor(.secondary)
+        return Button {
+            onShowDetail(.gpu)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: neural ? "brain" : "film")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(color)
+                    .frame(width: 16)
+                Text(neural ? "Neural Engine" : "Media Engine")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(sub)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                value.fixedSize()
+                Circle().fill(color).frame(width: 7, height: 7)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 9)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(color.opacity(0.07)))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(color.opacity(0.2), lineWidth: 1))
+        .help(neural
+              ? "The Neural Engine is doing sustained AI work — Photos indexing, Apple Intelligence, dictation and similar. Power is whole-Mac."
+              : "The Media Engine is encoding or decoding video — a call, export, or recording. Power is whole-Mac.")
+    }
+
+    // MARK: Row expansions
+
+    private var networkExpansion: some View {
+        VStack(spacing: 5) {
+            RowMirroredChart(down: metricHistory.netIn.samples,
+                             up: metricHistory.netOut.samples,
+                             downColor: SeverityColors.info, upColor: netUpColor)
+                .frame(height: 44)
+            expansionStats([
+                (SeverityColors.info, "↓ \(formatBytesPerSec(system.current.netBytesInPerSec))"),
+                (netUpColor, "↑ \(formatBytesPerSec(system.current.netBytesOutPerSec))"),
+            ], link: "Network Health", action: { onShowNetworkHealth() })
+        }
+    }
+
+    private var cpuExpansion: some View {
+        let peak = Int((spark(metricHistory.cpu).max() ?? 0).rounded())
+        let gpu = system.current.engines.gpuUtilPercent
+        var items: [(Color, String)] = [
+            (SeverityColors.info, "CPU \(Int(system.current.cpuPercent.rounded()))% · peak \(peak)%"),
+        ]
+        if let gpu { items.append((gpuColor, "GPU \(Int(gpu.rounded()))%")) }
+        return VStack(spacing: 5) {
+            RowLineChart(primary: metricHistory.cpu.samples, primaryColor: SeverityColors.info,
+                         secondary: gpu != nil ? metricHistory.gpu.samples : nil,
+                         secondaryColor: gpuColor)
+                .frame(height: 40)
+            expansionStats(items)
+        }
+    }
+
+    private var memoryExpansion: some View {
+        let used = Double(system.current.memoryUsedBytes) / 1_073_741_824
+        let total = Double(system.current.memoryTotalBytes) / 1_073_741_824
+        let swap = system.current.swapUsedBytes
+        // The amber swap line joins the chart only while there IS swap in the
+        // window — its appearance is the "memory genuinely strained" signal
+        // (the old tile's appear-when-swapping bar, reborn).
+        let swapSamples = metricHistory.swapUsed.samples
+        let swapVisible = swapSamples.suffix(40).contains { $0.value > 0 }
+        return VStack(spacing: 5) {
+            RowAreaChart(samples: metricHistory.memoryUsed.samples, color: SeverityColors.info,
+                         secondary: swapVisible ? swapSamples : nil,
+                         secondaryColor: SeverityColors.watch)
+                .frame(height: 36)
+            expansionStats([
+                (SeverityColors.info, String(format: "used %.1f of %.0f GB", used, total)),
+                (SeverityColors.watch, swap > 0 ? "swap \(memSwapText(swap))" : "swap 0"),
+            ])
+        }
+    }
+
+    /// Stats line under an expansion chart. The trailing link exists only
+    /// where the destination isn't already one of the vitals-header links
+    /// (Network Health); CPU/Memory would just duplicate the header.
+    private func expansionStats(_ items: [(Color, String)], link: String? = nil, action: (() -> Void)? = nil) -> some View {
+        HStack(spacing: 12) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 1.5).fill(item.0).frame(width: 7, height: 7)
+                    Text(item.1)
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+            if let link, let action {
+                Button(action: action) {
+                    Text("\(link) ›")
+                        .font(.system(size: 10.5, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+            }
         }
     }
 
     private var gpuColor: Color { Color(red: 0.0, green: 0.63, blue: 0.68) }
     private var neuralChipColor: Color { Color(red: 0.61, green: 0.48, blue: 0.91) }
     private var mediaChipColor: Color { Color(red: 0.85, green: 0.33, blue: 0.56) }
-
-    /// The engine-activity chip: names the Neural/Media engine in the tile's
-    /// label row ONLY during sustained work (hysteresis lives in the sampler).
-    /// Both engines idle at 0 W most of the day, so a permanent readout would
-    /// be a dead gauge — presence, not magnitude, is the signal.
-    private var engineChip: (text: String, color: Color)? {
-        let e = system.current.engines
-        if e.neuralActive { return ("neural", neuralChipColor) }
-        if e.mediaActive { return ("media", mediaChipColor) }
-        return nil
-    }
-
-    /// CPU · GPU: the two compute engines share one story on one 0–100 scale,
-    /// the way ↓/↑ share the Network tile. GPU is whole-Mac (per-process
-    /// needs root); Macs without the driver counter keep the plain CPU tile.
-    private var cpuTile: some View {
-        let gpuPct = system.current.engines.gpuUtilPercent
-        var value = bigValue("\(Int(system.current.cpuPercent.rounded()))%")
-        if let gpuPct {
-            value = value
-                + Text("   GPU ").font(.system(size: 10, weight: .semibold)).foregroundColor(.secondary)
-                + Text("\(Int(gpuPct.rounded()))%").font(.system(size: 14, weight: .semibold)).foregroundColor(gpuColor)
-        }
-        let chip = engineChip
-        return tile(icon: "cpu", label: gpuPct != nil ? "CPU · GPU" : "CPU",
-             value: value,
-             firing: firingColor(for: .cpu),
-             labelDetail: chip?.text,
-             labelDetailIcon: chip != nil ? "circle.fill" : nil,
-             labelDetailColor: chip?.color,
-             tap: { onShowProcesses() }) {
-            MiniSparkline(values: spark(metricHistory.cpu), color: SeverityColors.info,
-                          secondary: gpuPct != nil ? spark(metricHistory.gpu) : nil,
-                          secondaryColor: gpuColor)
-        }
-    }
-
-    private var memoryTile: some View {
-        let usedBytes = Double(system.current.memoryUsedBytes)
-        let totalBytes = Double(system.current.memoryTotalBytes)
-        let usedRatio = totalBytes > 0 ? usedBytes / totalBytes : 0
-        let pct = Int((usedRatio * 100).rounded())
-        let swapBytes = system.current.swapUsedBytes
-        // Clean glance: "% used" colored by pressure (raw GB lives in the detail,
-        // not the tile). macOS keeps RAM near-full by design, so the *color* — not
-        // the fill — is the health signal: green at 72% means "full is fine."
-        // The swap bar appears only when actually swapping; on a RAM-rich Mac swap
-        // is usually zero, so a permanent empty bar would be noise — its appearance
-        // IS the "memory genuinely strained" signal. Tap → Top Processes ("what's
-        // using it"); trends + GB/free/swap depth → the Live charts link.
-        return tile(icon: "memorychip", label: "Memory",
-             value: bigValue("\(pct)%"),
-             firing: firingColor(for: .memory),
-             tap: { onShowProcesses() }) {
-            VStack(alignment: .trailing, spacing: 5) {
-                usageBar(usedRatio, memoryPressureColor)
-                    .help("Memory \(pct)% used · pressure \(system.current.memoryPressure.rawValue.capitalized)")
-                if swapBytes > 0, totalBytes > 0 {
-                    usageBar(min(Double(swapBytes) / totalBytes, 1), SeverityColors.watch)
-                        .help("Swap in use: \(memSwapText(swapBytes))")
-                }
-            }
-        }
-    }
 
     private func memSwapText(_ bytes: UInt64) -> String {
         let p = sizeParts(bytes)
@@ -736,31 +1322,6 @@ struct PopoverView: View {
     }
 
     private var netUpColor: Color { Color(red: 0.61, green: 0.48, blue: 0.91) }
-
-    private func netRun(_ arrow: String, _ color: Color, _ parts: (String, String), trailing: String) -> Text {
-        let a: Text = Text(Image(systemName: arrow)).font(.system(size: 11, weight: .bold)).foregroundColor(color)
-        let n: Text = Text(" \(parts.0)").font(.system(size: 16, weight: .semibold)).foregroundColor(.primary)
-        let u: Text = Text(" \(parts.1)\(trailing)").font(.system(size: 10)).foregroundColor(.secondary)
-        return a + n + u
-    }
-
-    private var networkTile: some View {
-        let down = rateParts(system.current.netBytesInPerSec)
-        let up = rateParts(system.current.netBytesOutPerSec)
-        let value = netRun("arrow.down", SeverityColors.info, down, trailing: "   ")
-            + netRun("arrow.up", netUpColor, up, trailing: "")
-        // The label-row dot: an actual firing incident wins; otherwise the
-        // sentinel's sustained judgment (green normal / quiet learning). It
-        // mirrors state that's already hysteresis'd, so it can't flicker.
-        return tile(icon: "network", label: "Network",
-             value: value,
-             firing: firingColor(for: .network) ?? sentinelDotColor,
-             labelDetail: sentinelRTTDetail,
-             tap: { onShowNetworkHealth() }) {
-            EmptyView()
-        }
-        .help(sentinelTooltip)
-    }
 
     private var sentinelRTTDetail: String? {
         switch sentinel.quality.state {
@@ -806,75 +1367,6 @@ struct PopoverView: View {
         }
     }
 
-    private var diskTile: some View {
-        let parts = sizeParts(system.current.diskFreeBytes)
-        return tile(icon: "internaldrive", label: "Disk",
-             value: bigValue(parts.0, unit: " \(parts.1)"),
-             firing: firingColor(for: .disk),
-             tap: { onShowDisk() }) {
-            usageBar(diskFillRatio ?? 0, SeverityColors.good)
-        }
-    }
-
-    /// Earbuds connected → the tile breaks their batteries out per part
-    /// (left / right / case), because a single collapsed number loses the
-    /// detail that matters; the Mac's % drops to the tiny label-row hint —
-    /// the menu bar already shows it. Otherwise the classic Mac tile, with
-    /// the emptiest single-cell accessory (keyboard, mouse) as the hint.
-    /// The firing dot stays keyed to Mac battery incidents in both states.
-    private var batteryTile: some View {
-        let mac = system.current.battery
-        return Group {
-            if let pods = peripherals.primaryEarbuds {
-                tile(icon: batteryIcon, label: "Battery",
-                     value: earbudsBreakoutValue(pods),
-                     firing: firingColor(for: .battery),
-                     labelDetail: mac.map { "\($0.percent)%" },
-                     labelDetailIcon: mac == nil ? nil : "laptopcomputer",
-                     tap: { onShowBattery() }) {
-                    EmptyView()
-                }
-            } else {
-                let needy = peripherals.neediest
-                tile(icon: batteryIcon, label: "Battery",
-                     value: bigValue(mac.map { "\($0.percent)%" } ?? "—"),
-                     firing: firingColor(for: .battery),
-                     labelDetail: needy.map { "\($0.percent)%" },
-                     labelDetailIcon: needy?.symbol,
-                     tap: { onShowBattery() }) {
-                    batteryIndicator
-                }
-            }
-        }
-        .help(batteryTooltip)
-    }
-
-    /// "‹L› 69  ‹R› 74  ‹case› 90" — one glyph + percent pair per component.
-    /// Number tint tells the state: green while charging, amber ≤ 20%, red
-    /// ≤ 10%. The tile's value slot auto-shrinks, so three pairs always fit.
-    private func earbudsBreakoutValue(_ pods: PeripheralBatteryDevice) -> Text {
-        var result = Text(verbatim: "")
-        for (index, part) in pods.components.enumerated() {
-            if index > 0 { result = result + Text(verbatim: "  ") }
-            let symbol = PeripheralBatteryCollector.partSymbol(for: part.label, deviceSymbol: pods.symbol)
-            result = result
-                + Text("\(Image(systemName: symbol)) ")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
-                + Text("\(part.percent)%")
-                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                    .foregroundColor(partTint(part))
-        }
-        return result
-    }
-
-    private func partTint(_ part: PeripheralBatteryComponent) -> Color {
-        if part.isCharging { return SeverityColors.good }
-        if part.percent <= 10 { return SeverityColors.issue }
-        if part.percent <= 20 { return SeverityColors.watch }
-        return .primary
-    }
-
     /// Every battery the tile knows about, one per line.
     private var batteryTooltip: String {
         var lines: [String] = []
@@ -890,36 +1382,6 @@ struct PopoverView: View {
         return lines.isEmpty ? "Battery" : lines.joined(separator: "\n")
     }
 
-    @ViewBuilder
-    private var batteryIndicator: some View {
-        if let b = system.current.battery {
-            if b.isPluggedIn {
-                Image(systemName: "bolt.fill").font(.system(size: 14)).foregroundStyle(SeverityColors.good)
-            } else {
-                usageBar(Double(b.percent) / 100.0, b.percent <= 20 ? SeverityColors.watch : SeverityColors.good)
-            }
-        }
-    }
-
-    private var thermalTile: some View {
-        tile(icon: thermalIcon, label: "Thermal",
-             value: thermalTileText,
-             firing: firingColor(for: .thermal),
-             tap: { onShowThermal() }) {
-            Circle().fill(firingColor(for: .thermal) ?? thermalGlanceColor).frame(width: 10, height: 10)
-        }
-        .help(thermalTooltip)
-    }
-
-    /// The tile's headline: live degrees when we can read a sensor, falling
-    /// back to the OS thermal-state word otherwise (e.g. a VM with no sensors).
-    private var thermalTileText: Text {
-        if let c = system.current.thermal.cpuTempC {
-            return bigValue("\(Int(c.rounded()))°C")
-        }
-        return Text(thermalValue).font(.system(size: 16, weight: .semibold)).foregroundColor(.primary)
-    }
-
     /// Indicator dot color when nothing is firing: tinted by actual temperature
     /// so a hot-but-not-throttling Mac still reads "warm" at a glance — the
     /// exact case `ProcessInfo.thermalState` alone would show as calm.
@@ -930,87 +1392,8 @@ struct PopoverView: View {
         return SeverityColors.good
     }
 
-    private func tile<Indicator: View>(
-        icon: String, label: String, value: Text, firing: Color?,
-        labelDetail: String? = nil,
-        labelDetailIcon: String? = nil,
-        labelDetailColor: Color? = nil,
-        tap: (() -> Void)?, @ViewBuilder indicator: () -> Indicator
-    ) -> some View {
-        let content = VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-                Text(label).font(.caption).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                // Tiny metric prefix to the status dot (e.g. the Network
-                // tile's live RTT, the CPU·GPU tile's engine-activity chip) —
-                // lives up here so it never squeezes the value row's numbers.
-                // A color turns the hint into a chip (engine names); default
-                // stays the quiet tertiary of the RTT readout.
-                if labelDetail != nil || labelDetailIcon != nil {
-                    HStack(spacing: 2.5) {
-                        if let labelDetailIcon {
-                            Image(systemName: labelDetailIcon)
-                                .font(.system(size: 8.5, weight: .medium))
-                                .foregroundStyle(labelDetailColor.map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
-                        }
-                        if let labelDetail {
-                            Text(labelDetail)
-                                .font(.system(size: 9.5, weight: labelDetailColor != nil ? .semibold : .regular).monospacedDigit())
-                                .foregroundStyle(labelDetailColor.map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
-                                .lineLimit(1)
-                        }
-                    }
-                    .fixedSize()
-                }
-                if let firing { Circle().fill(firing).frame(width: 7, height: 7) }
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                value.lineLimit(1).minimumScaleFactor(0.6)
-                Spacer(minLength: 4)
-                indicator()
-            }
-        }
-        .padding(11)
-        // maxHeight .infinity + topLeading: a tile stretches to its row-mate's
-        // height (rows pin theirs with .fixedSize), so a text-only tile never
-        // floats centered beside a taller sparkline tile. Labels align across
-        // the row; slack lands at the bottom.
-        .frame(maxWidth: .infinity, minHeight: 60, maxHeight: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
-        .contentShape(Rectangle())
-
-        return Group {
-            if let tap {
-                Button(action: tap) { content }.buttonStyle(TileButtonStyle())
-            } else {
-                content
-            }
-        }
-    }
-
-    private func bigValue(_ main: String, unit: String? = nil) -> Text {
-        var t = Text(main).font(.system(size: 22, weight: .semibold)).foregroundColor(.primary)
-        if let unit {
-            t = t + Text(unit).font(.system(size: 13, weight: .regular)).foregroundColor(.secondary)
-        }
-        return t
-    }
-
     private func spark(_ series: MetricSeries) -> [Double] {
         series.samples.suffix(40).map(\.value)
-    }
-
-    private func usageBar(_ ratio: Double, _ color: Color) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.15))
-                Capsule().fill(color)
-                    .frame(width: geo.size.width * CGFloat(min(max(ratio, 0), 1)))
-            }
-        }
-        .frame(width: 54, height: 6)
     }
 
     private func rateParts(_ bytesPerSec: UInt64) -> (String, String) {
@@ -1028,129 +1411,14 @@ struct PopoverView: View {
         return (String(format: "%.0f", Double(bytes) / 1_048_576), "MB")
     }
 
-    @ViewBuilder
-    private func expandableVital(
-        kind: MetricKind,
-        icon: String,
-        label: String,
-        value: String,
-        firing: Color?,
-        tooltip: String,
-        fillRatio: Double?
-    ) -> some View {
-        Button {
-            expanded = (expanded == kind) ? nil : kind
-        } label: {
-            VitalCell(
-                icon: icon,
-                label: label,
-                value: value,
-                firing: firing,
-                tooltip: tooltip,
-                isExpanded: expanded == kind,
-                fillRatio: fillRatio,
-                isChartable: true
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-    // Fill ratios for the bounded vitals. Disk shows the *used* portion (so
-    // a near-full disk is a near-full bar — matches CPU/RAM semantics).
-    // Battery shows charge remaining (intuitive: full bar = full battery).
-
-    private var cpuFillRatio: Double {
-        system.current.cpuPercent / 100.0
-    }
-
-    private var memoryFillRatio: Double? {
-        let total = system.current.memoryTotalBytes
-        guard total > 0 else { return nil }
-        return Double(system.current.memoryUsedBytes) / Double(total)
-    }
+    // Disk shows the *used* portion (a near-full disk is a near-full ratio),
+    // feeding the row's "getting full" answer-line.
 
     private var diskFillRatio: Double? {
         let total = system.current.diskTotalBytes
         guard total > 0 else { return nil }
         let used = total &- system.current.diskFreeBytes
         return Double(used) / Double(total)
-    }
-
-    private var batteryFillRatio: Double? {
-        guard let b = system.current.battery else { return nil }
-        return Double(b.percent) / 100.0
-    }
-
-    @ViewBuilder
-    private func expandedPanel(for kind: MetricKind) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sparkline(for: kind)
-            HStack {
-                Spacer()
-                Button {
-                    onShowDetail(kind)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Open detail")
-                        Image(systemName: "arrow.up.right.square")
-                    }
-                    .font(.caption2)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
-            }
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.primary.opacity(0.04))
-        )
-    }
-
-    @ViewBuilder
-    private func sparkline(for kind: MetricKind) -> some View {
-        switch kind {
-        case .cpu:
-            // GPU rides along when readable — same 0–100 scale, direct labels
-            // carry identity (the blue/teal pair never relies on hue alone).
-            InlineSparkline(
-                series: [
-                    .init(id: "CPU", samples: metricHistory.cpu.samples, color: SeverityColors.info),
-                ] + (system.current.engines.gpuUtilPercent != nil
-                     ? [.init(id: "GPU", samples: metricHistory.gpu.samples, color: gpuColor)]
-                     : []),
-                window: 60,
-                valueFormatter: { String(format: "%.0f%%", $0) }
-            )
-        case .gpu:
-            InlineSparkline(
-                series: [
-                    .init(id: "GPU", samples: metricHistory.gpu.samples, color: gpuColor)
-                ],
-                window: 60,
-                valueFormatter: { String(format: "%.0f%%", $0) }
-            )
-        case .net:
-            InlineSparkline(
-                series: [
-                    .init(id: "↓", samples: metricHistory.netIn.samples, color: SeverityColors.info),
-                    .init(id: "↑", samples: metricHistory.netOut.samples, color: SeverityColors.watch)
-                ],
-                window: 60,
-                valueFormatter: { formatBytesPerSec(UInt64($0)) }
-            )
-        case .memory:
-            InlineSparkline(
-                series: [
-                    .init(id: "RAM", samples: metricHistory.memoryUsed.samples, color: SeverityColors.info)
-                ],
-                window: 60,
-                valueFormatter: { v in
-                    let gb = v / 1_073_741_824
-                    return String(format: "%.1f GB", gb)
-                }
-            )
-        }
     }
 
     private func formatBytesPerSec(_ bytesPerSec: UInt64) -> String {
@@ -2443,119 +2711,6 @@ struct SecurityPostureView: View {
 }
 
 // MARK: - VitalCell
-
-/// One cell in the vitals grid. Three visual elements, left to right:
-///
-///   icon — small SF Symbol cue for the subsystem
-///   label — short uppercase column tag (CPU, RAM, …)
-///   value — the actual number, monospaced
-///
-/// When `firing` is non-nil, a tiny colored dot appears on the right edge
-/// of the cell, matching the severity of the active incident in this
-/// category. This is the only place dots appear in the vitals grid, so
-/// the eye lands on them instantly.
-struct VitalCell: View {
-    let icon: String
-    let label: String
-    let value: String
-    let firing: Color?
-    let tooltip: String
-    var isExpanded: Bool = false
-
-    /// For bounded metrics (CPU, RAM, Disk, Batt), the 0...1 ratio that
-    /// drives a horizontal fill behind the text — a glanceable progress bar
-    /// for "how full is this thing?". `nil` for unbounded metrics (Net) or
-    /// categorical ones (Therm), where a bar would be meaningless.
-    var fillRatio: Double? = nil
-
-    /// When true, the cell paints a tiny chart glyph on the right edge as
-    /// an implicit affordance that tapping the cell will reveal a live
-    /// sparkline. Suppressed when the cell is firing (the severity dot
-    /// takes the same slot — incident state always wins over the hint).
-    var isChartable: Bool = false
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: 14)
-            Text(label)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 38, alignment: .leading)
-            Text(value)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-            Spacer(minLength: 4)
-            if let firing {
-                Circle()
-                    .fill(firing)
-                    .frame(width: 6, height: 6)
-            } else if isChartable {
-                Image(systemName: "chart.line.uptrend.xyaxis")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cellBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: 5)
-                .stroke(Color.accentColor.opacity(isExpanded ? 0.5 : 0), lineWidth: 1)
-        )
-        .help(tooltip)
-        .contentShape(Rectangle())
-    }
-
-    /// Two-layer background: a flat base tint everywhere, plus an optional
-    /// left-anchored fill for bounded metrics. Kept muted (~12% opacity) so
-    /// the bar adds a "fullness" cue without making the popover feel like
-    /// Activity Monitor — incidents still own the visual emphasis. When
-    /// the cell is expanded, both layers shift to the accent color so the
-    /// "you're looking at this one" state reads at a glance.
-    @ViewBuilder
-    private var cellBackground: some View {
-        ZStack(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 5)
-                .fill(baseTint.opacity(baseOpacity))
-            if let ratio = fillRatio {
-                GeometryReader { geo in
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(fillTint.opacity(isExpanded ? 0.28 : 0.14))
-                        .frame(width: max(0, geo.size.width * clamp(ratio)))
-                }
-            }
-        }
-    }
-
-    private func clamp(_ v: Double) -> Double { min(1, max(0, v)) }
-
-    /// Selection wins over ambient gray; firing wins over selection.
-    /// Rationale: the user needs the "this row is on fire" signal more
-    /// urgently than the "this is the one I clicked" signal.
-    private var fillTint: Color {
-        if let firing { return firing }
-        if isExpanded { return Color.accentColor }
-        return Color.secondary
-    }
-
-    private var baseTint: Color {
-        if firing != nil { return Color.primary }
-        if isExpanded { return Color.accentColor }
-        return Color.primary
-    }
-
-    private var baseOpacity: Double {
-        if isExpanded { return 0.18 }
-        if firing != nil { return 0.06 }
-        return 0.03
-    }
-}
 
 // MARK: - IncidentCard
 

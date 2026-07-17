@@ -110,6 +110,9 @@ final class MetricHistoryStore: ObservableObject {
     @Published private(set) var memoryUsed = MetricSeries()
     /// GPU utilization (%). Empty on Macs whose driver doesn't publish it.
     @Published private(set) var gpu = MetricSeries()
+    /// Swap in use (bytes). Recorded even at zero — "when did swapping start"
+    /// is the memory-pressure story the charts exist to tell.
+    @Published private(set) var swapUsed = MetricSeries()
 
     /// DB metric keys (stable identifiers for the rollup table).
     enum Key {
@@ -119,6 +122,8 @@ final class MetricHistoryStore: ObservableObject {
         static let batt = "batt"
         /// Whole-Mac GPU utilization (%); only accumulated when readable.
         static let gpu = "gpu"
+        /// Swap in use (bytes).
+        static let swap = "swap"
     }
 
     private let database: Database?
@@ -131,7 +136,7 @@ final class MetricHistoryStore: ObservableObject {
         mutating func add(_ v: Double) { sum += v; n += 1; lo = Swift.min(lo, v); hi = Swift.max(hi, v) }
     }
     private var accCPU = Acc(), accMem = Acc(), accIn = Acc(), accOut = Acc()
-    private var accBatt = Acc(), accGPU = Acc()
+    private var accBatt = Acc(), accGPU = Acc(), accSwap = Acc()
     private var currentMinute: Int?
     private var lastPruneAt: Date?
 
@@ -144,6 +149,7 @@ final class MetricHistoryStore: ObservableObject {
         netIn.append(MetricSample(timestamp: timestamp, value: Double(snapshot.netBytesInPerSec)))
         netOut.append(MetricSample(timestamp: timestamp, value: Double(snapshot.netBytesOutPerSec)))
         memoryUsed.append(MetricSample(timestamp: timestamp, value: Double(snapshot.memoryUsedBytes)))
+        swapUsed.append(MetricSample(timestamp: timestamp, value: Double(snapshot.swapUsedBytes)))
         if let g = snapshot.engines.gpuUtilPercent {
             gpu.append(MetricSample(timestamp: timestamp, value: g))
         }
@@ -172,7 +178,7 @@ final class MetricHistoryStore: ObservableObject {
         let minute = Int(timestamp.timeIntervalSince1970 / 60) * 60
         if let cm = currentMinute, cm != minute {
             flush(minute: cm)
-            accCPU = Acc(); accMem = Acc(); accIn = Acc(); accOut = Acc(); accBatt = Acc(); accGPU = Acc()
+            accCPU = Acc(); accMem = Acc(); accIn = Acc(); accOut = Acc(); accBatt = Acc(); accGPU = Acc(); accSwap = Acc()
             currentMinute = minute
             pruneIfNeeded(now: timestamp)
         } else if currentMinute == nil {
@@ -191,6 +197,7 @@ final class MetricHistoryStore: ObservableObject {
         if let g = snapshot.engines.gpuUtilPercent {
             accGPU.add(g)
         }
+        accSwap.add(Double(snapshot.swapUsedBytes))
     }
 
     private func flush(minute: Int) {
@@ -206,6 +213,7 @@ final class MetricHistoryStore: ObservableObject {
         write(Key.netOut, accOut)
         write(Key.batt, accBatt)
         write(Key.gpu, accGPU)
+        write(Key.swap, accSwap)
     }
 
     private func pruneIfNeeded(now: Date) {
@@ -252,6 +260,7 @@ final class MetricHistoryStore: ObservableObject {
         case Key.netIn: return netIn.samples
         case Key.netOut: return netOut.samples
         case Key.gpu: return gpu.samples
+        case Key.swap: return swapUsed.samples
         default: return []
         }
     }

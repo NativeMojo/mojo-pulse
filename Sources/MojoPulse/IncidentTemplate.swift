@@ -417,7 +417,7 @@ enum IncidentTemplates {
 
         case "cpu.runaway":
             let name = ctx["name"] ?? "A process"
-            let pct = ctx["pct"] ?? "high"
+            let pct = ctx["pct"].map { "\($0)%" } ?? "high"
             return IncidentCopy(
                 title: "Process running away",
                 what: "\(name) has been using \(pct) CPU on its own for over a minute.",
