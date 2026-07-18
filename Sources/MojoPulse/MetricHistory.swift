@@ -114,6 +114,13 @@ final class MetricHistoryStore: ObservableObject {
     /// is the memory-pressure story the charts exist to tell.
     @Published private(set) var swapUsed = MetricSeries()
 
+    /// Rolling last-hour traffic totals (bytes moved), refreshed each minute as
+    /// the per-minute rollups flush. The network row's expansion shows these:
+    /// the live ↓/↑ rate already sits in the row header, so repeating it under
+    /// the graph answered nothing — "how much has actually moved this hour" does.
+    @Published private(set) var hourNetIn: Double = 0
+    @Published private(set) var hourNetOut: Double = 0
+
     /// DB metric keys (stable identifiers for the rollup table).
     enum Key {
         static let cpu = "cpu", mem = "mem", netIn = "netIn", netOut = "netOut"
@@ -142,6 +149,10 @@ final class MetricHistoryStore: ObservableObject {
 
     init(database: Database? = nil) {
         self.database = database
+        // Seed from persisted rollups so the figure is live on first open —
+        // this survives launches, so it correctly counts traffic from before
+        // the app started (within the last hour) rather than resetting to zero.
+        refreshHourTotals()
     }
 
     func record(_ snapshot: SystemSnapshot, at timestamp: Date) {
@@ -180,6 +191,7 @@ final class MetricHistoryStore: ObservableObject {
             flush(minute: cm)
             accCPU = Acc(); accMem = Acc(); accIn = Acc(); accOut = Acc(); accBatt = Acc(); accGPU = Acc(); accSwap = Acc()
             currentMinute = minute
+            refreshHourTotals(now: timestamp)
             pruneIfNeeded(now: timestamp)
         } else if currentMinute == nil {
             currentMinute = minute
@@ -214,6 +226,16 @@ final class MetricHistoryStore: ObservableObject {
         write(Key.batt, accBatt)
         write(Key.gpu, accGPU)
         write(Key.swap, accSwap)
+    }
+
+    /// Recompute the rolling last-hour byte totals from the persisted rollups.
+    /// Cheap — a SUM over ≤60 one-minute rows — and called only on the flush
+    /// (once a minute), so it never runs inside a view body.
+    private func refreshHourTotals(now: Date = Date()) {
+        guard let database else { return }
+        let since = now.addingTimeInterval(-3600)
+        if let d = try? database.metricRollupTotal(metric: Key.netIn, since: since) { hourNetIn = d }
+        if let u = try? database.metricRollupTotal(metric: Key.netOut, since: since) { hourNetOut = u }
     }
 
     private func pruneIfNeeded(now: Date) {

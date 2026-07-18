@@ -234,6 +234,7 @@ final class MenuBarController: NSObject {
                 settings: settings,
                 peripherals: peripherals,
                 navigation: popoverNavigation,
+                database: database,
                 onShowFullHistory: { [weak self] in self?.showHistoryWindow() },
                 onShowDetail: { [weak self] kind in self?.showDetailWindow(initial: kind) },
                 onShowAbout: { [weak self] in self?.showAboutWindow() },

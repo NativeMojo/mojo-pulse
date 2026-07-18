@@ -270,6 +270,9 @@ struct PopoverView: View {
     /// tiny lowest-bud hint. Refreshed by MenuBarController on popover open.
     @ObservedObject var peripherals: PeripheralBatteryCollector
     @ObservedObject var navigation: PopoverNavigation
+    /// Read-only handle passed down to the Network screen for the one persisted
+    /// value it surfaces (the last speed test). Not observed — read on demand.
+    var database: Database?
 
     /// Called when the user taps "Show all" under Recent. The concrete
     /// window-opening logic lives in MenuBarController so PopoverView
@@ -361,9 +364,13 @@ struct PopoverView: View {
     /// Which expandable vital (if any) is currently showing its sparkline.
     /// Cleared by tapping the same cell again or expanding a different one.
     /// Sticky per-row graph disclosure (Network / CPU·GPU / Memory) — the
-    /// user's popover, the user's depth. Persisted across opens.
-    @AppStorage("vitals.expand.network") private var expandNetworkRow = false
-    @AppStorage("vitals.expand.cpu") private var expandCPURow = false
+    /// user's popover, the user's depth. Persisted across opens. Network and
+    /// CPU·GPU start OPEN (user decision, day-after-1.18.0): the graphs are
+    /// the answer for the two "is something happening" metrics, and an open
+    /// row teaches that rows expand. Collapse once and it sticks. Memory
+    /// starts closed — steady metric, expand when curious.
+    @AppStorage("vitals.expand.network") private var expandNetworkRow = true
+    @AppStorage("vitals.expand.cpu") private var expandCPURow = true
     @AppStorage("vitals.expand.memory") private var expandMemoryRow = false
     /// Engine-row membership is frozen per popover-open: a row never inserts
     /// or removes itself while the user is looking (the layout must not
@@ -419,6 +426,10 @@ struct PopoverView: View {
                             networkInfo: networkInfo,
                             wifi: wifi,
                             settings: settings,
+                            networkSafety: networkSafety,
+                            sentinel: sentinel,
+                            arp: arp,
+                            database: database,
                             onShowActivity: onShowNetwork,
                             onShowDevices: onShowDevices,
                             onShowPorts: onShowPorts,
@@ -426,6 +437,7 @@ struct PopoverView: View {
                             onShowDomain: onShowDomain,
                             onShowIP: onShowIP,
                             onShowSafety: onShowSafety,
+                            onShowHealth: onShowNetworkHealth,
                             onShowBluetooth: onShowBluetooth,
                             onShowSpeedTest: onShowSpeedTest
                         )
@@ -641,13 +653,19 @@ struct PopoverView: View {
 
     /// The home status header — the network surface, always: a shield (quiet
     /// when Safe), the network name (escalating to an action phrase on
-    /// trouble), and the egress line. The whole bar taps through to the
-    /// Network Safety detail. Incidents are deliberately absent — their
-    /// cards sit right below with their own tap targets, so repeating them
-    /// here (old "N things to know" + count badge) said everything twice
-    /// and sent the tap somewhere it didn't promise.
+    /// trouble), and the egress line. Calm, the bar opens the Network overview
+    /// (the broad "tell me about my network" answer); alarmed, it goes straight
+    /// to Network Safety — an alarm tap should answer the alarm, not show an
+    /// inventory. Incidents are deliberately absent — their cards sit right
+    /// below with their own tap targets.
     private var statusLine: some View {
-        Button { onShowSafety() } label: {
+        Button {
+            if networkLoud {
+                onShowSafety()
+            } else {
+                withAnimation(.easeInOut(duration: 0.22)) { navigation.route = .network }
+            }
+        } label: {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: headerShieldIcon)
                     .font(.system(size: 15, weight: .medium))
@@ -1232,10 +1250,12 @@ struct PopoverView: View {
                              up: metricHistory.netOut.samples,
                              downColor: SeverityColors.info, upColor: netUpColor)
                 .frame(height: 44)
+            // The live ↓/↑ rate is already in the row header — under the graph,
+            // show the cumulative story instead: how much has moved this hour.
             expansionStats([
-                (SeverityColors.info, "↓ \(formatBytesPerSec(system.current.netBytesInPerSec))"),
-                (netUpColor, "↑ \(formatBytesPerSec(system.current.netBytesOutPerSec))"),
-            ], link: "Network Health", action: { onShowNetworkHealth() })
+                (SeverityColors.info, "↓ \(hourBytes(metricHistory.hourNetIn))"),
+                (netUpColor, "↑ \(hourBytes(metricHistory.hourNetOut))"),
+            ], note: "past hour", link: "Network Health", action: { onShowNetworkHealth() })
         }
     }
 
@@ -1279,8 +1299,8 @@ struct PopoverView: View {
     /// Stats line under an expansion chart. The trailing link exists only
     /// where the destination isn't already one of the vitals-header links
     /// (Network Health); CPU/Memory would just duplicate the header.
-    private func expansionStats(_ items: [(Color, String)], link: String? = nil, action: (() -> Void)? = nil) -> some View {
-        HStack(spacing: 12) {
+    private func expansionStats(_ items: [(Color, String)], note: String? = nil, link: String? = nil, action: (() -> Void)? = nil) -> some View {
+        HStack(spacing: 8) {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 HStack(spacing: 4) {
                     RoundedRectangle(cornerRadius: 1.5).fill(item.0).frame(width: 7, height: 7)
@@ -1288,16 +1308,34 @@ struct PopoverView: View {
                         .font(.system(size: 10).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
+                // The numbers are the answer — never let them truncate; the
+                // caption yields first if the line is tight.
+                .layoutPriority(1)
+            }
+            // A window caption (e.g. "past hour") — sits with the totals so the
+            // colored ↓/↑ figures are unambiguously cumulative, not live rates.
+            if let note {
+                Text(note)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
             Spacer(minLength: 4)
             if let link, let action {
+                // The app's standard "opens a window" glyph (as in Recent's
+                // "Open full history"). The destination name lives in the
+                // tooltip + a11y label so dropping the text costs no clarity.
                 Button(action: action) {
-                    Text("\(link) ›")
-                        .font(.system(size: 10.5, weight: .semibold))
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.accentColor)
+                .help(link)
+                .accessibilityLabel(link)
             }
         }
     }
@@ -1402,6 +1440,20 @@ struct PopoverView: View {
         if b < 1_048_576 { return (String(format: "%.0f", b / 1024), "KB/s") }
         if b < 1_073_741_824 { return (String(format: "%.1f", b / 1_048_576), "MB/s") }
         return (String(format: "%.1f", b / 1_073_741_824), "GB/s")
+    }
+
+    /// Compact cumulative-byte label for the tight vitals expansion line. Whole
+    /// MB/GB drop their decimal (the popover can't afford "287.0 MB"); only the
+    /// small single-digit range keeps one, where the precision still reads.
+    private func hourBytes(_ total: Double) -> String {
+        let kb = 1024.0, mb = kb * kb, gb = mb * kb
+        if total < mb { return "\(Int((total / kb).rounded())) KB" }
+        if total < gb {
+            let v = total / mb
+            return v < 10 ? String(format: "%.1f MB", v) : "\(Int(v.rounded())) MB"
+        }
+        let v = total / gb
+        return v < 10 ? String(format: "%.1f GB", v) : "\(Int(v.rounded())) GB"
     }
 
     private func sizeParts(_ bytes: UInt64) -> (String, String) {
