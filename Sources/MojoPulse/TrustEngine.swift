@@ -113,6 +113,16 @@ struct TrustFinding: Sendable, Equatable, Hashable, Identifiable {
     /// How many running processes this finding covers (the tree root plus its
     /// folded workers). 1 for standalone processes and GUI apps.
     var processCount: Int = 1
+    /// Who ran it — the first meaningful (non-shell) ancestors, nearest first,
+    /// up to the launching GUI app: ["claude", "iTerm2"], or ["launchd"] for a
+    /// reparented orphan. Captured for *suspect* findings only, names only (no
+    /// pids) so snapshot equality stays stable across scans.
+    var launchChain: [String] = []
+    /// The script this invocation runs (first non-flag argument, resolved
+    /// against the process's working directory) — what "Scripts in <folder>"
+    /// ignore rules match and what the ignore menu offers folders from.
+    /// nil for GUI apps, bare binaries, and inline code (`-c`/`-m`/`-e`).
+    var scriptPath: String?
 
     var id: String { ignoreKey }
 
@@ -304,6 +314,31 @@ enum TrustEvaluator {
         return path
     }
 
+    /// The script a CLI invocation runs — the first non-flag argument,
+    /// resolved against the process's working directory when relative — for
+    /// "Scripts in <folder>" rule matching and the ignore menu's folder
+    /// options. Inline-code forms (`-c`, `-m`, `-e`, `--eval`) return nil on
+    /// purpose: a folder rule must never quiet `python -c '…'`. (A
+    /// value-taking flag like `-W ignore` can mis-pick its value as the
+    /// script; it then resolves under the same cwd as the real script, so a
+    /// folder match still points at the same place.) `cwd` is a closure so
+    /// the lsof lookup only runs when the argument is actually relative.
+    static func scriptPath(command: String, cwd: () -> String?) -> String? {
+        let tokens = command.split(separator: " ")
+        guard tokens.count > 1 else { return nil }
+        for t in tokens.dropFirst() {
+            if t == "-c" || t == "-m" || t == "-e" || t == "--eval" { return nil }
+            if t.hasPrefix("-") { continue }
+            var s = String(t)
+            if !s.hasPrefix("/") {
+                guard let base = cwd() else { return nil }
+                s = base + "/" + s
+            }
+            return (s as NSString).standardizingPath
+        }
+        return nil
+    }
+
     private static func impersonatedBrand(name: String, info: TrustInfo) -> String? {
         // Compare what the user SEES: strip zero-width/bidi scalars first so
         // "Zoom​" (hidden U+200B) still matches the "Zoom" table entry.
@@ -329,6 +364,72 @@ enum TrustEvaluator {
         }
         return nil
     }
+}
+
+// MARK: - Scoped ignore rules
+
+/// A user-created "ignore, but keep watching" rule for suspect processes.
+/// A matching finding is demoted to the unrecognized review tier — still
+/// listed in the Security screen and re-evaluated every scan, never alerting.
+/// Strong signals (impersonation, hidden characters) pierce every rule, and
+/// the behavior detectors (listeners, persistence, connections) don't consult
+/// rules at all: a rule silences "this exists", never "this is doing
+/// something".
+struct TrustRule: Codable, Sendable, Equatable, Identifiable {
+    enum Kind: String, Codable, Sendable {
+        /// `subject` (process name) running scripts under `qualifier` (folder).
+        case scriptDir
+        /// Anything whose launch chain contains `qualifier` (a launcher name).
+        /// Matched by NAME on purpose: agent CLIs like claude reinstall under
+        /// churning cache paths, so a path pin would break on every update. A
+        /// name imposter only earns the still-watched tier, and behavior
+        /// detectors are unaffected — an acceptable trade.
+        case launcher
+    }
+    var id = UUID()
+    let kind: Kind
+    /// Process name the rule scopes ("python3.12"); "*" for launcher rules.
+    let subject: String
+    /// scriptDir: absolute folder; launcher: the launcher's name ("claude").
+    let qualifier: String
+    var createdAt = Date()
+
+    /// The Ignored-panel row: "python3.12 — scripts in ~/Projects/mojo".
+    var title: String {
+        switch kind {
+        case .scriptDir:
+            let folder = qualifier.hasPrefix(NSHomeDirectory())
+                ? "~" + qualifier.dropFirst(NSHomeDirectory().count)
+                : qualifier
+            return "\(subject) — scripts in \(folder)"
+        case .launcher:
+            return "Anything run by \(qualifier)"
+        }
+    }
+}
+
+extension Array where Element == TrustRule {
+    /// Whether any rule quiets this suspect finding. Strong signals always
+    /// alert — rules can't silence an impersonation or hidden characters.
+    func demotes(_ f: TrustFinding) -> Bool {
+        guard !isEmpty, !f.isStrong else { return false }
+        return contains { rule in
+            switch rule.kind {
+            case .launcher:
+                return f.launchChain.contains(rule.qualifier)
+            case .scriptDir:
+                guard f.name == rule.subject, let s = f.scriptPath else { return false }
+                let folder = rule.qualifier.hasSuffix("/") ? rule.qualifier : rule.qualifier + "/"
+                return s.hasPrefix(folder)
+            }
+        }
+    }
+}
+
+extension Notification.Name {
+    /// Posted by TrustBaselineStore when the rule set changes, so the
+    /// security collector can rescan immediately instead of waiting a cycle.
+    static let trustRulesChanged = Notification.Name("mojopulse.trust.rulesChanged")
 }
 
 // MARK: - Baseline + trust store
@@ -388,5 +489,36 @@ final class TrustBaselineStore {
 
     func isTrusted(_ key: String) -> Bool {
         trustedKeys().contains(key)
+    }
+
+    // MARK: Scoped ignore rules
+
+    private static let rulesKey = "trust.rules"
+
+    /// The user's scoped ignore rules ("python3.12 scripts in ~/Projects",
+    /// "anything run by claude") — JSON in defaults, a handful of tiny rows.
+    func rules() -> [TrustRule] {
+        guard let data = defaults.data(forKey: Self.rulesKey),
+              let rules = try? JSONDecoder().decode([TrustRule].self, from: data) else { return [] }
+        return rules
+    }
+
+    func addRule(_ rule: TrustRule) {
+        var all = rules()
+        // Same scope twice is a no-op, not a duplicate row.
+        guard !all.contains(where: {
+            $0.kind == rule.kind && $0.subject == rule.subject && $0.qualifier == rule.qualifier
+        }) else { return }
+        all.append(rule)
+        saveRules(all)
+    }
+
+    func removeRule(id: UUID) {
+        saveRules(rules().filter { $0.id != id })
+    }
+
+    private func saveRules(_ rules: [TrustRule]) {
+        defaults.set((try? JSONEncoder().encode(rules)) ?? Data(), forKey: Self.rulesKey)
+        NotificationCenter.default.post(name: .trustRulesChanged, object: nil)
     }
 }

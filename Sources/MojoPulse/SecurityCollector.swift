@@ -157,6 +157,9 @@ struct TrustScanContext: Sendable {
     let firstSeen: [String: Date]
     let trusted: Set<String>
     let seeded: Bool
+    /// The user's scoped ignore rules — matching suspect findings demote to
+    /// the unrecognized review tier instead of alerting.
+    let rules: [TrustRule]
 }
 
 // MARK: - SecurityCollector
@@ -222,6 +225,12 @@ final class SecurityCollector: ObservableObject {
             .sink { [weak self] _ in self?.rescan() }
             .store(in: &cancellables)
 
+        // A new/removed scoped ignore rule re-evaluates right away, so the
+        // demotion (or the un-ignored finding) shows without a 60s wait.
+        NotificationCenter.default.publisher(for: .trustRulesChanged)
+            .sink { [weak self] _ in self?.rescan() }
+            .store(in: &cancellables)
+
         rescan()
         scheduleLoop()
     }
@@ -272,7 +281,8 @@ final class SecurityCollector: ObservableObject {
         let trustContext = TrustScanContext(
             firstSeen: trustBaseline.all(),
             trusted: trustBaseline.trustedKeys(),
-            seeded: trustBaseline.isSeeded
+            seeded: trustBaseline.isSeeded,
+            rules: trustBaseline.rules()
         )
 
         // Decide here (not in the detached task) whether this scan also does
@@ -557,6 +567,18 @@ enum SecurityScanner {
         return out.isEmpty ? nil : out
     }
 
+    /// A process's current working directory (own-user, unprivileged) —
+    /// resolves relative script arguments for "Scripts in <folder>" rule
+    /// matching. lsof is comparatively slow, so this only runs for suspect
+    /// findings whose script argument is actually relative (rare post-carve-out).
+    private static func cwd(pid: Int) -> String? {
+        guard let out = Shell.run("/usr/sbin/lsof", ["-a", "-p", "\(pid)", "-d", "cwd", "-Fn"]) else { return nil }
+        for line in out.split(separator: "\n") where line.hasPrefix("n") && line.count > 1 {
+            return String(line.dropFirst())
+        }
+        return nil
+    }
+
     /// PID → full command line, for a set of PIDs that share one executable.
     /// One `ps` call (comma-separated PID list) regardless of how many, so
     /// resolving a whole worker pool stays cheap.
@@ -603,12 +625,14 @@ enum SecurityScanner {
         }
         var pidsByPath: [String: [Int]] = [:]
         var ppidByPID: [Int: Int] = [:]   // for folding worker trees under their root
+        var pathByPID: [Int: String] = [:]   // full snapshot (SIP paths too) — launcher attribution
         for line in out.split(separator: "\n") {
             let t = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
             guard t.count >= 3, let pid = Int(t[0]), let ppid = Int(t[1]) else { continue }
             let fallback = String(t[2]).trimmingCharacters(in: .whitespaces)
             ppidByPID[pid] = ppid
             let path = ProcessPath.resolve(pid: pid, fallback: fallback)
+            pathByPID[pid] = path
             guard pid != selfPID, path.hasPrefix("/"), !isSIPProtected(path) else { continue }
             pidsByPath[path, default: []].append(pid)
         }
@@ -622,6 +646,36 @@ enum SecurityScanner {
         // aggregate under the app and the display name (what the user sees,
         // and what an impersonator forges) drives the brand check.
         let bundles = runningApps.map { (prefix: $0.path + "/", ref: $0) }
+
+        // Who ran it: walk the ancestor chain (the full snapshot, so
+        // SIP-protected shells resolve too), skip shells and login wrappers,
+        // and keep the first few meaningful ancestors — nearest first, ending
+        // at the launching GUI app when there is one. "claude ‹ iTerm2" tells
+        // the developer it's their agent's work; "launchd" alone means a
+        // reparented orphan, which is exactly when provenance matters most.
+        let shellNames: Set<String> = ["sh", "bash", "zsh", "csh", "tcsh", "dash", "ksh", "fish", "nu", "login", "script"]
+        func launchChain(from pid: Int) -> [String] {
+            var chain: [String] = []
+            var cur = pid, hops = 0
+            while hops < 64, let pp = ppidByPID[cur] {
+                hops += 1
+                cur = pp
+                if pp <= 1 {
+                    if chain.isEmpty { chain.append("launchd") }   // orphan/daemon — say so
+                    break                                          // normal end of every chain otherwise
+                }
+                guard let p = pathByPID[pp] else { continue }
+                if let app = bundles.first(where: { p.hasPrefix($0.prefix) }) {
+                    chain.append(app.ref.name)   // the GUI anchor ends the story
+                    break
+                }
+                let name = (p as NSString).lastPathComponent
+                if shellNames.contains(name) { continue }
+                if chain.last != name { chain.append(name) }
+                if chain.count >= 3 { break }
+            }
+            return chain
+        }
 
         var suspect: [TrustFinding] = []
         var unrecognized: [TrustFinding] = []
@@ -656,8 +710,20 @@ enum SecurityScanner {
                 if candidate.isGUIApp {
                     // A GUI app is one identity; keep a single finding (command
                     // is just for display) and ignore/dedup by its bundle key.
-                    if let repPID { finding.command = commandLine(pid: repPID) }
-                    suspect.append(finding)
+                    if let repPID {
+                        finding.command = commandLine(pid: repPID)
+                        // Launchd starting a GUI app is every normal launch —
+                        // only a *process* parent is a story worth telling.
+                        let chain = launchChain(from: repPID)
+                        if chain != ["launchd"] { finding.launchChain = chain }
+                    }
+                    // A launcher rule ("anything run by claude") quiets a GUI
+                    // suspect too — into the review list, not into nothing.
+                    if context.rules.demotes(finding) {
+                        unrecognized.append(finding)
+                    } else {
+                        suspect.append(finding)
+                    }
                 } else {
                     // A CLI/interpreter binary can run many things at once, so
                     // findings are per *invocation* — but per process TREE, not
@@ -689,17 +755,42 @@ enum SecurityScanner {
                             byCommand[cmd] = (root, size)
                         }
                     }
+                    // cwd is fetched at most once per pid, and only when a
+                    // command's script argument is relative.
+                    var cwdByPID: [Int: String?] = [:]
+                    func cwdOf(_ pid: Int) -> String? {
+                        if let cached = cwdByPID[pid] { return cached }
+                        let c = cwd(pid: pid)
+                        cwdByPID[pid] = c
+                        return c
+                    }
                     if byCommand.isEmpty {
-                        suspect.append(finding)   // no command visible; fall back to the binary
+                        if let repPID { finding.launchChain = launchChain(from: repPID) }
+                        if context.rules.demotes(finding) {
+                            unrecognized.append(finding)
+                        } else {
+                            suspect.append(finding)   // no command visible; fall back to the binary
+                        }
                     } else {
+                        // Enrich each invocation, then let the user's scoped
+                        // ignore rules quiet the matching ones. Rules demote,
+                        // never erase: when every invocation matches, the
+                        // identity still surfaces in the review list.
+                        var kept: [TrustFinding] = []
+                        var demoted = false
                         for (cmd, info) in byCommand {
                             var f = finding
                             f.command = cmd
                             f.ignoreKey = cmd
                             f.pid = info.pid
                             f.processCount = info.count
-                            suspect.append(f)
+                            f.launchChain = launchChain(from: info.pid)
+                            f.scriptPath = TrustEvaluator.scriptPath(command: cmd) { cwdOf(info.pid) }
+                            if context.rules.demotes(f) { demoted = true; continue }
+                            kept.append(f)
                         }
+                        suspect.append(contentsOf: kept)
+                        if kept.isEmpty && demoted { unrecognized.append(finding) }
                     }
                 }
             case .unrecognized: unrecognized.append(finding)

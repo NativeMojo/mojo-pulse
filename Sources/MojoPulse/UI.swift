@@ -3111,12 +3111,13 @@ struct IncidentDetailView: View {
     /// carries them; copyable and selectable so the user can paste them anywhere.
     @ViewBuilder
     private var evidence: some View {
-        if subjectPath != nil || subjectCommand != nil || crashReason != nil || crashFrame != nil {
+        if subjectPath != nil || subjectCommand != nil || subjectRunBy != nil || crashReason != nil || crashFrame != nil {
             VStack(alignment: .leading, spacing: 9) {
                 if let reason = crashReason { factRow("Why it crashed", reason) }
                 if let frame = crashFrame { factRow("Crashed in", frame) }
                 if let path = subjectPath { factRow("Location", path) }
                 if let cmd = subjectCommand { factRow("Command", cmd) }
+                if let runBy = subjectRunBy { factRow("Run by", runBy) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(11)
@@ -3246,18 +3247,43 @@ struct IncidentDetailView: View {
         if let onClose { onClose() } else { NSApp.keyWindow?.performClose(nil) }
     }
 
-    /// Silencing options — snooze or a permanent per-signature rule — with the
-    /// rule's exact scope as the menu's section header, shown at the moment of
-    /// choice. Dismiss lives as the footer's default button, not in here.
+    /// Silencing options. Non-process events keep the two blunt choices with
+    /// the rule's exact scope as the section header. Process events with a
+    /// command get graduated scopes instead: the exact command (a mute, as
+    /// before) or a scoped Trust Engine rule — scripts in a folder, or
+    /// anything run by the same launcher — which quiets matching findings
+    /// into Security's review list where they stay visible and re-checked.
+    /// Dismiss lives as the footer's default button, not in here.
     private var ignoreMenu: some View {
         Menu {
-            Section(ignoreScopeText) {
-                if ignored {
+            if ignored {
+                Section(ignoreScopeText) {
                     Button("Stop Ignoring") {
                         engine?.unmute(signature: record.signature)
                         ignored = false
                     }
-                } else {
+                }
+            } else if isProcessEvent, subjectCommand != nil {
+                Button("Snooze for 1 Hour") { applyFeedback(.muted1h) }
+                Section("Always ignore — still listed & watched in Security") {
+                    Button("This Exact Command") { applyFeedback(.mutedForever) }
+                    if !scriptFolderOptions.isEmpty {
+                        Menu("\(subjectName) Scripts in") {
+                            ForEach(scriptFolderOptions, id: \.self) { folder in
+                                Button(folderLabel(folder)) {
+                                    addIgnoreRule(TrustRule(kind: .scriptDir, subject: subjectName, qualifier: folder))
+                                }
+                            }
+                        }
+                    }
+                    if let launcher = ruleLauncher {
+                        Button("Anything Run by \(launcher)") {
+                            addIgnoreRule(TrustRule(kind: .launcher, subject: "*", qualifier: launcher))
+                        }
+                    }
+                }
+            } else {
+                Section(ignoreScopeText) {
                     Button("Snooze for 1 Hour") { applyFeedback(.muted1h) }
                     Button("Always Ignore") { applyFeedback(.mutedForever) }
                 }
@@ -3270,6 +3296,47 @@ struct IncidentDetailView: View {
         }
         .fixedSize()
         .help(ignored ? "This event is being ignored" : "Snooze or always ignore events like this")
+    }
+
+    /// The first meaningful ancestor from the event's launch chain — the
+    /// subject of an "Anything Run by …" rule.
+    private var ruleLauncher: String? {
+        subjectRunBy?.components(separatedBy: " ‹ ").first
+    }
+
+    /// Ancestor folders offered for a "Scripts in" rule: the script's git
+    /// project root first (the natural scope), then broader ancestors —
+    /// capped at three, never the home folder itself, and nothing outside
+    /// home (a /tmp script shouldn't be ignorable by folder).
+    private var scriptFolderOptions: [String] {
+        guard let script = record.context["script"], script.hasPrefix("/") else { return [] }
+        let home = NSHomeDirectory()
+        var ancestors: [String] = []
+        var cur = (script as NSString).deletingLastPathComponent
+        while cur.hasPrefix(home + "/"), ancestors.count < 10 {
+            ancestors.append(cur)
+            cur = (cur as NSString).deletingLastPathComponent
+        }
+        guard !ancestors.isEmpty else { return [] }
+        if let gitIdx = ancestors.firstIndex(where: { FileManager.default.fileExists(atPath: $0 + "/.git") }) {
+            return Array(ancestors[gitIdx...].prefix(3))
+        }
+        return Array(ancestors.prefix(3))
+    }
+
+    private func folderLabel(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        let short = path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+        return FileManager.default.fileExists(atPath: path + "/.git") ? "\(short)  (this project)" : short
+    }
+
+    /// Create a scoped ignore rule, then clear the card: the rule takes over
+    /// from here (the collector rescans immediately, the finding demotes to
+    /// the review list, and the open incident closes on its own).
+    private func addIgnoreRule(_ rule: TrustRule) {
+        TrustBaselineStore().addRule(rule)
+        applyFeedback(.dismissed)
+        close()
     }
 
     /// What an ignore rule from this event actually matches — a whole worker
@@ -3397,6 +3464,12 @@ struct IncidentDetailView: View {
         guard let c = record.context["cmd"]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !c.isEmpty else { return nil }
         return c
+    }
+    /// The launch chain captured at detection — "claude ‹ iTerm2" — the
+    /// provenance that separates "my agent's test run" from "who started that?".
+    private var subjectRunBy: String? {
+        guard let r = record.context["runBy"], !r.isEmpty else { return nil }
+        return r
     }
 
     /// Context-seeded web query — lands the user on a real answer, not a bare
@@ -3745,14 +3818,16 @@ struct HistoryPanelView: View {
 // MARK: - Muted items manager
 
 /// Lists every active mute/ignore rule so the user can audit and lift them —
-/// the "undo" for "Always ignore this" / "Mute for 1 hour". Permanent ignores
-/// are grouped first; temporary mutes show a live countdown. Un-muting takes
+/// the "undo" for "Always ignore this" / "Mute for 1 hour" / a scoped Trust
+/// Engine rule. Scoped rules group first (they're policies, not mutes), then
+/// permanent ignores; temporary mutes show a live countdown. Un-muting takes
 /// effect immediately; the next detector tick re-surfaces the condition if it
 /// still holds.
 struct MutedItemsView: View {
     let engine: DetectorEngine
 
     @State private var entries: [SuppressionEntry] = []
+    @State private var rules: [TrustRule] = []
     @State private var now = Date()
 
     private let timer = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
@@ -3766,7 +3841,7 @@ struct MutedItemsView: View {
                 Text("Ignored items")
                     .font(.title3.weight(.semibold))
                 Spacer()
-                Text(entries.isEmpty ? "none" : "\(entries.count) active")
+                Text(entries.isEmpty && rules.isEmpty ? "none" : "\(entries.count + rules.count) active")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -3775,11 +3850,14 @@ struct MutedItemsView: View {
 
             Divider()
 
-            if entries.isEmpty {
+            if entries.isEmpty && rules.isEmpty {
                 emptyState
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        if !rules.isEmpty {
+                            rulesSection
+                        }
                         if !permanent.isEmpty {
                             section("Always ignored", permanent)
                         }
@@ -3799,6 +3877,47 @@ struct MutedItemsView: View {
         .frame(width: 460, height: 430)
         .onAppear { refresh() }
         .onReceive(timer) { now = $0; refresh() }
+    }
+
+    /// Scoped Trust Engine rules — a different beast than signature mutes:
+    /// matching processes stay visible in Security's review list and keep
+    /// being re-checked; they just never alert.
+    private var rulesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Ignore rules")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .tracking(0.4)
+            ForEach(rules) { ruleRow($0) }
+        }
+    }
+
+    private func ruleRow(_ rule: TrustRule) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "eye")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(rule.title)
+                    .font(.subheadline.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Still listed in Security's review list and re-checked every scan — never notifies.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Remove") {
+                TrustBaselineStore().removeRule(id: rule.id)
+                refresh()
+            }
+            .controlSize(.small)
+            .fixedSize()
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
     }
 
     private func section(_ title: String, _ items: [SuppressionEntry]) -> some View {
@@ -3897,6 +4016,7 @@ struct MutedItemsView: View {
 
     private func refresh() {
         entries = engine.activeSuppressions(now: now)
+        rules = TrustBaselineStore().rules()
     }
 
     /// Friendly text for a raw signature when no incident row survives to title

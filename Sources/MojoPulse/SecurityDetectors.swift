@@ -211,6 +211,8 @@ final class SuspectProcessDetector: MultiDetector {
             if let pid = f.pid { context["pid"] = String(pid) }
             if let cmd = f.command { context["cmd"] = cmd }
             if f.processCount > 1 { context["procs"] = String(f.processCount) }
+            if !f.launchChain.isEmpty { context["runBy"] = f.launchChain.joined(separator: " ‹ ") }
+            if let script = f.scriptPath { context["script"] = script }
             return Incident(
                 category: .security,
                 severity: f.isStrong ? .issue : .watch,

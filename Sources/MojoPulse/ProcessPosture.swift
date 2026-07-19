@@ -68,10 +68,67 @@ enum ProcessPosture {
         if path.hasPrefix(NSHomeDirectory() + "/Downloads/") {
             return "Running from your Downloads folder."
         }
-        if path.split(separator: "/").contains(where: { $0.hasPrefix(".") && $0 != ".." }) {
+        if path.split(separator: "/").contains(where: { $0.hasPrefix(".") && $0 != ".." }),
+           !isDevToolchainPath(path) {
             return "Running from a hidden folder."
         }
         return nil
+    }
+
+    /// Hidden folders that are actually how modern dev tools install: version
+    /// managers, language toolchains, and per-project environments all live in
+    /// dot-directories (`~/.local/share/uv`, `~/.cargo`, `.venv`, …), which made
+    /// the hidden-folder signal fire hundreds of times for a developer's own
+    /// Python. Deliberately short and high-confidence, like `brandTeams`: a
+    /// miss just means the signal still fires for that tool. Each entry
+    /// silences ONLY the location signal — unsigned/ad-hoc identity still
+    /// lands the process in the unrecognized review tier, a brand-new binary
+    /// that's actively on the network still escalates, and the behavior
+    /// detectors (listeners, persistence, connections) are unaffected. So
+    /// malware hiding *inside* a toolchain dir still gets its loud first day.
+    private static let devToolchainRoots: [String] = [
+        ".local/bin/",           // XDG user binaries (uv, pipx, poetry installers)
+        ".local/share/uv/",      // uv-managed Pythons + tools
+        ".local/share/mise/",    // mise-managed toolchains
+        ".local/share/pnpm/",    // pnpm global store
+        ".local/pipx/",          // pipx venvs
+        ".cargo/", ".rustup/",   // Rust
+        ".pyenv/",               // Python version manager
+        ".rbenv/", ".rvm/",      // Ruby version managers
+        ".nvm/", ".nodenv/", ".volta/", ".fnm/",   // Node version managers
+        ".bun/", ".deno/", ".yarn/",
+        ".asdf/",                // multi-language version manager
+        ".sdkman/",              // JVM toolchains
+        ".dotnet/",
+        ".claude/",              // Claude Code local install + hooks
+        ".vscode/", ".cursor/",  // editor extensions ship native binaries
+        ".docker/"               // CLI plugins (compose, buildx)
+    ]
+
+    /// Per-project environment dirs that are legitimate at any depth.
+    private static let devEnvDirs: Set<String> = [".venv", ".tox", ".nox", ".direnv", ".terraform"]
+
+    /// True when every hidden component of `path` is vouched for by a known
+    /// dev-toolchain layout: either the path sits under a recognized root in
+    /// the home folder, or each dot-component is a recognized project-env dir
+    /// (plus node_modules' `.bin`). A single unrecognized dot-component —
+    /// `~/.evil/x/.venv/bin/python` — keeps the whole path suspicious.
+    static func isDevToolchainPath(_ path: String) -> Bool {
+        var rest = path[...]
+        let home = NSHomeDirectory() + "/"
+        if rest.hasPrefix(home) {
+            let sub = rest.dropFirst(home.count)
+            if let root = devToolchainRoots.first(where: { sub.hasPrefix($0) }) {
+                rest = sub.dropFirst(root.count)
+            }
+        }
+        let comps = rest.split(separator: "/")
+        for (i, c) in comps.enumerated() where c.hasPrefix(".") && c != ".." {
+            if devEnvDirs.contains(String(c)) { continue }
+            if c == ".bin", i > 0, comps[i - 1] == "node_modules" { continue }
+            return false
+        }
+        return true
     }
 
     private static func hasHiddenChars(_ s: String) -> Bool {

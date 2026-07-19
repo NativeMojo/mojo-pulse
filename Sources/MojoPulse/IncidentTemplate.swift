@@ -290,7 +290,7 @@ enum IncidentTemplates {
                 title: "Suspect process running",
                 what: "\(name) combines traits that don't usually go together in legitimate software: \(reasons).",
                 why: "No single trait makes a program malicious — but this combination is how unwanted software commonly behaves, so Pulse only raises it when several line up.",
-                action: "Check its location and command, and open its full details for the signer and connections. If you built or installed it yourself, choose “Always ignore”; otherwise quit it.",
+                action: "Check its location, command, and who ran it, and open its full details for the signer and connections. If it's your own work, use “Ignore” to silence just this command, this project's scripts, or anything run by the same tool; otherwise quit it.",
                 actionURL: processViewerURL
             )
 
